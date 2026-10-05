@@ -7,33 +7,45 @@ pause, reorder.
 
 ## Status
 
-Early. Two subcommands exist:
+Early. What exists:
 
+- `orchestrator launch -- claude …` starts a Claude Code session in a cgroup of
+  its own, and points Claude Code at `orchestrator-prefix`, which places every
+  command the session starts (Bash calls, hooks, status line, MCP servers) in a
+  sub-group of its own. Nothing is queued or throttled yet.
 - `orchestrator sessions` prints the memory used by each Claude Code session
   (with its largest process) and the processes left behind by sessions that no
   longer exist.
 - `orchestrator watch` runs as a long-lived loop and appends one JSON line per
   event (`memory_pressure`, `orphans`) to an events file.
 
-Everything else is design (one process group per session, admission,
-throttling, the coordinator): see [docs/design.md](docs/design.md).
+Everything else is design (admission, throttling, the coordinator): see
+[docs/design.md](docs/design.md).
 
 ## Requirements
 
-- Linux. What exists today only reads `/proc` and Claude Code's session files
-  (`~/.claude/sessions/`). The planned cgroup work needs cgroup v2 and a systemd
-  user manager that delegates to user scopes.
+- Linux with cgroup v2 and a systemd user manager that delegates to user
+  scopes (`launch`). `sessions` and `watch` only read `/proc` and Claude Code's
+  session files (`~/.claude/sessions/`).
 - A Rust toolchain supporting edition 2024 (Rust 1.85 or later).
 
 ## Build
 
 ```sh
-cargo build --release
+cargo install --path .
 ```
 
-The binary is `target/release/orchestrator`.
+This installs two binaries side by side: `orchestrator` and
+`orchestrator-prefix`. `launch` finds the prefix next to itself.
 
 ## Usage
+
+```sh
+orchestrator launch -- claude
+```
+
+Arguments after `--` go to `claude` unchanged. When the session's cgroup cannot
+be set up, the session still starts, unorchestrated, with a warning.
 
 ```sh
 orchestrator sessions

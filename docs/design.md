@@ -16,9 +16,11 @@ of a few MB.
 
 ## Status
 
-`orchestrator sessions` and `orchestrator watch` exist. Today they attribute
-processes to sessions by process ancestry and report memory pressure and
-orphaned processes. Everything else here is design; the parts validated by
+`orchestrator launch` and the shell prefix exist: a session runs in a cgroup
+of its own, and each command it starts in a job group of its own. Nothing is
+queued or throttled yet. `orchestrator sessions` and `orchestrator watch` still
+attribute processes to sessions by process ancestry and report memory pressure
+and orphaned processes. Everything else here is design; the parts validated by
 throwaway prototypes are listed under "Measured".
 
 ## One process group per session
@@ -76,19 +78,23 @@ groups and classifies them by behaviour, without any list of commands.
 
 One binary, `orchestrator`, with subcommands.
 
-- **Installation** (planned): one step puts the binary on the `PATH` and the
-  service under the systemd user manager.
-- **`orchestrator launch -- claude …`** (planned), exposed as a short command
-  available from any directory: starts the session in a delegated systemd user
-  scope, moves claude into the `main/` leaf (a group that hands controllers to
+- **Installation** (planned): one step puts the two binaries, `orchestrator`
+  and `orchestrator-prefix`, on the `PATH` and the service under the systemd
+  user manager. `cargo install` covers the binaries today.
+- **`orchestrator launch -- claude …`** (exists; the short command is planned),
+  exposed as a short command available from any directory: starts the session
+  in a delegated systemd user scope in `orchestrator.slice`, moves claude into the `main/` leaf (a group that hands controllers to
   its children cannot hold processes itself), then enables `+cpu +memory +pids`
   for the sub-groups. A session started with `claude` alone stays outside
   orchestration.
-- **The shell prefix** (planned): Claude Code calls it with the full command line
-  as a single argument, for every Bash call, hook, status line refresh and MCP
-  stdio server start. It creates the sub-group, moves itself in, waits for
-  admission when it runs a Bash call, then runs the command. Output and exit
-  code pass through unchanged.
+- **The shell prefix**, `orchestrator-prefix` (exists, admission planned):
+  Claude Code calls it with the full command line as a single argument, for
+  every Bash call, hook, status line refresh and MCP stdio server start. It
+  creates the sub-group, moves itself in, keeps the command of a Bash call for
+  the service, waits for admission when it runs a Bash call, then replaces
+  itself with the command. Output and exit code pass through unchanged. Claude
+  Code runs the prefix as one quoted path, hence a binary of its own rather
+  than a subcommand.
 - **`orchestrator watch`**, a systemd user service:
   - exists: memory pressure and orphaned processes, as JSON lines in
     `events.jsonl`;
@@ -96,8 +102,8 @@ One binary, `orchestrator`, with subcommands.
     connector instead of polling; each job's life and memory (`cgroup.events`,
     `memory.events`, `memory.peak`) and memory pressure (PSI); listening sockets
     every one or two seconds, attributed to their job; classification, levers,
-    admission, removal of empty job groups; the token quota left by the status
-    line.
+    admission; reading each finished job's peak, then removing its empty
+    group; the token quota left by the status line.
 - **The coordinator** (planned): a Claude Code session started with its role
   appended to the system prompt. On its first start it examines the machine
   (memory, swap, CPU, what the systemd user manager delegates) and writes the
@@ -219,6 +225,11 @@ Other measurements:
 - Claude Code runs a Bash call as one shell script: it sources the session's
   shell snapshot, then runs the command Claude wrote inside `eval '…'`, from
   which the command can be extracted.
+- `CLAUDE_CODE_SHELL_PREFIX` is run as one quoted path: a prefix holding an
+  argument fails with "not found". Bash calls and MCP servers are started by
+  claude itself, hooks through `/bin/sh -c`.
+- When a session ends, systemd removes its scope together with every job group
+  in it: a job's peak has to be read while its session lives.
 - `CLAUDE_CODE_SESSION_ID` is inherited by the commands a session runs, but keeps
   the old id after `/clear` or a resume: ancestry is checked first.
 - The kernel process connector delivers fork, exec and exit events to an
@@ -277,9 +288,6 @@ From the Claude Code documentation:
   compose label), or left out of scope.
 - Launching: the short command's name, and whether sessions started by other
   tools (a worktree manager, for instance) go through it.
-- Empty job groups: removed by the service when `cgroup.events` reports them
-  unpopulated, or by the prefix waiting for its command instead of replacing
-  itself with it.
 - Where the coordinator runs: a terminal tab, or a background session (which
   needs a permission rule only the user can add). It is needed from the first
   start, to write the configuration.

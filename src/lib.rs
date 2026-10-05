@@ -1,0 +1,17 @@
+//! orchestrator: schedules the work of the Claude Code sessions running in
+//! parallel on one machine, so development keeps going. See docs/design.md.
+//!
+//! The library serves the two binaries: `orchestrator`, and
+//! `orchestrator-prefix`, the shell prefix Claude Code runs every command
+//! through.
+
+pub mod attribution;
+pub mod cgroup;
+pub mod events;
+pub mod launch;
+pub mod memory;
+pub mod prefix;
+pub mod procfs;
+pub mod runtime;
+pub mod sessions;
+pub mod watch;
