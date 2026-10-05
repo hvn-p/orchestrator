@@ -49,8 +49,9 @@ groups and classifies them by behaviour, without any list of commands.
    sizes its default heap from the `memory.high` of its own cgroup, so a limit
    on the job would shrink the heap and a large type check would fail with
    "heap out of memory".
-2. **Queue**: before running a Bash call, the prefix waits for admission. The
-   wait counts toward the Bash call's timeout.
+2. **Queue**: a Bash call already measured as memory-hungry waits, before it
+   runs, until free memory covers its known peak (see "Admission"). Every other
+   command starts at once. The wait counts toward the Bash call's timeout.
 3. **Do it elsewhere**: when a project has a CI, whole-project checks (full test
    suite, type check, build) belong there. Whether to enforce this is a user
    policy, not part of the foundation.
@@ -63,8 +64,8 @@ groups and classifies them by behaviour, without any list of commands.
 
 ## Principles
 
-- **Never block work by failing**: outside an orchestrated session, or on any
-  cgroup error, the prefix runs the command unchanged.
+- **Never block work by failing**: outside an orchestrated session, without a
+  configuration, or on any cgroup error, the prefix runs the command unchanged.
 - **Commands typed outside Claude Code never wait**: they run outside any
   orchestrated session. A `!` command typed inside Claude Code goes through the
   prefix like any other Bash call.
@@ -75,10 +76,14 @@ groups and classifies them by behaviour, without any list of commands.
 
 One binary, `orchestrator`, with subcommands.
 
-- **`orchestrator launch -- claude …`** (planned): starts the session in a
-  delegated systemd user scope, moves claude into the `main/` leaf (a group that
-  hands controllers to its children cannot hold processes itself), then enables
-  `+cpu +memory +pids` for the sub-groups.
+- **Installation** (planned): one step puts the binary on the `PATH` and the
+  service under the systemd user manager.
+- **`orchestrator launch -- claude …`** (planned), exposed as a short command
+  available from any directory: starts the session in a delegated systemd user
+  scope, moves claude into the `main/` leaf (a group that hands controllers to
+  its children cannot hold processes itself), then enables `+cpu +memory +pids`
+  for the sub-groups. A session started with `claude` alone stays outside
+  orchestration.
 - **The shell prefix** (planned): Claude Code calls it with the full command line
   as a single argument, for every Bash call, hook, status line refresh and MCP
   stdio server start. It creates the sub-group, moves itself in, waits for
@@ -94,10 +99,12 @@ One binary, `orchestrator`, with subcommands.
     admission, removal of empty job groups; the token quota left by the status
     line.
 - **The coordinator** (planned): a Claude Code session started with its role
-  appended to the system prompt. It waits for the next event with a background
-  command that exits when one arrives, sets priorities, tells sessions about
-  their delays, negotiates a slot when the limit of long-running servers is
-  reached, and answers "who is working on X?".
+  appended to the system prompt. On its first start it examines the machine
+  (memory, swap, CPU, what the systemd user manager delegates) and writes the
+  configuration: the thresholds the code then applies. It waits for the next
+  event with a background command that exits when one arrives, sets priorities,
+  tells sessions about their delays, negotiates a slot when the limit of
+  long-running servers is reached, and answers "who is working on X?".
 - **`orchestrator sessions`** (exists): memory per session and orphaned
   processes, for a human.
 
@@ -109,10 +116,51 @@ reboot, never versioned.
 - **Lifetime**: a job that ends quickly, or one that keeps running.
 - **Server**: a process of the job listens on a port, whatever the service (web,
   database, emulator).
-- **Profile**: the job's CPU and memory over time, peak included.
+- **Profile**: the job's CPU and memory over time, peak included. The memory
+  peak feeds admission.
 - **Attribution**: the group, inherited through the kernel, names the job and the
   session. For a process outside any orchestrated session, attribution falls back
   to process ancestry, then to `CLAUDE_CODE_SESSION_ID`.
+
+## Admission
+
+The prefix decides before a command runs. At that point it has only the command
+line, which says nothing about memory: `pnpm typecheck` itself uses little, the
+`tsc` processes it starts use gigabytes. Admission therefore learns from what it
+measures.
+
+- Every Bash call is measured: the peak memory of its job group, children
+  included. The peak is remembered per repository, all its worktrees together,
+  and per command.
+- A command never seen before, or one whose known peak stays under the
+  threshold, starts at once.
+- A command whose known peak is above the threshold waits until free memory
+  covers that peak plus a margin. There is no fixed number of slots: two such
+  commands run together when the machine can hold both.
+
+Admission gets more accurate as commands are measured, with no list to
+maintain. What it cannot foresee (a first run, a form of the command it does not
+recognise) is left to the other levers.
+
+### Recognising a command
+
+Claude writes the same command in many forms. Admission recognises it the way
+Claude Code matches its Bash permission rules. The call is split into simple
+commands at `&&`, `||`, `;`, `|`, `|&`, `&` and newlines. What does not change
+the work is then removed: the wrappers `timeout`, `time`, `nice`, `nohup` and
+`stdbuf`, leading environment assignments, redirections, and `cd`, whose target
+still decides the repository. So `cd app && timeout 300 pnpm exec vitest run X
+2>&1 | grep FAIL` yields `pnpm exec vitest run X` and `grep FAIL`.
+
+Each remaining command is learned word for word. Unlike a permission rule, no
+wildcard widens the match: `vitest run` (the whole suite) and
+`vitest run one.test.ts` stay distinct, since they do not weigh the same. A call
+holds several commands but has a single peak: the command that carries it is
+the one found in heavy calls and never in light ones.
+
+Where Claude Code asks when in doubt, admission lets the command start.
+
+Peaks are kept in `$XDG_STATE_HOME/orchestrator/` so that they survive a reboot.
 
 ## Measured
 
@@ -162,6 +210,9 @@ Other measurements:
 - Claude Code keeps `~/.claude/sessions/<pid>.json` (pid, session id, name,
   working directory, busy or idle status) and prints the same list with
   `claude agents --json`.
+- Claude Code runs a Bash call as one shell script: it sources the session's
+  shell snapshot, then runs the command Claude wrote inside `eval '…'`, from
+  which the command can be extracted.
 - `CLAUDE_CODE_SESSION_ID` is inherited by the commands a session runs, but keeps
   the old id after `/clear` or a resume: ancestry is checked first.
 - The kernel process connector delivers fork, exec and exit events to an
@@ -185,6 +236,10 @@ From the Claude Code documentation:
   the argument holds the whole invocation, environment setup included.
 - A Bash call times out after 2 min by default and 10 min at most, tunable with
   `BASH_DEFAULT_TIMEOUT_MS` and `BASH_MAX_TIMEOUT_MS`.
+- Bash permission rules are matched after splitting compound commands and
+  stripping a fixed list of wrappers and known-safe environment assignments.
+  The same program invoked in another form (`/usr/bin/curl`, `sh -c '…'`) is
+  not recognised, and a command that cannot be parsed prompts.
 - A `PreToolUse` hook can rewrite the Bash command (`updatedInput`), but cannot
   wait past its own timeout; the tool call then proceeds.
 - An appended system prompt is reused on resume until the conversation is
@@ -208,20 +263,22 @@ From the Claude Code documentation:
 
 - Maximum hook timeout: two readings of the documentation disagree (30 s for
   `PreToolUse`, 600 s by default for command hooks). To retest.
-- Admission: queue every Bash call, or only under memory pressure; number of
-  slots; free memory criterion.
+- Admission: how a command just admitted reserves its expected peak, so that
+  two commands admitted at the same moment do not count on the same free
+  memory; which shell parser the prefix uses.
 - Long-running servers: how many before the coordinator negotiates.
 - Orphans and idle sessions holding resources: reported to the coordinator, or
   released automatically.
 - Docker: regulated separately (`docker pause`, `docker update`, attribution by
   compose label), or left out of scope.
-- How sessions get launched through `orchestrator launch`: an alias for
-  `claude`, a separate command, and the other tools that start `claude`.
+- Launching: the short command's name, and whether sessions started by other
+  tools (a worktree manager, for instance) go through it.
 - Empty job groups: removed by the service when `cgroup.events` reports them
   unpopulated, or by the prefix waiting for its command instead of replacing
   itself with it.
 - Where the coordinator runs: a terminal tab, or a background session (which
-  needs a permission rule only the user can add).
+  needs a permission rule only the user can add). It is needed from the first
+  start, to write the configuration.
 - `memory.reclaim` on a frozen job, and the coordinator waiting through a
   background command: not tested yet.
 
