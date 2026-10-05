@@ -16,8 +16,9 @@ Early. What exists:
 - `orchestrator sessions` prints the memory used by each Claude Code session
   (with its largest process) and the processes left behind by sessions that no
   longer exist.
-- `orchestrator watch` runs as a long-lived loop and appends one JSON line per
-  event (`memory_pressure`, `orphans`) to an events file. It also measures the
+- `orchestrator watch` runs as a service that sleeps until the kernel reports
+  something, and appends one JSON line per event (`memory_pressure`,
+  `orphans`) to an events file. It also measures the
   memory peak of each finished Bash call of an orchestrated session, then
   removes the call's empty group.
 
@@ -54,13 +55,15 @@ orchestrator sessions
 ```
 
 ```sh
-orchestrator watch --mem-min-mb 3000
+orchestrator watch
 ```
 
-`watch` checks available memory every `--interval-secs` (default 2) and, below
-`--mem-min-mb`, ranks sessions by memory and writes a `memory_pressure` event,
-at most once per `--cooldown-secs` (default 60). Every `--orphan-interval-secs`
-(default 30) it reports newly orphaned processes once each. Events go to
+When tasks stall on memory for `--stall-ms` (default 200) within a 2 s window,
+`watch` ranks sessions by memory and writes a `memory_pressure` event, at most
+once per `--cooldown-secs` (default 60). Five seconds after a Claude session's
+process exits, it reports the processes the session left behind, each orphan
+group once; a scan every `--orphan-interval-secs` (default 300) catches the
+rest. Events go to
 `$XDG_RUNTIME_DIR/orchestrator/events.jsonl` unless `--runtime-dir` says
 otherwise. As soon as a Bash call of an orchestrated session ends, it appends
 the call's peak, with its command, to `measurements.jsonl` in the same

@@ -97,15 +97,18 @@ One binary, `orchestrator`, with subcommands.
   Code runs the prefix as one quoted path, hence a binary of its own rather
   than a subcommand.
 - **`orchestrator watch`**, a systemd user service:
-  - exists: memory pressure and orphaned processes, as JSON lines in
-    `events.jsonl`; each finished job's peak (`memory.peak`), read as soon as
+  - exists: it sleeps until the kernel reports something. Memory pressure
+    comes from a PSI trigger on `/proc/pressure/memory`; the end of a Claude
+    session from a pidfd on its claude process, the session being found
+    through inotify on Claude Code's sessions directory, and its orphans are
+    looked for five seconds later; both go as JSON lines to `events.jsonl`. A
+    scan every five minutes catches orphans no session end announces. Each
+    finished job's peak (`memory.peak`), read as soon as
     inotify reports its `cgroup.events` unpopulated, kept with the command of a
     Bash call in `measurements.jsonl`, then the job's empty group removed. A
     sweep every minute catches what inotify cannot see, such as a job that
     ended before its watch was in place;
-  - planned: process creation, exec and exit events from the kernel process
-    connector instead of polling; `memory.events` and memory pressure (PSI) per
-    job; listening sockets every one or two seconds, attributed to their job;
+  - planned: `memory.events` and memory pressure (PSI) per job; listening sockets every one or two seconds, attributed to their job;
     classification, levers, admission; the token quota left by the status
     line.
 - **The coordinator** (planned): a Claude Code session started with its role
@@ -241,6 +244,12 @@ Other measurements:
   the old id after `/clear` or a resume: ancestry is checked first.
 - The kernel process connector delivers fork, exec and exit events to an
   unprivileged process on this kernel.
+- An unprivileged process can arm a PSI trigger on `/proc/pressure/memory`
+  with a 2 s window, not a 1 s one. The user manager's own `memory.pressure`
+  refuses it (permission denied). A trigger set at 50 ms fired within a second
+  of a process allocating 300 MB under `MemoryHigh=50M`.
+- `pidfd_open` works unprivileged on any process of the user; the descriptor
+  becomes readable when the process exits.
 - Coordinator loop, first prototype (the Monitor tool on an events file): 11 s
   from the event to the message reaching the session, no token spent between
   events. A Monitor expires after 30 min; re-arming it costs about 0.07 USD and
@@ -315,6 +324,13 @@ From the Claude Code documentation:
 ## Rejected
 
 - **Refusing a command**: contrary to the intent.
+- **The kernel process connector to see sessions end**: it reports every
+  process of the machine, thousands per second during a build. A pidfd on each
+  session's claude process reports only what matters.
+- **A threshold on available memory**: the kernel cannot report it crossing a
+  threshold, so it has to be polled, and low available memory alone does not
+  slow anything down. A PSI trigger reports the stall itself; admission, not an
+  event, keeps a memory-hungry command from starting when memory is short.
 - **Recognising commands by name**: a hook only sees the command typed, not the
   `tsc` processes that `pnpm typecheck` starts; command shims first in `PATH`
   are bypassed by `node_modules/.bin`. Tool-specific knobs

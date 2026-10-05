@@ -67,6 +67,13 @@ fn read_process(dir: &Path, pid: u32) -> Option<ProcInfo> {
     })
 }
 
+/// Start time of process `pid` under `root`, in clock ticks since boot. None
+/// once it is gone.
+pub fn start_time(root: &Path, pid: u32) -> Option<u64> {
+    let stat = fs::read_to_string(root.join(pid.to_string()).join("stat")).ok()?;
+    parse_stat(&stat).map(|(_, _, start)| start)
+}
+
 /// Returns (comm, ppid, starttime). comm sits between the first `(` and the
 /// last `)` and may itself contain spaces or parentheses, so fields are counted
 /// from the last `)`: state is field 3, ppid field 4, starttime field 22.

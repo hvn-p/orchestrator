@@ -45,7 +45,9 @@ pub struct OrphanSummary {
 pub enum Event {
     MemoryPressure {
         available_mb: u64,
-        threshold_mb: u64,
+        /// The trigger: some task stalled on memory this long within a PSI
+        /// window.
+        stall_ms: u64,
         largest: Option<SessionSummary>,
         next: Vec<SessionBrief>,
     },
@@ -55,10 +57,10 @@ pub enum Event {
 }
 
 impl Event {
-    pub fn memory_pressure(available_mb: u64, threshold_mb: u64, att: &Attribution) -> Self {
+    pub fn memory_pressure(available_mb: u64, stall_ms: u64, att: &Attribution) -> Self {
         Event::MemoryPressure {
             available_mb,
-            threshold_mb,
+            stall_ms,
             largest: att.sessions.first().map(summary),
             next: att
                 .sessions
@@ -153,11 +155,12 @@ mod tests {
             }],
             orphans: vec![],
         };
-        let line = to_line(12, &Event::memory_pressure(900, 3000, &att)).unwrap();
+        let line = to_line(12, &Event::memory_pressure(900, 200, &att)).unwrap();
         let v: serde_json::Value = serde_json::from_str(&line).unwrap();
         assert_eq!(v["at"], 12);
         assert_eq!(v["kind"], "memory_pressure");
         assert_eq!(v["available_mb"], 900);
+        assert_eq!(v["stall_ms"], 200);
         assert_eq!(v["largest"]["session"], "alpha");
         assert_eq!(v["largest"]["rss_mb"], 4096);
         assert_eq!(v["largest"]["process_rss_mb"], 3072);

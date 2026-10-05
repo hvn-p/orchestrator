@@ -8,10 +8,12 @@
 pub mod attribution;
 pub mod cgroup;
 pub mod events;
+pub mod exits;
 pub mod jobs;
 pub mod launch;
 pub mod memory;
 pub mod prefix;
+pub mod pressure;
 pub mod procfs;
 pub mod runtime;
 pub mod sessions;

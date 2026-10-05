@@ -17,6 +17,7 @@ use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, DirEntry};
 use std::io::{self, ErrorKind};
+use std::os::fd::{AsFd, BorrowedFd};
 use std::path::{Path, PathBuf};
 
 /// A sweep leaves a job younger than this alone: between creating its group
@@ -157,16 +158,13 @@ impl Tracker {
         Ok((tracker, measured))
     }
 
-    /// Blocks until the kernel reports changes, then handles them.
-    pub fn wait(&mut self) -> io::Result<Vec<Measurement>> {
-        let mut buffer = [0; EVENT_BUFFER];
-        let events = owned(self.inotify.read_events_blocking(&mut buffer)?);
-        self.handle_all(events)
+    /// Readable when the kernel reported changes.
+    pub fn fd(&self) -> BorrowedFd<'_> {
+        self.inotify.as_fd()
     }
 
     /// Handles the changes already reported, without blocking.
-    #[cfg(test)]
-    fn poll(&mut self) -> io::Result<Vec<Measurement>> {
+    pub fn read_ready(&mut self) -> io::Result<Vec<Measurement>> {
         let mut buffer = [0; EVENT_BUFFER];
         match self.inotify.read_events(&mut buffer) {
             Ok(events) => {
@@ -483,16 +481,16 @@ mod tests {
         assert_eq!(measured, Vec::new());
         // Sessions start after the service: the slice, then a scope, appear.
         fs::create_dir(&t.slice).unwrap();
-        assert_eq!(tracker.poll().unwrap(), Vec::new());
+        assert_eq!(tracker.read_ready().unwrap(), Vec::new());
         fs::create_dir(t.slice.join("s.scope")).unwrap();
-        assert_eq!(tracker.poll().unwrap(), Vec::new());
+        assert_eq!(tracker.read_ready().unwrap(), Vec::new());
         // A young job: only its end, reported by the kernel, finishes it.
         let name = prefix::job_name(Kind::Bash, 7, runtime::now_ms());
         let dir = job(&t, "s.scope", &name, true, 3 << 30);
         record(&t, "s.scope", &name, "eval 'pnpm typecheck'");
-        assert_eq!(tracker.poll().unwrap(), Vec::new());
+        assert_eq!(tracker.read_ready().unwrap(), Vec::new());
         set_populated(&dir, false);
-        let measured = tracker.poll().unwrap();
+        let measured = tracker.read_ready().unwrap();
         assert_eq!(measured.len(), 1);
         assert_eq!(measured[0].job, name);
         assert_eq!(measured[0].peak_mb, 3072);
@@ -517,7 +515,7 @@ mod tests {
             Tracker::new(t.slice.clone(), t.records.clone(), remove_all).unwrap();
         let rec = record(&t, "s.scope", "job-bash-7-1", "x");
         fs::remove_dir(&scope).unwrap();
-        tracker.poll().unwrap();
+        tracker.read_ready().unwrap();
         assert!(!rec.exists());
     }
 }
