@@ -98,9 +98,11 @@ One binary, `orchestrator`, with subcommands.
   than a subcommand.
 - **`orchestrator watch`**, a systemd user service:
   - exists: memory pressure and orphaned processes, as JSON lines in
-    `events.jsonl`; on every tick, each finished job's peak (`memory.peak`,
-    once `cgroup.events` reports the group unpopulated), kept with the command
-    of a Bash call in `measurements.jsonl`, then the job's empty group removed;
+    `events.jsonl`; each finished job's peak (`memory.peak`), read as soon as
+    inotify reports its `cgroup.events` unpopulated, kept with the command of a
+    Bash call in `measurements.jsonl`, then the job's empty group removed. A
+    sweep every minute catches what inotify cannot see, such as a job that
+    ended before its watch was in place;
   - planned: process creation, exec and exit events from the kernel process
     connector instead of polling; `memory.events` and memory pressure (PSI) per
     job; listening sockets every one or two seconds, attributed to their job;
@@ -232,6 +234,9 @@ Other measurements:
   claude itself, hooks through `/bin/sh -c`.
 - When a session ends, systemd removes its scope together with every job group
   in it: a job's peak has to be read while its session lives.
+- inotify reports the creation of a job group in a session scope, each change
+  of the job's `cgroup.events` (`populated 1`, then `populated 0` within a
+  millisecond of the job's end) and the group's removal.
 - `CLAUDE_CODE_SESSION_ID` is inherited by the commands a session runs, but keeps
   the old id after `/clear` or a resume: ancestry is checked first.
 - The kernel process connector delivers fork, exec and exit events to an

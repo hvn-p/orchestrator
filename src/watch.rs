@@ -1,5 +1,7 @@
-//! The watch loop: cheap memory check and finished jobs on every tick, full
-//! process scan only when memory is low or an orphan scan is due.
+//! The watch loop: cheap memory check on every tick, full process scan only
+//! when memory is low or an orphan scan is due. Finished jobs are measured by
+//! a thread of their own as the kernel reports them, with a sweep now and then
+//! as a safety net.
 
 use crate::attribution::{self, Attribution};
 use crate::events::{self, Event};
@@ -94,7 +96,12 @@ pub fn scan(proc_root: &Path, sessions_dir: &Path) -> Result<Attribution> {
     Ok(attribution::attribute(&procs, &sessions))
 }
 
+/// Seconds between two sweeps of the job groups while the tracker runs. Every
+/// tick sweeps when it does not.
+const SWEEP_INTERVAL: Duration = Duration::from_secs(60);
+
 /// Where finished jobs are found, and where their measurements go.
+#[derive(Clone)]
 struct JobPaths {
     slice: PathBuf,
     records: PathBuf,
@@ -118,12 +125,21 @@ pub fn run(cfg: &Config) -> Result<()> {
             "orchestrator: no systemd user manager above this process; jobs are not collected"
         );
     }
+    let tracker = job_paths
+        .clone()
+        .map(|p| std::thread::spawn(move || track(&p)));
     let mut watcher = Watcher::new(cfg.thresholds);
     let mut next_orphan_scan = Instant::now();
+    let mut next_sweep = Instant::now() + SWEEP_INTERVAL;
     loop {
         let orphan_scan_due = Instant::now() >= next_orphan_scan;
         if orphan_scan_due {
             next_orphan_scan = Instant::now() + cfg.orphan_interval;
+        }
+        let tracking = tracker.as_ref().is_some_and(|t| !t.is_finished());
+        let sweep_due = !tracking || Instant::now() >= next_sweep;
+        if sweep_due {
+            next_sweep = Instant::now() + SWEEP_INTERVAL;
         }
         if let Err(e) = tick(
             cfg,
@@ -131,7 +147,7 @@ pub fn run(cfg: &Config) -> Result<()> {
             &events_path,
             &mut watcher,
             orphan_scan_due,
-            job_paths.as_ref(),
+            job_paths.as_ref().filter(|_| sweep_due),
         ) {
             // A daemon outlives transient errors: a process vanishing mid-read,
             // a sessions file being rewritten.
@@ -147,7 +163,7 @@ fn tick(
     events_path: &Path,
     watcher: &mut Watcher,
     orphan_scan_due: bool,
-    job_paths: Option<&JobPaths>,
+    sweep: Option<&JobPaths>,
 ) -> Result<()> {
     let now_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -165,14 +181,41 @@ fn tick(
             events::append(events_path, now, &event)?;
         }
     }
-    if let Some(p) = job_paths {
-        let measured = jobs::collect(&p.slice, &p.records, now_ms, |dir| std::fs::remove_dir(dir))
-            .with_context(|| format!("collecting jobs in {}", p.slice.display()))?;
-        for m in &measured {
-            events::append_line(&p.measurements, m)?;
-        }
+    if let Some(p) = sweep {
+        let measured = jobs::collect(&p.slice, &p.records, now_ms, remove_group)
+            .with_context(|| format!("sweeping jobs in {}", p.slice.display()))?;
+        keep(&p.measurements, &measured);
     }
     Ok(())
+}
+
+/// Measures jobs as the kernel reports their end, until tracking fails.
+fn track(p: &JobPaths) {
+    if let Err(e) = track_until_error(p) {
+        eprintln!("orchestrator: job tracking stopped, sweeping on every tick: {e:#}");
+    }
+}
+
+fn track_until_error(p: &JobPaths) -> std::io::Result<()> {
+    let (mut tracker, measured) =
+        jobs::Tracker::new(p.slice.clone(), p.records.clone(), remove_group)?;
+    keep(&p.measurements, &measured);
+    loop {
+        keep(&p.measurements, &tracker.wait()?);
+    }
+}
+
+fn remove_group(dir: &Path) -> std::io::Result<()> {
+    std::fs::remove_dir(dir)
+}
+
+/// A measurement that cannot be written is reported, never fatal.
+fn keep(path: &Path, measured: &[jobs::Measurement]) {
+    for m in measured {
+        if let Err(e) = events::append_line(path, m) {
+            eprintln!("orchestrator: {e:#}");
+        }
+    }
 }
 
 /// The orchestrator slice of the user manager this process runs under.

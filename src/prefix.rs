@@ -14,7 +14,6 @@ use std::io::Write;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 /// What a Bash call ran, kept for the service until it has measured the job.
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -70,7 +69,7 @@ fn place(root: &Path, command: &OsStr) -> Result<()> {
     let text = command.to_string_lossy();
     let kind = Kind::of(&text);
     let pid = std::process::id();
-    let name = job_name(kind, pid, now_ms());
+    let name = job_name(kind, pid, runtime::now_ms());
     cgroup::enter_job(root, session, &name, pid).with_context(|| format!("creating {name}"))?;
     if kind == Kind::Bash {
         let record = JobRecord {
@@ -125,12 +124,6 @@ fn write_record(dir: &Path, job: &str, record: &JobRecord) -> Result<()> {
     fs::write(&path, json).with_context(|| format!("writing {}", path.display()))
 }
 
-fn now_ms() -> u128 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis())
-}
-
 /// Nothing goes to the terminal: the prefix's stderr is the command's, and a
 /// hook or the status line must not show orchestrator's troubles.
 fn log_failure(e: &anyhow::Error) {
@@ -142,7 +135,7 @@ fn log_failure(e: &anyhow::Error) {
         .append(true)
         .open(dir.join("prefix.log"))
     {
-        let _ = writeln!(log, "{} {e:#}", now_ms());
+        let _ = writeln!(log, "{} {e:#}", runtime::now_ms());
     }
 }
 

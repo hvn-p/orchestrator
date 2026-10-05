@@ -62,9 +62,9 @@ orchestrator watch --mem-min-mb 3000
 at most once per `--cooldown-secs` (default 60). Every `--orphan-interval-secs`
 (default 30) it reports newly orphaned processes once each. Events go to
 `$XDG_RUNTIME_DIR/orchestrator/events.jsonl` unless `--runtime-dir` says
-otherwise. On every check it also appends the peak of each finished Bash call,
-with its command, to `measurements.jsonl` in the same directory. `--help` lists
-every option.
+otherwise. As soon as a Bash call of an orchestrated session ends, it appends
+the call's peak, with its command, to `measurements.jsonl` in the same
+directory. `--help` lists every option.
 
 ## License
 
