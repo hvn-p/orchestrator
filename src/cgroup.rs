@@ -32,6 +32,20 @@ pub fn session_of(path: &str) -> Option<&str> {
     path.get(..end).filter(|_| end > start)
 }
 
+/// The orchestrator slice's path, from the path of any cgroup of the same user
+/// manager: the slice sits right under `user@<uid>.service`.
+pub fn slice_path(path: &str) -> Option<String> {
+    let mut prefix = String::new();
+    for part in path.split('/').filter(|p| !p.is_empty()) {
+        prefix.push('/');
+        prefix.push_str(part);
+        if part.starts_with("user@") && part.ends_with(".service") {
+            return Some(format!("{prefix}/{SLICE}"));
+        }
+    }
+    None
+}
+
 /// Moves `pid`, the only process of a new session scope, into `main/`, then
 /// hands the controllers to the scope's leaves. A cgroup that hands controllers
 /// to its children may not hold processes itself, hence the order.
@@ -91,6 +105,15 @@ mod tests {
             None
         );
         assert_eq!(session_of("/x/orchestrator.slice/"), None);
+    }
+
+    #[test]
+    fn finds_the_slice_under_the_user_manager() {
+        assert_eq!(
+            slice_path("/user.slice/user-1000.slice/user@1000.service/app.slice/x.service"),
+            Some("/user.slice/user-1000.slice/user@1000.service/orchestrator.slice".into())
+        );
+        assert_eq!(slice_path("/system.slice/cron.service"), None);
     }
 
     #[test]

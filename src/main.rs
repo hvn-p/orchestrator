@@ -23,7 +23,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Watch memory pressure and orphaned processes, and append the events that drive scheduling.
+    /// Watch memory pressure, session ends and job ends, and append the events that drive scheduling.
     Watch(WatchArgs),
     /// Print memory per Claude session and the orphaned processes.
     Sessions(Sources),
@@ -58,18 +58,15 @@ struct WatchArgs {
     /// Where the events file is written [default: `$XDG_RUNTIME_DIR/orchestrator`].
     #[arg(long)]
     runtime_dir: Option<PathBuf>,
-    /// Seconds between two memory checks.
-    #[arg(long, default_value_t = 2)]
-    interval_secs: u64,
-    /// Seconds between two orphan scans.
-    #[arg(long, default_value_t = 30)]
-    orphan_interval_secs: u64,
-    /// Available memory under which a memory event fires, in MB.
-    #[arg(long, default_value_t = 3000)]
-    mem_min_mb: u64,
+    /// Memory stall, within a 2 s window, that makes a pressure event, in ms.
+    #[arg(long, default_value_t = 200, value_parser = clap::value_parser!(u64).range(1..=2000))]
+    stall_ms: u64,
     /// Minimum seconds between two memory events.
     #[arg(long, default_value_t = 60)]
     cooldown_secs: u64,
+    /// Seconds between two orphan scans when no session ends.
+    #[arg(long, default_value_t = 300)]
+    orphan_interval_secs: u64,
 }
 
 fn main() -> Result<()> {
@@ -81,10 +78,9 @@ fn main() -> Result<()> {
                 Some(dir) => dir,
                 None => runtime::default_dir()?,
             },
-            interval: Duration::from_secs(args.interval_secs.max(1)),
             orphan_interval: Duration::from_secs(args.orphan_interval_secs.max(1)),
             thresholds: watch::Thresholds {
-                mem_min_mb: args.mem_min_mb,
+                stall_ms: args.stall_ms,
                 cooldown_secs: args.cooldown_secs,
             },
         }),

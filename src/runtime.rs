@@ -3,6 +3,7 @@
 
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// `$XDG_RUNTIME_DIR/orchestrator`, else `/run/user/<uid>/orchestrator`.
 pub fn default_dir() -> Result<PathBuf> {
@@ -16,4 +17,11 @@ pub fn default_dir() -> Result<PathBuf> {
         .and_then(|v| v.split_whitespace().next())
         .context("no Uid line in /proc/self/status")?;
     Ok(Path::new("/run/user").join(uid).join("orchestrator"))
+}
+
+/// Milliseconds since the Unix epoch, 0 if the clock is set before it.
+pub fn now_ms() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis())
 }

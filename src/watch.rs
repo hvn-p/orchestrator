@@ -1,18 +1,35 @@
-//! The watch loop: cheap memory check on every tick, full process scan only
-//! when memory is low or an orphan scan is due.
+//! The watch loop. It sleeps until the kernel reports something: memory
+//! pressure (a PSI trigger), the end of a Claude session's process (a pidfd
+//! per session, found through inotify on the sessions directory), or a change
+//! in the job groups of orchestrated sessions (inotify). Slow sweeps of jobs
+//! and orphans catch what these signals cannot show.
 
 use crate::attribution::{self, Attribution};
 use crate::events::{self, Event};
-use crate::{memory, procfs, sessions};
+use crate::exits::Exits;
+use crate::jobs::{self, Tracker};
+use crate::pressure::Trigger;
+use crate::{cgroup, memory, prefix, procfs, runtime, sessions};
 use anyhow::{Context, Result};
+use rustix::event::{PollFd, PollFlags, Timespec, poll};
+use rustix::io::Errno;
 use std::collections::HashSet;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
+
+/// Between two sweeps of the job groups while the tracker runs.
+const JOB_SWEEP: Duration = Duration::from_secs(60);
+/// Between two sweeps of the job groups once the tracker has stopped.
+const JOB_SWEEP_UNTRACKED: Duration = Duration::from_secs(2);
+/// Time a session's processes get to exit after the session ends, before what
+/// is left counts as orphaned.
+const ORPHAN_GRACE: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, Copy)]
 pub struct Thresholds {
-    pub mem_min_mb: u64,
+    /// Memory stall within a PSI window that makes a pressure event.
+    pub stall_ms: u64,
     pub cooldown_secs: u64,
 }
 
@@ -20,7 +37,7 @@ pub struct Config {
     pub proc_root: PathBuf,
     pub sessions_dir: PathBuf,
     pub runtime_dir: PathBuf,
-    pub interval: Duration,
+    /// Between two orphan scans when no session ends.
     pub orphan_interval: Duration,
     pub thresholds: Thresholds,
 }
@@ -42,8 +59,9 @@ impl Watcher {
         }
     }
 
-    /// `scan` runs only when an event is due.
-    pub fn check_memory(
+    /// The kernel reported memory pressure. `scan` runs only when an event is
+    /// due.
+    pub fn on_pressure(
         &mut self,
         available_mb: u64,
         now: u64,
@@ -52,14 +70,14 @@ impl Watcher {
         let cooled = self
             .last_pressure
             .is_none_or(|t| now.saturating_sub(t) >= self.thresholds.cooldown_secs);
-        if available_mb >= self.thresholds.mem_min_mb || !cooled {
+        if !cooled {
             return Ok(None);
         }
         let att = scan()?;
         self.last_pressure = Some(now);
         Ok(Some(Event::memory_pressure(
             available_mb,
-            self.thresholds.mem_min_mb,
+            self.thresholds.stall_ms,
             &att,
         )))
     }
@@ -94,6 +112,32 @@ pub fn scan(proc_root: &Path, sessions_dir: &Path) -> Result<Attribution> {
     Ok(attribution::attribute(&procs, &sessions))
 }
 
+/// Where finished jobs are found, and where their measurements go.
+struct JobPaths {
+    slice: PathBuf,
+    records: PathBuf,
+    measurements: PathBuf,
+}
+
+/// The kernel's signals, each optional: a source that cannot be set up is
+/// reported once and left to the sweeps.
+struct Sources {
+    trigger: Option<Trigger>,
+    exits: Option<Exits>,
+    tracker: Option<Tracker>,
+}
+
+/// What a wait reports.
+#[derive(Clone, Copy)]
+enum Signal {
+    Pressure,
+    TriggerBroken,
+    SessionsChanged,
+    JobsChanged,
+    /// The claude process of a session exited.
+    Exited(u32),
+}
+
 pub fn run(cfg: &Config) -> Result<()> {
     std::fs::create_dir_all(&cfg.runtime_dir)
         .with_context(|| format!("creating {}", cfg.runtime_dir.display()))?;
@@ -101,45 +145,220 @@ pub fn run(cfg: &Config) -> Result<()> {
     // Fail fast on a wrong proc root rather than logging the same error forever.
     memory::available_mb(&meminfo)?;
     let events_path = cfg.runtime_dir.join("events.jsonl");
+    let job_paths = own_slice(&cfg.proc_root).map(|slice| JobPaths {
+        slice,
+        records: prefix::records_root(&cfg.runtime_dir),
+        measurements: cfg.runtime_dir.join("measurements.jsonl"),
+    });
+    if job_paths.is_none() {
+        eprintln!(
+            "orchestrator: no systemd user manager above this process; jobs are not collected"
+        );
+    }
+    let mut src = sources(cfg, job_paths.as_ref());
     let mut watcher = Watcher::new(cfg.thresholds);
     let mut next_orphan_scan = Instant::now();
+    let mut next_job_sweep = Instant::now() + JOB_SWEEP;
     loop {
-        let orphan_scan_due = Instant::now() >= next_orphan_scan;
-        if orphan_scan_due {
-            next_orphan_scan = Instant::now() + cfg.orphan_interval;
+        let deadline = if job_paths.is_some() {
+            next_orphan_scan.min(next_job_sweep)
+        } else {
+            next_orphan_scan
+        };
+        let signals = match wait(&src, deadline.saturating_duration_since(Instant::now())) {
+            Ok(signals) => signals,
+            Err(e) => {
+                // Never spin on a failing wait.
+                eprintln!("orchestrator: waiting: {e}");
+                std::thread::sleep(Duration::from_secs(1));
+                Vec::new()
+            }
+        };
+        for signal in signals {
+            match signal {
+                Signal::Pressure => log(on_pressure(cfg, &meminfo, &events_path, &mut watcher)),
+                Signal::TriggerBroken => {
+                    eprintln!(
+                        "orchestrator: the memory pressure trigger broke; no more pressure events"
+                    );
+                    src.trigger = None;
+                }
+                Signal::SessionsChanged => {
+                    if let Some(exits) = src.exits.as_mut() {
+                        log(exits.sessions_changed().context("reading session changes"));
+                    }
+                }
+                Signal::Exited(pid) => {
+                    if let Some(exits) = src.exits.as_mut() {
+                        exits.release(pid);
+                    }
+                    next_orphan_scan = next_orphan_scan.min(Instant::now() + ORPHAN_GRACE);
+                }
+                Signal::JobsChanged => {
+                    if let (Some(tracker), Some(p)) = (src.tracker.as_mut(), job_paths.as_ref()) {
+                        match tracker.read_ready() {
+                            Ok(measured) => keep(&p.measurements, &measured),
+                            Err(e) => {
+                                eprintln!(
+                                    "orchestrator: job tracking stopped, sweeping instead: {e}"
+                                );
+                                src.tracker = None;
+                            }
+                        }
+                    }
+                }
+            }
         }
-        if let Err(e) = tick(cfg, &meminfo, &events_path, &mut watcher, orphan_scan_due) {
-            // A daemon outlives transient errors: a process vanishing mid-read,
-            // a sessions file being rewritten.
-            eprintln!("orchestrator: {e:#}");
+        let now = Instant::now();
+        if let Some(p) = job_paths.as_ref().filter(|_| now >= next_job_sweep) {
+            log(sweep_jobs(p));
+            let every = if src.tracker.is_some() {
+                JOB_SWEEP
+            } else {
+                JOB_SWEEP_UNTRACKED
+            };
+            next_job_sweep = now + every;
         }
-        std::thread::sleep(cfg.interval);
+        if now >= next_orphan_scan {
+            log(scan_orphans(cfg, &events_path, &mut watcher));
+            next_orphan_scan = now + cfg.orphan_interval;
+        }
     }
 }
 
-fn tick(
+/// Sets up each kernel signal, reporting the ones that cannot be.
+fn sources(cfg: &Config, job_paths: Option<&JobPaths>) -> Sources {
+    Sources {
+        trigger: report(
+            "memory pressure",
+            Trigger::new(
+                &cfg.proc_root.join("pressure/memory"),
+                Duration::from_millis(cfg.thresholds.stall_ms),
+            ),
+        ),
+        exits: report(
+            "session ends",
+            Exits::new(cfg.sessions_dir.clone(), cfg.proc_root.clone()),
+        ),
+        tracker: job_paths.and_then(|p| {
+            let (tracker, measured) = report(
+                "job ends",
+                Tracker::new(p.slice.clone(), p.records.clone(), remove_group),
+            )?;
+            keep(&p.measurements, &measured);
+            Some(tracker)
+        }),
+    }
+}
+
+/// Sleeps until a source has something to report or `timeout` runs out.
+fn wait(src: &Sources, timeout: Duration) -> std::io::Result<Vec<Signal>> {
+    let mut fds = Vec::new();
+    let mut which = Vec::new();
+    if let Some(t) = &src.trigger {
+        fds.push(PollFd::new(t, PollFlags::PRI));
+        which.push(Signal::Pressure);
+    }
+    if let Some(t) = &src.tracker {
+        fds.push(PollFd::from_borrowed_fd(t.fd(), PollFlags::IN));
+        which.push(Signal::JobsChanged);
+    }
+    if let Some(e) = &src.exits {
+        fds.push(PollFd::from_borrowed_fd(e.sessions_fd(), PollFlags::IN));
+        which.push(Signal::SessionsChanged);
+        for (pid, fd) in e.held() {
+            fds.push(PollFd::from_borrowed_fd(fd, PollFlags::IN));
+            which.push(Signal::Exited(pid));
+        }
+    }
+    let timeout = Timespec::try_from(timeout).unwrap_or(Timespec {
+        tv_sec: i64::MAX,
+        tv_nsec: 0,
+    });
+    match poll(&mut fds, Some(&timeout)) {
+        Ok(_) => {}
+        Err(Errno::INTR) => return Ok(Vec::new()),
+        Err(e) => return Err(e.into()),
+    }
+    let signals = fds.iter().zip(which).filter_map(|(fd, signal)| {
+        let revents = fd.revents();
+        match signal {
+            _ if revents.is_empty() => None,
+            // A trigger only ever reports priority data; anything else is an error.
+            Signal::Pressure if !revents.contains(PollFlags::PRI) => Some(Signal::TriggerBroken),
+            signal => Some(signal),
+        }
+    });
+    Ok(signals.collect())
+}
+
+fn on_pressure(
     cfg: &Config,
     meminfo: &Path,
     events_path: &Path,
     watcher: &mut Watcher,
-    orphan_scan_due: bool,
 ) -> Result<()> {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs());
+    let now = now_secs();
     let available = memory::available_mb(meminfo)?;
     if let Some(event) =
-        watcher.check_memory(available, now, || scan(&cfg.proc_root, &cfg.sessions_dir))?
+        watcher.on_pressure(available, now, || scan(&cfg.proc_root, &cfg.sessions_dir))?
     {
         events::append(events_path, now, &event)?;
     }
-    if orphan_scan_due {
-        let att = scan(&cfg.proc_root, &cfg.sessions_dir)?;
-        if let Some(event) = watcher.check_orphans(&att) {
-            events::append(events_path, now, &event)?;
-        }
+    Ok(())
+}
+
+fn scan_orphans(cfg: &Config, events_path: &Path, watcher: &mut Watcher) -> Result<()> {
+    let att = scan(&cfg.proc_root, &cfg.sessions_dir)?;
+    if let Some(event) = watcher.check_orphans(&att) {
+        events::append(events_path, now_secs(), &event)?;
     }
     Ok(())
+}
+
+fn sweep_jobs(p: &JobPaths) -> Result<()> {
+    let measured = jobs::collect(&p.slice, &p.records, runtime::now_ms(), remove_group)
+        .with_context(|| format!("sweeping jobs in {}", p.slice.display()))?;
+    keep(&p.measurements, &measured);
+    Ok(())
+}
+
+fn remove_group(dir: &Path) -> std::io::Result<()> {
+    std::fs::remove_dir(dir)
+}
+
+/// A measurement that cannot be written is reported, never fatal.
+fn keep(path: &Path, measured: &[jobs::Measurement]) {
+    for m in measured {
+        if let Err(e) = events::append_line(path, m) {
+            eprintln!("orchestrator: {e:#}");
+        }
+    }
+}
+
+/// A daemon outlives transient errors: a process vanishing mid-read, a
+/// sessions file being rewritten.
+fn log(result: Result<()>) {
+    if let Err(e) = result {
+        eprintln!("orchestrator: {e:#}");
+    }
+}
+
+fn report<T>(what: &str, source: std::io::Result<T>) -> Option<T> {
+    source
+        .map_err(|e| eprintln!("orchestrator: no kernel signal for {what}, sweeps only: {e}"))
+        .ok()
+}
+
+fn now_secs() -> u64 {
+    u64::try_from(runtime::now_ms() / 1000).unwrap_or(u64::MAX)
+}
+
+/// The orchestrator slice of the user manager this process runs under.
+fn own_slice(proc_root: &Path) -> Option<PathBuf> {
+    let own = std::fs::read_to_string(proc_root.join("self/cgroup")).ok()?;
+    let slice = cgroup::slice_path(cgroup::own_path(&own)?)?;
+    Some(Path::new(cgroup::ROOT).join(slice.trim_start_matches('/')))
 }
 
 #[cfg(test)]
@@ -148,7 +367,7 @@ mod tests {
     use crate::attribution::{Orphan, ProcRef};
 
     const T: Thresholds = Thresholds {
-        mem_min_mb: 3000,
+        stall_ms: 200,
         cooldown_secs: 60,
     };
 
@@ -159,6 +378,7 @@ mod tests {
                 rss_kb: 1024,
                 comm: "node".into(),
                 cmdline: "node dev".into(),
+                command_head: "node dev".into(),
             },
             start_time,
             session_id: "dead".into(),
@@ -168,20 +388,21 @@ mod tests {
     }
 
     #[test]
-    fn memory_pressure_respects_threshold_and_cooldown() {
+    fn memory_pressure_respects_the_cooldown() {
         let mut w = Watcher::new(T);
         let empty = || Ok(Attribution::default());
-        assert!(w.check_memory(5000, 0, empty).unwrap().is_none());
-        assert!(w.check_memory(2000, 10, empty).unwrap().is_some());
-        assert!(w.check_memory(2000, 69, empty).unwrap().is_none());
-        assert!(w.check_memory(2000, 70, empty).unwrap().is_some());
+        assert!(w.on_pressure(2000, 10, empty).unwrap().is_some());
+        assert!(w.on_pressure(2000, 69, empty).unwrap().is_none());
+        assert!(w.on_pressure(2000, 70, empty).unwrap().is_some());
     }
 
     #[test]
-    fn no_scan_when_memory_is_fine() {
+    fn no_scan_during_the_cooldown() {
         let mut w = Watcher::new(T);
+        let empty = || Ok(Attribution::default());
+        assert!(w.on_pressure(2000, 0, empty).unwrap().is_some());
         let event = w
-            .check_memory(5000, 0, || anyhow::bail!("scan must not run"))
+            .on_pressure(2000, 1, || anyhow::bail!("scan must not run"))
             .unwrap();
         assert!(event.is_none());
     }

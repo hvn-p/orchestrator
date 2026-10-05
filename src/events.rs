@@ -1,6 +1,10 @@
 //! Events for the coordinator: one JSON object per line, appended to a file
 //! it monitors. They are inputs for scheduling work (delay, queue, throttle,
 //! reorder), never orders to stop it. Sizes are in MB.
+//!
+//! A process is named by its pid, its `comm` and the head of its command line
+//! (`procfs::command_head`), never by the full command line: arguments can
+//! hold credentials, and the coordinator hands what it reads to a model.
 
 use crate::attribution::{Attribution, Orphan, SessionUsage};
 use anyhow::{Context, Result};
@@ -21,7 +25,7 @@ pub struct SessionSummary {
     pub process_pid: u32,
     pub process_rss_mb: u64,
     pub process_comm: String,
-    pub process_cmdline: String,
+    pub process_command: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -37,7 +41,7 @@ pub struct OrphanSummary {
     pub rss_mb: u64,
     pub processes: usize,
     pub comm: String,
-    pub cmdline: String,
+    pub command: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -45,7 +49,9 @@ pub struct OrphanSummary {
 pub enum Event {
     MemoryPressure {
         available_mb: u64,
-        threshold_mb: u64,
+        /// The trigger: some task stalled on memory this long within a PSI
+        /// window.
+        stall_ms: u64,
         largest: Option<SessionSummary>,
         next: Vec<SessionBrief>,
     },
@@ -55,10 +61,10 @@ pub enum Event {
 }
 
 impl Event {
-    pub fn memory_pressure(available_mb: u64, threshold_mb: u64, att: &Attribution) -> Self {
+    pub fn memory_pressure(available_mb: u64, stall_ms: u64, att: &Attribution) -> Self {
         Event::MemoryPressure {
             available_mb,
-            threshold_mb,
+            stall_ms,
             largest: att.sessions.first().map(summary),
             next: att
                 .sessions
@@ -83,7 +89,7 @@ impl Event {
                     rss_mb: o.rss_kb / 1024,
                     processes: o.processes,
                     comm: o.root.comm.clone(),
-                    cmdline: o.root.cmdline.clone(),
+                    command: o.root.command_head.clone(),
                 })
                 .collect(),
         }
@@ -98,7 +104,7 @@ fn summary(s: &SessionUsage) -> SessionSummary {
         process_pid: s.largest.pid,
         process_rss_mb: s.largest.rss_kb / 1024,
         process_comm: s.largest.comm.clone(),
-        process_cmdline: s.largest.cmdline.clone(),
+        process_command: s.largest.command_head.clone(),
     }
 }
 
@@ -116,7 +122,12 @@ pub fn to_line(at: u64, event: &Event) -> Result<String> {
 /// Appends one line. The file is opened per event: the coordinator tails it
 /// and may truncate it between two events.
 pub fn append(path: &Path, at: u64, event: &Event) -> Result<()> {
-    let mut line = to_line(at, event)?;
+    append_line(path, &Line { at, event })
+}
+
+/// Appends `value` as one JSON line.
+pub fn append_line(path: &Path, value: &impl Serialize) -> Result<()> {
+    let mut line = serde_json::to_string(value).context("serializing a line")?;
     line.push('\n');
     let mut file = OpenOptions::new()
         .create(true)
@@ -144,18 +155,23 @@ mod tests {
                     rss_kb: 3072 * 1024,
                     comm: "python3".into(),
                     cmdline: "python3 -c x".into(),
+                    command_head: "python3".into(),
                 },
             }],
             orphans: vec![],
         };
-        let line = to_line(12, &Event::memory_pressure(900, 3000, &att)).unwrap();
+        let line = to_line(12, &Event::memory_pressure(900, 200, &att)).unwrap();
         let v: serde_json::Value = serde_json::from_str(&line).unwrap();
         assert_eq!(v["at"], 12);
         assert_eq!(v["kind"], "memory_pressure");
         assert_eq!(v["available_mb"], 900);
+        assert_eq!(v["stall_ms"], 200);
         assert_eq!(v["largest"]["session"], "alpha");
         assert_eq!(v["largest"]["rss_mb"], 4096);
         assert_eq!(v["largest"]["process_rss_mb"], 3072);
+        assert_eq!(v["largest"]["process_comm"], "python3");
+        assert_eq!(v["largest"]["process_command"], "python3");
+        assert!(v["largest"].get("process_cmdline").is_none());
         assert_eq!(v["next"], serde_json::json!([]));
     }
 

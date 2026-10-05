@@ -14,7 +14,6 @@ use std::io::Write;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 /// What a Bash call ran, kept for the service until it has measured the job.
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -70,7 +69,7 @@ fn place(root: &Path, command: &OsStr) -> Result<()> {
     let text = command.to_string_lossy();
     let kind = Kind::of(&text);
     let pid = std::process::id();
-    let name = job_name(kind, pid, now_ms());
+    let name = job_name(kind, pid, runtime::now_ms());
     cgroup::enter_job(root, session, &name, pid).with_context(|| format!("creating {name}"))?;
     if kind == Kind::Bash {
         let record = JobRecord {
@@ -94,10 +93,28 @@ pub fn job_name(kind: Kind, pid: u32, ms: u128) -> String {
     format!("job-{}-{pid}-{ms}", kind.name())
 }
 
+/// Kind and start time of a job, from a name made by `job_name`.
+pub fn parse_job_name(name: &str) -> Option<(Kind, u128)> {
+    let (rest, ms) = name.strip_prefix("job-")?.rsplit_once('-')?;
+    let (kind, pid) = rest.rsplit_once('-')?;
+    pid.parse::<u32>().ok()?;
+    let kind = match kind {
+        "bash" => Kind::Bash,
+        "other" => Kind::Other,
+        _ => return None,
+    };
+    Some((kind, ms.parse().ok()?))
+}
+
+/// Where job records live: `<runtime>/jobs/`, one directory per session scope.
+pub fn records_root(runtime: &Path) -> PathBuf {
+    runtime.join("jobs")
+}
+
 /// Records of one session's jobs: `<runtime>/jobs/<session scope>/`.
 pub fn records_dir(runtime: &Path, session: &str) -> PathBuf {
     let scope = session.rsplit('/').next().unwrap_or(session);
-    runtime.join("jobs").join(scope)
+    records_root(runtime).join(scope)
 }
 
 fn write_record(dir: &Path, job: &str, record: &JobRecord) -> Result<()> {
@@ -105,12 +122,6 @@ fn write_record(dir: &Path, job: &str, record: &JobRecord) -> Result<()> {
     let path = dir.join(format!("{job}.json"));
     let json = serde_json::to_vec(record).context("serializing the job record")?;
     fs::write(&path, json).with_context(|| format!("writing {}", path.display()))
-}
-
-fn now_ms() -> u128 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis())
 }
 
 /// Nothing goes to the terminal: the prefix's stderr is the command's, and a
@@ -124,7 +135,7 @@ fn log_failure(e: &anyhow::Error) {
         .append(true)
         .open(dir.join("prefix.log"))
     {
-        let _ = writeln!(log, "{} {e:#}", now_ms());
+        let _ = writeln!(log, "{} {e:#}", runtime::now_ms());
     }
 }
 
@@ -146,6 +157,15 @@ mod tests {
     fn job_names_carry_kind_pid_and_time() {
         assert_eq!(job_name(Kind::Bash, 7, 1234), "job-bash-7-1234");
         assert_eq!(job_name(Kind::Other, 8, 5), "job-other-8-5");
+    }
+
+    #[test]
+    fn job_names_parse_back() {
+        assert_eq!(parse_job_name("job-bash-7-1234"), Some((Kind::Bash, 1234)));
+        assert_eq!(parse_job_name("job-other-8-5"), Some((Kind::Other, 5)));
+        assert_eq!(parse_job_name("job-bash-7"), None);
+        assert_eq!(parse_job_name("job-cron-7-5"), None);
+        assert_eq!(parse_job_name("main"), None);
     }
 
     #[test]

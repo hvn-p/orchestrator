@@ -11,6 +11,10 @@ const SESSION_VAR: &[u8] = b"CLAUDE_CODE_SESSION_ID=";
 
 /// Longest command line kept, in characters.
 const CMDLINE_MAX: usize = 200;
+/// Words after the program a command head keeps.
+const HEAD_WORDS: usize = 2;
+/// Longest word a command head keeps, in characters.
+const HEAD_WORD_MAX: usize = 32;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProcInfo {
@@ -22,6 +26,8 @@ pub struct ProcInfo {
     pub rss_kb: u64,
     pub comm: String,
     pub cmdline: String,
+    /// See `command_head`.
+    pub command_head: String,
     pub session_env: Option<String>,
 }
 
@@ -53,9 +59,9 @@ fn read_process(dir: &Path, pid: u32) -> Option<ProcInfo> {
     let session_env = fs::read(dir.join("environ"))
         .ok()
         .and_then(|e| parse_session_env(&e));
-    let cmdline = fs::read(dir.join("cmdline"))
-        .map(|c| parse_cmdline(&c))
-        .unwrap_or_default();
+    let raw_cmdline = fs::read(dir.join("cmdline")).unwrap_or_default();
+    let cmdline = parse_cmdline(&raw_cmdline);
+    let command_head = command_head(&raw_cmdline);
     Some(ProcInfo {
         pid,
         ppid,
@@ -63,8 +69,16 @@ fn read_process(dir: &Path, pid: u32) -> Option<ProcInfo> {
         rss_kb,
         comm,
         cmdline,
+        command_head,
         session_env,
     })
+}
+
+/// Start time of process `pid` under `root`, in clock ticks since boot. None
+/// once it is gone.
+pub fn start_time(root: &Path, pid: u32) -> Option<u64> {
+    let stat = fs::read_to_string(root.join(pid.to_string()).join("stat")).ok()?;
+    parse_stat(&stat).map(|(_, _, start)| start)
 }
 
 /// Returns (comm, ppid, starttime). comm sits between the first `(` and the
@@ -105,6 +119,48 @@ fn parse_cmdline(raw: &[u8]) -> String {
         .collect::<Vec<_>>()
         .join(" ");
     truncate(&joined, CMDLINE_MAX)
+}
+
+/// What a command line says about a process, without the arguments that
+/// could hold a credential: the program, then at most two plain words, a path
+/// reduced to its last component. It stops at the first option or at a word
+/// that could carry data: a URL, `=`, `:`, quotes, or more than 32 characters.
+/// A process that rewrote its title into one string with spaces is split into
+/// words first. A secret passed as one of the first two plain positional
+/// arguments would still show; that form is rare.
+pub fn command_head(raw: &[u8]) -> String {
+    let mut words = raw
+        .split(|b| *b == 0)
+        .map(String::from_utf8_lossy)
+        .flat_map(|arg| {
+            arg.split_ascii_whitespace()
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        });
+    let Some(program) = words.next().as_deref().and_then(plain_word) else {
+        return String::new();
+    };
+    let mut head = vec![program];
+    for word in words.take(HEAD_WORDS) {
+        match plain_word(&word) {
+            Some(w) if !word.starts_with('-') => head.push(w),
+            _ => break,
+        }
+    }
+    head.join(" ")
+}
+
+fn plain_word(word: &str) -> Option<String> {
+    if word.contains("://") {
+        return None;
+    }
+    let last = word.rsplit('/').next().unwrap_or(word);
+    let plain = !last.is_empty()
+        && last.chars().count() <= HEAD_WORD_MAX
+        && last
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "._@+-".contains(c));
+    plain.then(|| last.to_string())
 }
 
 pub fn truncate(s: &str, max_chars: usize) -> String {
@@ -194,10 +250,40 @@ mod tests {
             (10, 1, 500, 2048)
         );
         assert_eq!(node.cmdline, "node server.js");
+        assert_eq!(node.command_head, "node server.js");
         assert_eq!(node.session_env.as_deref(), Some("s1"));
         assert_eq!(
             (procs[1].rss_kb, procs[1].session_env.as_deref()),
             (0, None)
         );
+    }
+
+    #[test]
+    fn a_command_head_keeps_no_argument_that_could_hold_a_secret() {
+        let head = |raw: &str| command_head(raw.as_bytes());
+        let url = "mongodb://user:secret@host:10255/db";
+        assert_eq!(
+            head(&format!("npm\0exec\0mongodb-lens@latest\0{url}\0")),
+            "npm exec mongodb-lens@latest"
+        );
+        // A process title rewritten into a single string.
+        assert_eq!(
+            head(&format!("npm exec mongodb-lens@latest {url}\0")),
+            "npm exec mongodb-lens@latest"
+        );
+        assert_eq!(head(&format!("tool\0{url}\0")), "tool");
+        assert_eq!(
+            head("curl\0https://hooks.example.com/T0/B0/SECRET\0"),
+            "curl"
+        );
+        assert_eq!(head("tool\0--token=abc\0"), "tool");
+        assert_eq!(head("tool\0user:secret\0"), "tool");
+        assert_eq!(head("/usr/bin/python3\0-c\0print(1)\0"), "python3");
+        assert_eq!(
+            head("node\0/x/node_modules/.bin/mcp-server\0Org\0-d\0core\0"),
+            "node mcp-server Org"
+        );
+        assert_eq!(head("sleep\x00300\x00"), "sleep 300");
+        assert_eq!(head(""), "");
     }
 }

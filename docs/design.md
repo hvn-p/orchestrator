@@ -18,9 +18,10 @@ of a few MB.
 
 `orchestrator launch` and the shell prefix exist: a session runs in a cgroup
 of its own, and each command it starts in a job group of its own. Nothing is
-queued or throttled yet. `orchestrator sessions` and `orchestrator watch` still
-attribute processes to sessions by process ancestry and report memory pressure
-and orphaned processes. Everything else here is design; the parts validated by
+queued or throttled yet. `orchestrator watch` measures the memory peak of each
+finished Bash call and removes empty job groups. `orchestrator sessions` and
+`orchestrator watch` still attribute processes to sessions by process ancestry
+and report memory pressure and orphaned processes. Everything else here is design; the parts validated by
 throwaway prototypes are listed under "Measured".
 
 ## One process group per session
@@ -71,6 +72,11 @@ groups and classifies them by behaviour, without any list of commands.
 - **Commands typed outside Claude Code never wait**: they run outside any
   orchestrated session. A `!` command typed inside Claude Code goes through the
   prefix like any other Bash call.
+- **No full command line in an event**: events name a process by its pid, its
+  `comm` and the head of its command line: the program and at most two plain
+  words, stopping at the first option, URL or word that could carry data.
+  Arguments can hold credentials, and the coordinator hands what it reads to a
+  model.
 - **Hooks, the status line and MCP servers never queue**: they get their own
   group, to be measured, and start immediately.
 
@@ -96,14 +102,20 @@ One binary, `orchestrator`, with subcommands.
   Code runs the prefix as one quoted path, hence a binary of its own rather
   than a subcommand.
 - **`orchestrator watch`**, a systemd user service:
-  - exists: memory pressure and orphaned processes, as JSON lines in
-    `events.jsonl`;
-  - planned: process creation, exec and exit events from the kernel process
-    connector instead of polling; each job's life and memory (`cgroup.events`,
-    `memory.events`, `memory.peak`) and memory pressure (PSI); listening sockets
-    every one or two seconds, attributed to their job; classification, levers,
-    admission; reading each finished job's peak, then removing its empty
-    group; the token quota left by the status line.
+  - exists: it sleeps until the kernel reports something. Memory pressure
+    comes from a PSI trigger on `/proc/pressure/memory`; the end of a Claude
+    session from a pidfd on its claude process, the session being found
+    through inotify on Claude Code's sessions directory, and its orphans are
+    looked for five seconds later; both go as JSON lines to `events.jsonl`. A
+    scan every five minutes catches orphans no session end announces. Each
+    finished job's peak (`memory.peak`), read as soon as
+    inotify reports its `cgroup.events` unpopulated, kept with the command of a
+    Bash call in `measurements.jsonl`, then the job's empty group removed. A
+    sweep every minute catches what inotify cannot see, such as a job that
+    ended before its watch was in place;
+  - planned: `memory.events` and memory pressure (PSI) per job; listening sockets every one or two seconds, attributed to their job;
+    classification, levers, admission; the token quota left by the status
+    line.
 - **The coordinator** (planned): a Claude Code session started with its role
   appended to the system prompt. On its first start it examines the machine
   (memory, swap, CPU, what the systemd user manager delegates) and writes the
@@ -230,10 +242,19 @@ Other measurements:
   claude itself, hooks through `/bin/sh -c`.
 - When a session ends, systemd removes its scope together with every job group
   in it: a job's peak has to be read while its session lives.
+- inotify reports the creation of a job group in a session scope, each change
+  of the job's `cgroup.events` (`populated 1`, then `populated 0` within a
+  millisecond of the job's end) and the group's removal.
 - `CLAUDE_CODE_SESSION_ID` is inherited by the commands a session runs, but keeps
   the old id after `/clear` or a resume: ancestry is checked first.
 - The kernel process connector delivers fork, exec and exit events to an
   unprivileged process on this kernel.
+- An unprivileged process can arm a PSI trigger on `/proc/pressure/memory`
+  with a 2 s window, not a 1 s one. The user manager's own `memory.pressure`
+  refuses it (permission denied). A trigger set at 50 ms fired within a second
+  of a process allocating 300 MB under `MemoryHigh=50M`.
+- `pidfd_open` works unprivileged on any process of the user; the descriptor
+  becomes readable when the process exits.
 - Coordinator loop, first prototype (the Monitor tool on an events file): 11 s
   from the event to the message reaching the session, no token spent between
   events. A Monitor expires after 30 min; re-arming it costs about 0.07 USD and
@@ -308,6 +329,13 @@ From the Claude Code documentation:
 ## Rejected
 
 - **Refusing a command**: contrary to the intent.
+- **The kernel process connector to see sessions end**: it reports every
+  process of the machine, thousands per second during a build. A pidfd on each
+  session's claude process reports only what matters.
+- **A threshold on available memory**: the kernel cannot report it crossing a
+  threshold, so it has to be polled, and low available memory alone does not
+  slow anything down. A PSI trigger reports the stall itself; admission, not an
+  event, keeps a memory-hungry command from starting when memory is short.
 - **Recognising commands by name**: a hook only sees the command typed, not the
   `tsc` processes that `pnpm typecheck` starts; command shims first in `PATH`
   are bypassed by `node_modules/.bin`. Tool-specific knobs
