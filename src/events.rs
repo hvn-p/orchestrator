@@ -1,6 +1,10 @@
 //! Events for the coordinator: one JSON object per line, appended to a file
 //! it monitors. They are inputs for scheduling work (delay, queue, throttle,
 //! reorder), never orders to stop it. Sizes are in MB.
+//!
+//! A process is named by its pid and its `comm`, never by its command line:
+//! arguments can hold credentials, and the coordinator hands what it reads to
+//! a model.
 
 use crate::attribution::{Attribution, Orphan, SessionUsage};
 use anyhow::{Context, Result};
@@ -21,7 +25,6 @@ pub struct SessionSummary {
     pub process_pid: u32,
     pub process_rss_mb: u64,
     pub process_comm: String,
-    pub process_cmdline: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -37,7 +40,6 @@ pub struct OrphanSummary {
     pub rss_mb: u64,
     pub processes: usize,
     pub comm: String,
-    pub cmdline: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -85,7 +87,6 @@ impl Event {
                     rss_mb: o.rss_kb / 1024,
                     processes: o.processes,
                     comm: o.root.comm.clone(),
-                    cmdline: o.root.cmdline.clone(),
                 })
                 .collect(),
         }
@@ -100,7 +101,6 @@ fn summary(s: &SessionUsage) -> SessionSummary {
         process_pid: s.largest.pid,
         process_rss_mb: s.largest.rss_kb / 1024,
         process_comm: s.largest.comm.clone(),
-        process_cmdline: s.largest.cmdline.clone(),
     }
 }
 
@@ -164,6 +164,8 @@ mod tests {
         assert_eq!(v["largest"]["session"], "alpha");
         assert_eq!(v["largest"]["rss_mb"], 4096);
         assert_eq!(v["largest"]["process_rss_mb"], 3072);
+        assert_eq!(v["largest"]["process_comm"], "python3");
+        assert!(v["largest"].get("process_cmdline").is_none());
         assert_eq!(v["next"], serde_json::json!([]));
     }
 
