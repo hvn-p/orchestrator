@@ -137,6 +137,12 @@ measures.
 - A command whose known peak is above the threshold waits until free memory
   covers that peak plus a margin. There is no fixed number of slots: two such
   commands run together when the machine can hold both.
+- Free memory is counted net of reservations. A memory-hungry command does not
+  reach its peak at once: a type check starts near zero and climbs for tens of
+  seconds. From its admission until it ends, it reserves its expected peak
+  minus the memory it already uses, so a second command arriving during that
+  climb does not count on the same memory. Unknown and light commands reserve
+  nothing.
 
 Admission gets more accurate as commands are measured, with no list to
 maintain. What it cannot foresee (a first run, a form of the command it does not
@@ -263,9 +269,7 @@ From the Claude Code documentation:
 
 - Maximum hook timeout: two readings of the documentation disagree (30 s for
   `PreToolUse`, 600 s by default for command hooks). To retest.
-- Admission: how a command just admitted reserves its expected peak, so that
-  two commands admitted at the same moment do not count on the same free
-  memory; which shell parser the prefix uses.
+- Admission: which shell parser the prefix uses.
 - Long-running servers: how many before the coordinator negotiates.
 - Orphans and idle sessions holding resources: reported to the coordinator, or
   released automatically.
