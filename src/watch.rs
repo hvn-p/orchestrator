@@ -1,9 +1,9 @@
-//! The watch loop: cheap memory check on every tick, full process scan only
-//! when memory is low or an orphan scan is due.
+//! The watch loop: cheap memory check and finished jobs on every tick, full
+//! process scan only when memory is low or an orphan scan is due.
 
 use crate::attribution::{self, Attribution};
 use crate::events::{self, Event};
-use crate::{memory, procfs, sessions};
+use crate::{cgroup, jobs, memory, prefix, procfs, sessions};
 use anyhow::{Context, Result};
 use std::collections::HashSet;
 use std::io::ErrorKind;
@@ -94,6 +94,13 @@ pub fn scan(proc_root: &Path, sessions_dir: &Path) -> Result<Attribution> {
     Ok(attribution::attribute(&procs, &sessions))
 }
 
+/// Where finished jobs are found, and where their measurements go.
+struct JobPaths {
+    slice: PathBuf,
+    records: PathBuf,
+    measurements: PathBuf,
+}
+
 pub fn run(cfg: &Config) -> Result<()> {
     std::fs::create_dir_all(&cfg.runtime_dir)
         .with_context(|| format!("creating {}", cfg.runtime_dir.display()))?;
@@ -101,6 +108,16 @@ pub fn run(cfg: &Config) -> Result<()> {
     // Fail fast on a wrong proc root rather than logging the same error forever.
     memory::available_mb(&meminfo)?;
     let events_path = cfg.runtime_dir.join("events.jsonl");
+    let job_paths = own_slice(&cfg.proc_root).map(|slice| JobPaths {
+        slice,
+        records: prefix::records_root(&cfg.runtime_dir),
+        measurements: cfg.runtime_dir.join("measurements.jsonl"),
+    });
+    if job_paths.is_none() {
+        eprintln!(
+            "orchestrator: no systemd user manager above this process; jobs are not collected"
+        );
+    }
     let mut watcher = Watcher::new(cfg.thresholds);
     let mut next_orphan_scan = Instant::now();
     loop {
@@ -108,7 +125,14 @@ pub fn run(cfg: &Config) -> Result<()> {
         if orphan_scan_due {
             next_orphan_scan = Instant::now() + cfg.orphan_interval;
         }
-        if let Err(e) = tick(cfg, &meminfo, &events_path, &mut watcher, orphan_scan_due) {
+        if let Err(e) = tick(
+            cfg,
+            &meminfo,
+            &events_path,
+            &mut watcher,
+            orphan_scan_due,
+            job_paths.as_ref(),
+        ) {
             // A daemon outlives transient errors: a process vanishing mid-read,
             // a sessions file being rewritten.
             eprintln!("orchestrator: {e:#}");
@@ -123,10 +147,12 @@ fn tick(
     events_path: &Path,
     watcher: &mut Watcher,
     orphan_scan_due: bool,
+    job_paths: Option<&JobPaths>,
 ) -> Result<()> {
-    let now = SystemTime::now()
+    let now_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs());
+        .map_or(0, |d| d.as_millis());
+    let now = u64::try_from(now_ms / 1000).unwrap_or(u64::MAX);
     let available = memory::available_mb(meminfo)?;
     if let Some(event) =
         watcher.check_memory(available, now, || scan(&cfg.proc_root, &cfg.sessions_dir))?
@@ -139,7 +165,21 @@ fn tick(
             events::append(events_path, now, &event)?;
         }
     }
+    if let Some(p) = job_paths {
+        let measured = jobs::collect(&p.slice, &p.records, now_ms, |dir| std::fs::remove_dir(dir))
+            .with_context(|| format!("collecting jobs in {}", p.slice.display()))?;
+        for m in &measured {
+            events::append_line(&p.measurements, m)?;
+        }
+    }
     Ok(())
+}
+
+/// The orchestrator slice of the user manager this process runs under.
+fn own_slice(proc_root: &Path) -> Option<PathBuf> {
+    let own = std::fs::read_to_string(proc_root.join("self/cgroup")).ok()?;
+    let slice = cgroup::slice_path(cgroup::own_path(&own)?)?;
+    Some(Path::new(cgroup::ROOT).join(slice.trim_start_matches('/')))
 }
 
 #[cfg(test)]

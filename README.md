@@ -17,7 +17,9 @@ Early. What exists:
   (with its largest process) and the processes left behind by sessions that no
   longer exist.
 - `orchestrator watch` runs as a long-lived loop and appends one JSON line per
-  event (`memory_pressure`, `orphans`) to an events file.
+  event (`memory_pressure`, `orphans`) to an events file. It also measures the
+  memory peak of each finished Bash call of an orchestrated session, then
+  removes the call's empty group.
 
 Everything else is design (admission, throttling, the coordinator): see
 [docs/design.md](docs/design.md).
@@ -60,7 +62,9 @@ orchestrator watch --mem-min-mb 3000
 at most once per `--cooldown-secs` (default 60). Every `--orphan-interval-secs`
 (default 30) it reports newly orphaned processes once each. Events go to
 `$XDG_RUNTIME_DIR/orchestrator/events.jsonl` unless `--runtime-dir` says
-otherwise. `--help` lists every option.
+otherwise. On every check it also appends the peak of each finished Bash call,
+with its command, to `measurements.jsonl` in the same directory. `--help` lists
+every option.
 
 ## License
 

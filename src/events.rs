@@ -116,7 +116,12 @@ pub fn to_line(at: u64, event: &Event) -> Result<String> {
 /// Appends one line. The file is opened per event: the coordinator tails it
 /// and may truncate it between two events.
 pub fn append(path: &Path, at: u64, event: &Event) -> Result<()> {
-    let mut line = to_line(at, event)?;
+    append_line(path, &Line { at, event })
+}
+
+/// Appends `value` as one JSON line.
+pub fn append_line(path: &Path, value: &impl Serialize) -> Result<()> {
+    let mut line = serde_json::to_string(value).context("serializing a line")?;
     line.push('\n');
     let mut file = OpenOptions::new()
         .create(true)

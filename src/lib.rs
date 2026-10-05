@@ -8,6 +8,7 @@
 pub mod attribution;
 pub mod cgroup;
 pub mod events;
+pub mod jobs;
 pub mod launch;
 pub mod memory;
 pub mod prefix;

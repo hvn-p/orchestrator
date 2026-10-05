@@ -18,9 +18,10 @@ of a few MB.
 
 `orchestrator launch` and the shell prefix exist: a session runs in a cgroup
 of its own, and each command it starts in a job group of its own. Nothing is
-queued or throttled yet. `orchestrator sessions` and `orchestrator watch` still
-attribute processes to sessions by process ancestry and report memory pressure
-and orphaned processes. Everything else here is design; the parts validated by
+queued or throttled yet. `orchestrator watch` measures the memory peak of each
+finished Bash call and removes empty job groups. `orchestrator sessions` and
+`orchestrator watch` still attribute processes to sessions by process ancestry
+and report memory pressure and orphaned processes. Everything else here is design; the parts validated by
 throwaway prototypes are listed under "Measured".
 
 ## One process group per session
@@ -97,13 +98,14 @@ One binary, `orchestrator`, with subcommands.
   than a subcommand.
 - **`orchestrator watch`**, a systemd user service:
   - exists: memory pressure and orphaned processes, as JSON lines in
-    `events.jsonl`;
+    `events.jsonl`; on every tick, each finished job's peak (`memory.peak`,
+    once `cgroup.events` reports the group unpopulated), kept with the command
+    of a Bash call in `measurements.jsonl`, then the job's empty group removed;
   - planned: process creation, exec and exit events from the kernel process
-    connector instead of polling; each job's life and memory (`cgroup.events`,
-    `memory.events`, `memory.peak`) and memory pressure (PSI); listening sockets
-    every one or two seconds, attributed to their job; classification, levers,
-    admission; reading each finished job's peak, then removing its empty
-    group; the token quota left by the status line.
+    connector instead of polling; `memory.events` and memory pressure (PSI) per
+    job; listening sockets every one or two seconds, attributed to their job;
+    classification, levers, admission; the token quota left by the status
+    line.
 - **The coordinator** (planned): a Claude Code session started with its role
   appended to the system prompt. On its first start it examines the machine
   (memory, swap, CPU, what the systemd user manager delegates) and writes the

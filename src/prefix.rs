@@ -94,10 +94,28 @@ pub fn job_name(kind: Kind, pid: u32, ms: u128) -> String {
     format!("job-{}-{pid}-{ms}", kind.name())
 }
 
+/// Kind and start time of a job, from a name made by `job_name`.
+pub fn parse_job_name(name: &str) -> Option<(Kind, u128)> {
+    let (rest, ms) = name.strip_prefix("job-")?.rsplit_once('-')?;
+    let (kind, pid) = rest.rsplit_once('-')?;
+    pid.parse::<u32>().ok()?;
+    let kind = match kind {
+        "bash" => Kind::Bash,
+        "other" => Kind::Other,
+        _ => return None,
+    };
+    Some((kind, ms.parse().ok()?))
+}
+
+/// Where job records live: `<runtime>/jobs/`, one directory per session scope.
+pub fn records_root(runtime: &Path) -> PathBuf {
+    runtime.join("jobs")
+}
+
 /// Records of one session's jobs: `<runtime>/jobs/<session scope>/`.
 pub fn records_dir(runtime: &Path, session: &str) -> PathBuf {
     let scope = session.rsplit('/').next().unwrap_or(session);
-    runtime.join("jobs").join(scope)
+    records_root(runtime).join(scope)
 }
 
 fn write_record(dir: &Path, job: &str, record: &JobRecord) -> Result<()> {
@@ -146,6 +164,15 @@ mod tests {
     fn job_names_carry_kind_pid_and_time() {
         assert_eq!(job_name(Kind::Bash, 7, 1234), "job-bash-7-1234");
         assert_eq!(job_name(Kind::Other, 8, 5), "job-other-8-5");
+    }
+
+    #[test]
+    fn job_names_parse_back() {
+        assert_eq!(parse_job_name("job-bash-7-1234"), Some((Kind::Bash, 1234)));
+        assert_eq!(parse_job_name("job-other-8-5"), Some((Kind::Other, 5)));
+        assert_eq!(parse_job_name("job-bash-7"), None);
+        assert_eq!(parse_job_name("job-cron-7-5"), None);
+        assert_eq!(parse_job_name("main"), None);
     }
 
     #[test]
