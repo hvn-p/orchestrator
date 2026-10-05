@@ -1,16 +1,11 @@
 //! orchestrator: schedules the work of the Claude Code sessions running in
 //! parallel on one machine, so development keeps going. See docs/design.md.
 
-mod attribution;
-mod events;
-mod memory;
-mod procfs;
-mod sessions;
-mod watch;
-
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
-use std::path::{Path, PathBuf};
+use orchestrator::{launch, memory, procfs, runtime, sessions, watch};
+use std::ffi::OsString;
+use std::path::PathBuf;
 use std::time::Duration;
 
 /// Characters of a command line shown by `orchestrator sessions`.
@@ -32,6 +27,18 @@ enum Command {
     Watch(WatchArgs),
     /// Print memory per Claude session and the orphaned processes.
     Sessions(Sources),
+    /// Start a command, normally `claude`, as an orchestrated session.
+    Launch(Launched),
+    /// Set up a new session scope, then run its command. Started by `launch`.
+    #[command(hide = true)]
+    Enter(Launched),
+}
+
+#[derive(Args)]
+struct Launched {
+    /// The command and its arguments.
+    #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
+    command: Vec<OsString>,
 }
 
 #[derive(Args)]
@@ -72,7 +79,7 @@ fn main() -> Result<()> {
             proc_root: args.sources.proc_root,
             runtime_dir: match args.runtime_dir {
                 Some(dir) => dir,
-                None => default_runtime_dir()?,
+                None => runtime::default_dir()?,
             },
             interval: Duration::from_secs(args.interval_secs.max(1)),
             orphan_interval: Duration::from_secs(args.orphan_interval_secs.max(1)),
@@ -82,6 +89,12 @@ fn main() -> Result<()> {
             },
         }),
         Command::Sessions(sources) => print_sessions(&sources),
+        Command::Launch(l) => {
+            let e = launch::launch(&l.command);
+            eprintln!("orchestrator: {e:#}; the session runs unorchestrated");
+            Err(launch::run_unchanged(&l.command))
+        }
+        Command::Enter(l) => Err(launch::enter(&l.command)),
     }
 }
 
@@ -90,21 +103,6 @@ fn sessions_dir(sources: &Sources) -> Result<PathBuf> {
         Some(dir) => Ok(dir.clone()),
         None => sessions::default_dir().context("neither CLAUDE_CONFIG_DIR nor HOME is set"),
     }
-}
-
-/// `$XDG_RUNTIME_DIR/orchestrator`, else `/run/user/<uid>/orchestrator`: in memory, cleared
-/// at reboot, never versioned.
-fn default_runtime_dir() -> Result<PathBuf> {
-    if let Some(dir) = std::env::var_os("XDG_RUNTIME_DIR") {
-        return Ok(PathBuf::from(dir).join("orchestrator"));
-    }
-    let status = std::fs::read_to_string("/proc/self/status").context("reading own uid")?;
-    let uid = status
-        .lines()
-        .find_map(|l| l.strip_prefix("Uid:"))
-        .and_then(|v| v.split_whitespace().next())
-        .context("no Uid line in /proc/self/status")?;
-    Ok(Path::new("/run/user").join(uid).join("orchestrator"))
 }
 
 fn print_sessions(sources: &Sources) -> Result<()> {
