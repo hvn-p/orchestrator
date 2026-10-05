@@ -2,9 +2,9 @@
 //! it monitors. They are inputs for scheduling work (delay, queue, throttle,
 //! reorder), never orders to stop it. Sizes are in MB.
 //!
-//! A process is named by its pid and its `comm`, never by its command line:
-//! arguments can hold credentials, and the coordinator hands what it reads to
-//! a model.
+//! A process is named by its pid, its `comm` and the head of its command line
+//! (`procfs::command_head`), never by the full command line: arguments can
+//! hold credentials, and the coordinator hands what it reads to a model.
 
 use crate::attribution::{Attribution, Orphan, SessionUsage};
 use anyhow::{Context, Result};
@@ -25,6 +25,7 @@ pub struct SessionSummary {
     pub process_pid: u32,
     pub process_rss_mb: u64,
     pub process_comm: String,
+    pub process_command: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -40,6 +41,7 @@ pub struct OrphanSummary {
     pub rss_mb: u64,
     pub processes: usize,
     pub comm: String,
+    pub command: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -87,6 +89,7 @@ impl Event {
                     rss_mb: o.rss_kb / 1024,
                     processes: o.processes,
                     comm: o.root.comm.clone(),
+                    command: o.root.command_head.clone(),
                 })
                 .collect(),
         }
@@ -101,6 +104,7 @@ fn summary(s: &SessionUsage) -> SessionSummary {
         process_pid: s.largest.pid,
         process_rss_mb: s.largest.rss_kb / 1024,
         process_comm: s.largest.comm.clone(),
+        process_command: s.largest.command_head.clone(),
     }
 }
 
@@ -151,6 +155,7 @@ mod tests {
                     rss_kb: 3072 * 1024,
                     comm: "python3".into(),
                     cmdline: "python3 -c x".into(),
+                    command_head: "python3".into(),
                 },
             }],
             orphans: vec![],
@@ -165,6 +170,7 @@ mod tests {
         assert_eq!(v["largest"]["rss_mb"], 4096);
         assert_eq!(v["largest"]["process_rss_mb"], 3072);
         assert_eq!(v["largest"]["process_comm"], "python3");
+        assert_eq!(v["largest"]["process_command"], "python3");
         assert!(v["largest"].get("process_cmdline").is_none());
         assert_eq!(v["next"], serde_json::json!([]));
     }

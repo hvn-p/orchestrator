@@ -15,6 +15,7 @@ pub struct ProcRef {
     pub rss_kb: u64,
     pub comm: String,
     pub cmdline: String,
+    pub command_head: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -160,6 +161,7 @@ fn proc_ref(p: &ProcInfo) -> ProcRef {
         rss_kb: p.rss_kb,
         comm: p.comm.clone(),
         cmdline: p.cmdline.clone(),
+        command_head: p.command_head.clone(),
     }
 }
 
@@ -175,6 +177,7 @@ mod tests {
             rss_kb,
             comm: format!("p{pid}"),
             cmdline: format!("cmd {pid}"),
+            command_head: format!("cmd {pid}"),
             session_env: env.map(str::to_string),
         }
     }

@@ -72,9 +72,11 @@ groups and classifies them by behaviour, without any list of commands.
 - **Commands typed outside Claude Code never wait**: they run outside any
   orchestrated session. A `!` command typed inside Claude Code goes through the
   prefix like any other Bash call.
-- **No command line in an event**: events name a process by its pid and its
-  `comm`. Arguments can hold credentials, and the coordinator hands what it
-  reads to a model.
+- **No full command line in an event**: events name a process by its pid, its
+  `comm` and the head of its command line: the program and at most two plain
+  words, stopping at the first option, URL or word that could carry data.
+  Arguments can hold credentials, and the coordinator hands what it reads to a
+  model.
 - **Hooks, the status line and MCP servers never queue**: they get their own
   group, to be measured, and start immediately.
 

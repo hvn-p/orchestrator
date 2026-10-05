@@ -378,6 +378,7 @@ mod tests {
                 rss_kb: 1024,
                 comm: "node".into(),
                 cmdline: "node dev".into(),
+                command_head: "node dev".into(),
             },
             start_time,
             session_id: "dead".into(),
