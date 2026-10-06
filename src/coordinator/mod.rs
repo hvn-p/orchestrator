@@ -11,6 +11,7 @@
 //! remembers between runs lives in its own directory under the state
 //! directory, its working directory: its journal.
 
+pub mod instructions;
 pub mod journal;
 pub mod queue;
 pub mod run;
@@ -48,8 +49,8 @@ pub struct Paths {
     pub runtime: PathBuf,
     /// `<state>/coordinator`: its working directory and journal.
     pub home: PathBuf,
-    /// The user's priorities, next to the configuration.
-    pub priorities: PathBuf,
+    /// The user's instructions for coordinators, next to the configuration.
+    pub instructions: PathBuf,
 }
 
 impl Paths {
@@ -57,7 +58,7 @@ impl Paths {
         Paths {
             runtime: runtime.join("coordinator"),
             home: state.join("coordinator"),
-            priorities: crate::config::priorities_path(config),
+            instructions: crate::config::instructions_path(config),
         }
     }
 

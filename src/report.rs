@@ -76,7 +76,7 @@ fn session_label(group: &str, cgroup_root: &Path, known: &[sessions::ClaudeSessi
     }
 }
 
-/// The configuration file and where the priorities are.
+/// The configuration file and where the coordinator's instructions are.
 pub fn config(path: &Path) -> Result<String> {
     let mut out = match config::load(path)? {
         Some(config) => format!(
@@ -86,12 +86,12 @@ pub fn config(path: &Path) -> Result<String> {
         ),
         None => format!("No configuration at {}.\n", path.display()),
     };
-    let priorities = config::priorities_path(path);
-    if priorities.exists() {
+    let instructions = config::instructions_path(path);
+    if instructions.exists() {
         let _ = writeln!(
             out,
-            "The coordinator's priorities: {}",
-            priorities.display()
+            "The coordinators' instructions: {}",
+            instructions.display()
         );
     }
     Ok(out)

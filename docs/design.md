@@ -148,12 +148,25 @@ One binary, `orchestrator`, with subcommands.
   resumed: what it must remember between wakes lives in files, a journal of
   its actions and of the exchanges still open (in its directory under the
   state directory, which is also its working directory), and the user's
-  priorities (`priorities.md` next to the configuration).
+  instructions for coordinators.
+  - **The user's instructions**: a CLAUDE.md for coordinators only,
+    `CLAUDE.md` next to the configuration, priorities included. It is
+    personal configuration, never in this repository: it may be a symlink
+    into the user's dotfiles and import other files with `@path`, as the
+    user's own CLAUDE.md does. orchestrator resolves the imports itself, by
+    Claude Code's rules (absolute, `~/`, relative to the importing file;
+    four hops), each file once, within 128 KiB a file and 256 KiB in all,
+    and appends the result verbatim to the role it writes for each
+    coordinator. Relying on Claude Code's own loading instead would leave
+    imports outside the working directory to an approval a headless run
+    cannot give. A coordinator with the user at the terminal may read the
+    files' directories, and proposes changes to the file that holds the
+    matter, written once the user agrees; a run never edits them.
   - **Briefed by code**: gathering the state takes no judgment, so the
     prompt carries it: the events, the machine, the sessions (as
     `orchestrator sessions --heads` shows them), the calls waiting for memory
-    and the reservations, the heavy commands learned, the latest lines of
-    the journal and the priorities. The coordinator decides, messages and
+    and the reservations, the heavy commands learned and the latest lines of
+    the journal. The coordinator decides, messages and
     notes (`orchestrator coordinator note`, which dates the line and keeps
     the latest ones); it runs a read command only for what the prompt lacks.
   - **Setup is a conversation**: a configuration written by hand is tedious
@@ -170,8 +183,8 @@ One binary, `orchestrator`, with subcommands.
     the machine's facts. It writes each part once the user agrees, through
     `orchestrator config coordinator` and `orchestrator config admission`,
     which refuse values that make no sense on the machine or together, and
-    the priorities with the file tools; never the configuration file
-    itself.
+    the priorities in the user's instructions, offering to create that file
+    when it is missing; never the configuration file itself.
   - **Consent**: `wake` in the `coordinator` section. Without it, `watch`
     queues nothing and starts no coordinator: nothing spends tokens unless
     the user opens one.
@@ -210,8 +223,8 @@ One binary, `orchestrator`, with subcommands.
     servers or CLAUDE.md, only the project settings of its own directory. A
     run started by `watch` is denied anything else without asking
     (`dontAsk`). The setup conversation writes the configuration and the
-    priorities without a permission prompt, the user having agreed in the
-    conversation; an interactive coordinator asks its user for them. Both
+    instructions file without a permission prompt, the user having agreed
+    in the conversation; an interactive coordinator asks its user for them. Both
     prompt for anything else, like the sessions they message. A run for
     events cannot change the thresholds: it reports them when they look
     wrong.
@@ -607,6 +620,13 @@ October 2026, with scratch directories and sessions:
   after one call (a heavy threshold of 60 MB on 31 GB of memory); an
   interactive one did so unasked. Hence writes in the setup conversation
   only, or asked of the user.
+
+- The user's instructions as a symlink into one directory, importing a
+  file from another: an event run began its journal note with the word the
+  first file asked for and ended its message with the words the imported
+  one asked for; the interactive coordinator did the same, and, told a new
+  priority, proposed adding it under "Priorities" in the imported file,
+  asked, and wrote that file only, after a permission prompt.
 
 ## Known gaps
 

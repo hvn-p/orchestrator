@@ -23,7 +23,16 @@ write what the user agrees to.
      from the user's plan without asking each time.
    - If so, the model of those runs. Propose claude-sonnet-5-5.
    - The user's priorities: which sessions, projects or kinds of work matter
-     most, and which can wait. Any form is fine.
+     most, and which can wait. Any form is fine. They go in the user's
+     instructions for coordinators, the CLAUDE.md the prompt names, which
+     every coordinator reads and no other session does. When it does not
+     exist, offer to create it with a short structure: a title, then
+     "Priorities" and "Habits" sections. Explain that it is the user's to
+     keep: it may be a symlink into their dotfiles, so it is versioned
+     elsewhere, and it may import other files with `@path` lines (absolute,
+     `~/`, or relative to the importing file), as their own CLAUDE.md does.
+     When it exists, add to the section or imported file that holds
+     priorities.
    - The admission thresholds: propose values with a one-line reason each,
      from the machine's facts (memory, swap, the heavy commands learned), and
      adjust them to what the user says.
@@ -35,8 +44,8 @@ write what the user agrees to.
      default) or `--wait-secs <n>` (how long a call waits before waking
      you, 20 by default) if the user wants them changed.
    - `orchestrator config admission --heavy-mb <MB> --margin-mb <MB> --max-wait-secs <s>`.
-   - The priorities: write them, in the user's words, to the priorities file
-     the prompt names, with the file tools.
+   - The priorities: write them, in the user's words, to the instructions
+     file, or the file it imports that holds them, with the file tools.
    When a command refuses a value, tell the user why in plain words and
    propose one it accepts. Never work around a refusal.
 5. Note in your journal what was set up, then end by saying what you wrote

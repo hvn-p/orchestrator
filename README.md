@@ -184,7 +184,7 @@ API list price, not against a subscription's quota.
 
 `watch` gathers the state a run needs (the machine, the sessions, the calls
 waiting for memory and the reservations, the heavy commands learned, the
-latest lines of the journal, the priorities) and puts it in the run's prompt,
+latest lines of the journal) and puts it in the run's prompt,
 so the run only decides, messages sessions and notes what it did. Each queued
 event is pending, in progress, then done; a run that fails gives its events
 back for the next one, and gives up on an event after three failed runs. A
@@ -199,14 +199,32 @@ orchestrator coordinator
 opens an interactive coordinator, after the setup conversation when there is
 no configuration yet: you talk to it, and it receives the events for as long
 as it stays open; meanwhile `watch` starts no run. Events it took
-but did not handle when it closes go back to the next run. Tell it your
-priorities (which sessions matter, which can wait), and it keeps them in
-`priorities.md` next to the configuration, a file you can also edit. It
-remembers what it did in a journal under
+but did not handle when it closes go back to the next run. Tell it a
+priority or a lasting instruction, and it offers to write it in your
+instructions for coordinators (below). It remembers what it did in a
+journal under
 `$XDG_STATE_HOME/orchestrator/coordinator/`. Each run is summarised in
 `$XDG_RUNTIME_DIR/orchestrator/coordinator/runs.jsonl`: turns, seconds and
 tokens first, then its reply, and Claude Code's dollar estimate at list
 price, which a subscription does not pay.
+
+### Instructions for coordinators
+
+`$XDG_CONFIG_HOME/orchestrator/CLAUDE.md`, by default
+`~/.config/orchestrator/CLAUDE.md`, is a CLAUDE.md for coordinators only:
+every coordinator reads it (runs, setup, the interactive one), no other
+session does. Your priorities go there, with anything else coordinators
+should know of your machine and habits; setup offers to create it.
+
+It is yours to keep, wherever you keep such files. It may be a symlink, into
+a dotfiles repository for instance, and it may import other files with
+`@path` lines, as Claude Code's own CLAUDE.md does: an absolute path, `~/`
+for your home, or a path relative to the importing file (once symlinks are
+resolved), outside code spans and fenced blocks, `\ ` for a space, four
+hops deep at most. orchestrator resolves the imports itself and hands the
+result, verbatim, to each coordinator it starts, so an edit applies to the
+next one. A file imported twice, or in a cycle, is read once; a file over
+128 KiB, or past 256 KiB in all, is left out and the coordinator is told.
 
 ## Claude Code dependency
 

@@ -16,9 +16,9 @@
 //! sessions they message: Claude Code holds a message from a session that
 //! skips permission prompts.
 
-use super::Paths;
 use super::queue::Queued;
 use super::state::{Briefing, missing};
+use super::{Paths, instructions};
 use crate::config::Coordinator;
 use anyhow::{Context, Result};
 use serde::Serialize;
@@ -74,20 +74,55 @@ pub enum Mode<'a> {
 
 /// Writes the role where `--append-system-prompt-file` reads it, from this
 /// binary, so that a coordinator always gets the role of the orchestrator
-/// that starts it; in `mode` setup, with the setup instructions.
+/// that starts it; in `mode` setup, with the setup instructions; then the
+/// user's instructions for coordinators, imports resolved. The file is
+/// rewritten at each start, so an edit of the instructions applies to the
+/// next coordinator.
 pub fn write_role(paths: &Paths, mode: &Mode<'_>) -> Result<()> {
     fs::create_dir_all(&paths.runtime)
         .with_context(|| format!("creating {}", paths.runtime.display()))?;
     fs::create_dir_all(&paths.home)
         .with_context(|| format!("creating {}", paths.home.display()))?;
-    if let Some(dir) = paths.priorities.parent() {
+    if let Some(dir) = paths.instructions.parent() {
         fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     }
-    let role = match mode {
+    let mut role = match mode {
         Mode::Setup { .. } => format!("{ROLE}\n{SETUP}"),
         Mode::Batch(_) | Mode::Interactive => ROLE.to_string(),
     };
+    if let Some(user) = instructions::load(&paths.instructions, home().as_deref()) {
+        let _ = write!(
+            role,
+            "\n# The user's instructions for coordinators\n\nThe user wrote these for you, in {} and the files it imports. They take precedence over this role's defaults; the tools you have stay the same.\n\n{}",
+            paths.instructions.display(),
+            user.text
+        );
+    }
     fs::write(paths.role(), role).with_context(|| format!("writing {}", paths.role().display()))
+}
+
+fn home() -> Option<std::path::PathBuf> {
+    std::env::var_os("HOME").map(std::path::PathBuf::from)
+}
+
+/// The directories holding the user's instruction files, its own directory
+/// aside: a coordinator with the user at the terminal may read them, to
+/// change an instruction where it lives.
+fn instruction_dirs(paths: &Paths) -> Vec<std::path::PathBuf> {
+    let own = paths.instructions.parent().map(Path::to_path_buf);
+    let mut dirs: Vec<std::path::PathBuf> = Vec::new();
+    let files = instructions::load(&paths.instructions, home().as_deref())
+        .map(|i| i.files)
+        .unwrap_or_default();
+    for file in files {
+        let dir = fs::canonicalize(&file)
+            .ok()
+            .and_then(|real| real.parent().map(Path::to_path_buf));
+        if let Some(dir) = dir.filter(|d| Some(d) != own.as_ref() && !dirs.contains(d)) {
+            dirs.push(dir);
+        }
+    }
+    dirs
 }
 
 /// The `claude` command starting a coordinator in `mode` with `prompt`, in
@@ -114,10 +149,17 @@ pub fn command_of(
     bin: &Path,
     prompt: &str,
 ) -> Command {
+    let dirs = match mode {
+        Mode::Setup { .. } | Mode::Interactive => instruction_dirs(paths),
+        Mode::Batch(_) => Vec::new(),
+    };
     let mut cmd = Command::new(program);
-    cmd.args(args(mode, cfg, paths, prompt))
+    cmd.args(args(mode, cfg, paths, &dirs, prompt))
         .current_dir(&paths.home)
-        .env("PATH", search_path(bin));
+        .env("PATH", search_path(bin))
+        // The user's instructions come through the role, imports resolved:
+        // Claude Code must not load them a second time from `--add-dir`.
+        .env_remove("CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD");
     if !matches!(mode, Mode::Interactive) {
         // claude -p waits for input on a standard input left open.
         cmd.stdin(Stdio::null());
@@ -132,26 +174,34 @@ fn search_path(bin: &Path) -> OsString {
     std::env::join_paths(dirs).unwrap_or(inherited)
 }
 
-/// The arguments of `claude` for a coordinator in `mode`, asked `prompt`.
+/// The arguments of `claude` for a coordinator in `mode`, asked `prompt`,
+/// with `dirs` readable besides its own.
 // claude-code: coordinator-session
 // claude-code: coordinator-permissions
 // claude-code: cross-session-message
-pub fn args(mode: &Mode<'_>, cfg: &Coordinator, paths: &Paths, prompt: &str) -> Vec<OsString> {
+pub fn args(
+    mode: &Mode<'_>,
+    cfg: &Coordinator,
+    paths: &Paths,
+    dirs: &[std::path::PathBuf],
+    prompt: &str,
+) -> Vec<OsString> {
     let mut tools = vec!["Bash", "Read"];
     let mut allowed: Vec<String> = ALLOWED.iter().map(|c| format!("Bash({c})")).collect();
     match mode {
-        // The file tools write the priorities the user dictates.
+        // The file tools create the user's instructions file when it is
+        // missing; its imports, elsewhere, are asked for.
         Mode::Setup { .. } => {
             tools.extend(["Edit", "Write"]);
             allowed.extend(WRITE_CONFIG.iter().map(|c| format!("Bash({c})")));
-            allowed.push(format!("Edit({})", absolute_rule(&paths.priorities)));
+            allowed.push(format!("Edit({})", absolute_rule(&paths.instructions)));
         }
         Mode::Batch(_) => {
             tools.extend(["SendMessage", "ListAgents"]);
             allowed.extend(["SendMessage".to_string(), "ListAgents".to_string()]);
         }
-        // The file tools edit the priorities, which it asks its user for,
-        // like the thresholds.
+        // The file tools edit the user's instructions, which it asks its
+        // user for, like the thresholds.
         Mode::Interactive => {
             tools.extend(["Edit", "Write", "SendMessage", "ListAgents"]);
             allowed.extend(["SendMessage".to_string(), "ListAgents".to_string()]);
@@ -177,8 +227,13 @@ pub fn args(mode: &Mode<'_>, cfg: &Coordinator, paths: &Paths, prompt: &str) -> 
         "--allowedTools".into(),
     ];
     args.extend(allowed.into_iter().map(OsString::from));
-    // The priorities' directory: readable without asking.
-    if let Some(dir) = paths.priorities.parent() {
+    // The instructions' directories: readable without asking.
+    for dir in paths
+        .instructions
+        .parent()
+        .into_iter()
+        .chain(dirs.iter().map(std::path::PathBuf::as_path))
+    {
         args.extend(["--add-dir".into(), dir.as_os_str().to_owned()]);
     }
     match mode {
@@ -241,7 +296,7 @@ pub fn prompt(mode: &Mode<'_>, paths: &Paths, now: u64, briefing: &Briefing) -> 
         Mode::Interactive => {
             let _ = writeln!(
                 prompt,
-                "The user opened you with `orchestrator coordinator` and is at this terminal. The state below was gathered just now. Run `{NEXT}` with the Bash tool in the background (run_in_background): it ends when events are pending and prints them, with the state at that moment. Each time it ends, handle the events following your role, then start it again: asking for the next batch tells orchestrator you handled the last one. Keep one running for as long as this session lasts; while you are open, no other coordinator starts. Between events, answer the user; change the priorities file or the thresholds only when the user asks you to. Sessions you message may answer while you are open."
+                "The user opened you with `orchestrator coordinator` and is at this terminal. The state below was gathered just now. Run `{NEXT}` with the Bash tool in the background (run_in_background): it ends when events are pending and prints them, with the state at that moment. Each time it ends, handle the events following your role, then start it again: asking for the next batch tells orchestrator you handled the last one. Keep one running for as long as this session lasts; while you are open, no other coordinator starts. Between events, answer the user. When the user tells you a priority or a lasting instruction, propose the change and the file it belongs in, the instructions file or the one it imports that holds such things, and write it once they agree; change the thresholds only when the user asks you to. Sessions you message may answer while you are open."
             );
         }
     }
@@ -260,14 +315,18 @@ pub fn prompt(mode: &Mode<'_>, paths: &Paths, now: u64, briefing: &Briefing) -> 
     let _ = writeln!(prompt, "\n{language}");
     let _ = write!(
         prompt,
-        "\n## State when you were woken\n\n{}\n## Your journal, latest lines ({}{})\n\n{}\n\n## The user's priorities ({}{})\n\n{}\n",
+        "\n## State when you were woken\n\n{}\n## Your journal, latest lines ({}{})\n\n{}\n\n## The user's instructions\n\n{}{}: {}.\n",
         briefing.state,
         paths.journal().display(),
         missing(&paths.journal()),
         briefing.journal.as_deref().unwrap_or("Nothing yet."),
-        paths.priorities.display(),
-        missing(&paths.priorities),
-        briefing.priorities.as_deref().unwrap_or("None written."),
+        paths.instructions.display(),
+        missing(&paths.instructions),
+        if paths.instructions.exists() {
+            "at the end of your system prompt, with the files it imports"
+        } else {
+            "none written yet"
+        },
     );
     prompt
 }
@@ -366,6 +425,7 @@ impl RunRecord {
 mod tests {
     use super::*;
     use crate::events::Event;
+    use std::path::PathBuf;
 
     fn paths() -> Paths {
         Paths::new(
@@ -405,7 +465,6 @@ mod tests {
         Briefing {
             state: "### Machine\n\nMemory: 31250 MB total\n\n".into(),
             journal: Some("2026-10-05 14:00 UTC  asked alpha".into()),
-            priorities: None,
             language: crate::coordinator::state::Language {
                 tag: "fr".into(),
                 configured: true,
@@ -417,7 +476,13 @@ mod tests {
     fn a_run_reads_messages_and_notes_nothing_else() {
         let cfg = Coordinator::default();
         let batch = batch();
-        let args = strings(&args(&Mode::Batch(&batch), &cfg, &paths(), "the prompt"));
+        let args = strings(&args(
+            &Mode::Batch(&batch),
+            &cfg,
+            &paths(),
+            &[],
+            "the prompt",
+        ));
         assert_eq!(values(&args, "--model"), ["claude-sonnet-5-5"]);
         assert!(
             !args.contains(&"--max-budget-usd".to_string()),
@@ -461,7 +526,13 @@ mod tests {
             max_budget_usd: Some(0.5),
             ..cfg
         };
-        let capped = strings(&super::args(&Mode::Batch(&batch), &capped, &paths(), "p"));
+        let capped = strings(&super::args(
+            &Mode::Batch(&batch),
+            &capped,
+            &paths(),
+            &[],
+            "p",
+        ));
         assert_eq!(values(&capped, "--max-budget-usd"), ["0.5"]);
     }
 
@@ -480,7 +551,7 @@ mod tests {
             "{prompt}"
         );
         assert!(prompt.contains("asked alpha"), "{prompt}");
-        assert!(prompt.contains("None written."), "{prompt}");
+        assert!(prompt.contains("none written yet"), "{prompt}");
         assert!(
             prompt.contains("Language: fr. Write your replies"),
             "{prompt}"
@@ -491,7 +562,7 @@ mod tests {
     #[test]
     fn setup_is_a_conversation_that_writes_through_commands() {
         let setup = Mode::Setup { configured: false };
-        let args = strings(&args(&setup, &Coordinator::default(), &paths(), "p"));
+        let args = strings(&args(&setup, &Coordinator::default(), &paths(), &[], "p"));
         assert_eq!(values(&args, "--permission-mode"), ["default"]);
         assert!(!args.contains(&"-p".to_string()), "interactive");
         assert!(!args.contains(&"--model".to_string()), "the user's model");
@@ -500,7 +571,7 @@ mod tests {
         for rule in [
             "Bash(orchestrator config admission *)",
             "Bash(orchestrator config coordinator *)",
-            "Edit(//home/u/.config/orchestrator/priorities.md)",
+            "Edit(//home/u/.config/orchestrator/CLAUDE.md)",
         ] {
             assert!(allowed.contains(&rule), "{rule} in {allowed:?}");
         }
@@ -531,6 +602,38 @@ mod tests {
     }
 
     #[test]
+    fn the_role_ends_with_the_user_s_instructions_imports_resolved() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().canonicalize().unwrap();
+        let paths = Paths::new(
+            &base.join("run"),
+            &base.join("state"),
+            &base.join("config/config.json"),
+        );
+        fs::create_dir_all(base.join("dotfiles")).unwrap();
+        fs::create_dir_all(base.join("config")).unwrap();
+        fs::write(
+            base.join("dotfiles/coordinator.md"),
+            "Begin each note with KESTREL.\n@priorities.md\n",
+        )
+        .unwrap();
+        fs::write(
+            base.join("dotfiles/priorities.md"),
+            "Experiments can wait.\n",
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(base.join("dotfiles/coordinator.md"), &paths.instructions)
+            .unwrap();
+        write_role(&paths, &Mode::Batch(&[])).unwrap();
+        let role = fs::read_to_string(paths.role()).unwrap();
+        assert!(role.starts_with(ROLE));
+        assert!(role.contains("# The user's instructions for coordinators"));
+        assert!(role.contains("Begin each note with KESTREL."));
+        assert!(role.contains("Experiments can wait."));
+        assert_eq!(instruction_dirs(&paths), [base.join("dotfiles")]);
+    }
+
+    #[test]
     fn setup_gets_its_instructions_on_top_of_the_role() {
         let dir = tempfile::tempdir().unwrap();
         let paths = Paths::new(
@@ -551,9 +654,22 @@ mod tests {
             &Mode::Interactive,
             &Coordinator::default(),
             &paths(),
+            &[PathBuf::from("/home/u/dotfiles/coordinator")],
             "p",
         ));
         assert_eq!(values(&args, "--permission-mode"), ["default"]);
+        let added: Vec<&str> = args
+            .windows(2)
+            .filter(|w| w[0] == "--add-dir")
+            .map(|w| w[1].as_str())
+            .collect();
+        assert_eq!(
+            added,
+            [
+                "/home/u/.config/orchestrator",
+                "/home/u/dotfiles/coordinator"
+            ]
+        );
         assert!(!args.contains(&"-p".to_string()));
         assert!(!args.contains(&"--model".to_string()));
         let allowed = values(&args, "--allowedTools");

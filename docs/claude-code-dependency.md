@@ -41,6 +41,7 @@ named after the contract), by measurement, or by Claude Code's documentation
 [permissions](https://code.claude.com/docs/en/permissions),
 [permission-modes](https://code.claude.com/docs/en/permission-modes),
 [cross-session-messaging](https://code.claude.com/docs/en/cross-session-messaging),
+[memory](https://code.claude.com/docs/en/memory),
 [headless](https://code.claude.com/docs/en/headless)).
 
 ## Contracts
@@ -228,8 +229,11 @@ prompt, in print mode and interactively; `--setting-sources project` leaves
 out the user's settings, hooks, plugins and CLAUDE.md, though not the
 organization's instructions; `--settings` takes inline JSON
 (`autoMemoryEnabled`, `permissions.blockReadsOutsideWorkingDirectories`);
-`--strict-mcp-config` without `--mcp-config` starts no MCP server; `--`
-ends the options before the prompt. In print mode (`-p`), `--model` picks
+`--strict-mcp-config` without `--mcp-config` starts no MCP server; the
+CLAUDE.md of a directory given with `--add-dir` is not loaded unless
+`CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD` is set, which orchestrator
+removes, since it hands the user's instructions for coordinators over
+itself, imports resolved; `--` ends the options before the prompt. In print mode (`-p`), `--model` picks
 the model and takes a full model id (`claude-sonnet-5-5`, the default) as
 well as an alias, `--max-budget-usd`, passed only when the user configures
 one, stops the run once its estimated spend at list price reaches the
@@ -244,7 +248,7 @@ left open is waited for.
   session's name). Measured on 2.1.291: with `--setting-sources project`, a
   run's context was 4,000 tokens instead of 12,000 and held none of the
   user's CLAUDE.md; `--model claude-sonnet-5-5` ran that model.
-  Documentation: cli-reference.
+  Documentation: cli-reference, memory.
 
 ### coordinator-permissions
 
@@ -264,8 +268,9 @@ denied outside the working directories.
   journal, or, worse, may run what it was not given.
 - Verified: integration test (`orchestrator machine` and the journal note
   run; a `touch` and a `cat` outside are denied). Measured on 2.1.291: in
-  the setup conversation, the `Edit(//<path>)` rule on the priorities file
-  let the Write tool create it without asking. Documentation: permissions,
+  the setup conversation, the `Edit(//<path>)` rule on a file let the Write
+  tool create it without asking; in `default` mode, an edit in an
+  `--add-dir` directory asked first. Documentation: permissions,
   permission-modes.
 
 ### cross-session-message

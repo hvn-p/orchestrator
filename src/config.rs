@@ -101,10 +101,10 @@ pub fn default_path() -> Result<PathBuf> {
     Ok(PathBuf::from(home).join(".config/orchestrator/config.json"))
 }
 
-/// The user's priorities for the coordinator, next to the configuration: a
-/// text the user writes, or asks an interactive coordinator to.
-pub fn priorities_path(config: &Path) -> PathBuf {
-    config.with_file_name("priorities.md")
+/// The user's instructions for coordinators, next to the configuration: a
+/// CLAUDE.md that only coordinators read (see `coordinator::instructions`).
+pub fn instructions_path(config: &Path) -> PathBuf {
+    config.with_file_name("CLAUDE.md")
 }
 
 /// The configuration at `path`, None when there is no file. A file that

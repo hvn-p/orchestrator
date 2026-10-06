@@ -2,20 +2,17 @@
 //! judgment, so code does it, and the coordinator starts from it instead of
 //! running the read commands one by one: the machine, the sessions, the
 //! admission's waiting calls and reservations, the heavy commands learned,
-//! the recent part of its journal and the user's priorities. The same text
+//! and the recent part of its journal. The same text
 //! as the read commands print, which it may still run for more.
 
 use super::{Paths, journal};
 use crate::{admission, cgroup, config, machine, report, runtime};
 use anyhow::Result;
 use std::fmt::Write as _;
-use std::fs;
 use std::path::{Path, PathBuf};
 
 /// Journal lines a coordinator is shown.
 const JOURNAL_LINES: usize = 40;
-/// The longest priorities a coordinator is shown, in characters.
-const PRIORITIES_MAX: usize = 8000;
 /// Learned commands shown, the heaviest.
 const PEAKS_MAX: usize = 15;
 
@@ -55,7 +52,6 @@ pub struct Briefing {
     pub state: String,
     /// The recent part of its journal.
     pub journal: Option<String>,
-    pub priorities: Option<String>,
     pub language: Language,
 }
 
@@ -84,10 +80,6 @@ pub fn briefing(places: &Places, paths: &Paths, fallback: &str) -> Briefing {
         },
         state: gather(places),
         journal: journal::tail(&paths.journal(), JOURNAL_LINES),
-        priorities: fs::read_to_string(&paths.priorities)
-            .ok()
-            .map(|p| p.chars().take(PRIORITIES_MAX).collect::<String>())
-            .filter(|p| !p.trim().is_empty()),
     }
 }
 
@@ -154,6 +146,7 @@ pub fn missing(path: &Path) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     #[test]
     fn a_briefing_holds_every_section_even_unreadable() {
@@ -179,8 +172,6 @@ mod tests {
         };
         let paths = paths(&places);
         journal::note(&paths.journal(), "asked alpha", 0).unwrap();
-        fs::create_dir_all(base.join("config")).unwrap();
-        fs::write(&paths.priorities, "beta matters most\n").unwrap();
         let b = briefing(&places, &paths, "de");
         assert_eq!(
             b.language,
@@ -208,7 +199,6 @@ mod tests {
             b.journal.as_deref(),
             Some("1970-01-01 00:00 UTC  asked alpha")
         );
-        assert_eq!(b.priorities.as_deref(), Some("beta matters most\n"));
         config::set_coordinator(&places.config, |c| c.language = Some("fr".into())).unwrap();
         let b = briefing(&places, &paths, "de");
         assert_eq!(
