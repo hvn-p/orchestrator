@@ -28,7 +28,8 @@ Early. What exists:
 - A first coordinator, once enabled: a Claude Code session that `watch`
   starts when memory runs short or admission holds a call back long. It asks
   sessions to free memory, or tells them why a call waits; it pulls no
-  lever. `orchestrator setup` enables it and has it write the configuration.
+  lever. `orchestrator setup` is a conversation with it that ends with the
+  configuration written.
 
 Everything else is design (throttling, priorities between waiting calls):
 see [docs/design.md](docs/design.md).
@@ -109,15 +110,21 @@ watch` has learned.
 orchestrator setup
 ```
 
-`setup` asks which model the coordinator runs with (`--model` answers
-without asking), adds a `coordinator` section, your consent to spend tokens,
-then starts a coordinator (Claude Code, `claude` on the `PATH`) that examines
-the machine, writes the admission thresholds and ends with a summary of its
-choice and of what the run took: turns, seconds and tokens. Running it again
-reviews them, and lets you change the model. `orchestrator config` prints the file;
-`orchestrator config admission --heavy-mb … --margin-mb … --max-wait-secs …`
-sets the thresholds by hand, refusing values that make no sense on the
-machine. Written by hand, for a machine with about 30 GB of RAM:
+`setup` opens a conversation with the coordinator (Claude Code, `claude` on
+the `PATH`): it says what orchestrator does, looks at the machine, then asks
+you, in plain words, whether it may be woken automatically, with which model
+(it proposes claude-sonnet-5-5), what your priorities are, and proposes
+admission thresholds from the machine's facts, adjusted to your answers. It
+writes each part once you agree, through the commands below, which refuse
+values that make no sense on the machine, and ends by saying what it wrote.
+Run it again to review the configuration; `orchestrator coordinator` starts
+the same conversation when there is no configuration yet.
+
+`orchestrator config` prints the file. The commands setup uses also work by
+hand: `orchestrator config admission --heavy-mb … --margin-mb …
+--max-wait-secs …` sets the thresholds, and `orchestrator config
+coordinator --wake yes --model …` the coordinator. Written by hand, for a
+machine with about 30 GB of RAM:
 
 ```json
 {
@@ -149,6 +156,7 @@ the error goes to `$XDG_RUNTIME_DIR/orchestrator/prefix.log`.
 ```json
 {
   "coordinator": {
+    "wake": true,
     "model": "claude-sonnet-5-5",
     "max_minutes": 5,
     "wait_secs": 20
@@ -156,14 +164,13 @@ the error goes to `$XDG_RUNTIME_DIR/orchestrator/prefix.log`.
 }
 ```
 
-The values are what `setup` writes, the model being your choice. With this
-section, `orchestrator watch` starts a coordinator, one at a time, for each
-batch of `memory_pressure` events and calls that admission has held back
-`wait_secs`, each run with `model` and stopped past `max_minutes`, a guard
-against a stuck run. Nothing caps a run's spending unless you add
-`"max_budget_usd"`, which Claude Code checks against its estimate at API
-list price, not against a subscription's quota. Remove the section to turn
-the coordinator off.
+`wake` is your consent: with it, `orchestrator watch` starts a coordinator by
+itself, one at a time, for each batch of `memory_pressure` events and calls
+that admission has held back `wait_secs`, each run with `model` and stopped
+past `max_minutes`, a guard against a stuck run. Without it, nothing spends
+tokens unless you open a coordinator. Nothing caps a run's spending unless
+you add `"max_budget_usd"`, which Claude Code checks against its estimate at
+API list price, not against a subscription's quota.
 
 `watch` gathers the state a run needs (the machine, the sessions, the calls
 waiting for memory and the reservations, the heavy commands learned, the
@@ -179,8 +186,9 @@ messages under the name `orchestrator-coordinator`.
 orchestrator coordinator
 ```
 
-opens an interactive coordinator: you talk to it, and it receives the events
-for as long as it stays open; meanwhile `watch` starts no run. Events it took
+opens an interactive coordinator, after the setup conversation when there is
+no configuration yet: you talk to it, and it receives the events for as long
+as it stays open; meanwhile `watch` starts no run. Events it took
 but did not handle when it closes go back to the next run. Tell it your
 priorities (which sessions matter, which can wait), and it keeps them in
 `priorities.md` next to the configuration, a file you can also edit. It

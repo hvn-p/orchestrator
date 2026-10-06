@@ -25,9 +25,10 @@ memory-hungry waits for memory before it runs (admission). Nothing is
 throttled yet. `orchestrator sessions` and
 `orchestrator watch` still attribute processes to sessions by process ancestry
 and report memory pressure and orphaned processes. A first coordinator
-exists, once the user enables it: it writes the admission thresholds at
-setup, and asks sessions to free memory or tells them why a call waits,
-from the state `watch` gathers for it; it pulls no lever. Everything else here is design; the parts validated by
+exists: a setup conversation with it writes the configuration, and, once
+the user agrees, `watch` wakes it to ask sessions to free memory or tell
+them why a call waits, from the state `watch` gathers for it; it pulls no
+lever. Everything else here is design; the parts validated by
 throwaway prototypes are listed under "Measured". What orchestrator relies on
 in Claude Code is listed in [claude-code-dependency.md](claude-code-dependency.md),
 with the version it was last verified on.
@@ -145,13 +146,23 @@ One binary, `orchestrator`, with subcommands.
     the journal and the priorities. The coordinator decides, messages and
     notes (`orchestrator coordinator note`, which dates the line and keeps
     the latest ones); it runs a read command only for what the prompt lacks.
-  - **Consent**: nothing spends tokens until the configuration has a
-    `coordinator` section. `orchestrator setup`, run by the user, asks which
-    model the coordinator runs with (Sonnet 5.5 by default; `--model`
-    answers without asking), writes the section, then starts a coordinator
-    that examines the machine and writes the admission thresholds through
-    `orchestrator config admission`, which refuses values that make no sense
-    on the machine.
+  - **Setup is a conversation**: a configuration written by hand is tedious
+    and needs exact values; a Claude can explain, answer questions, take
+    answers in plain words, even dictated, and propose values.
+    `orchestrator setup`, or `orchestrator coordinator` when no
+    configuration exists, opens the interactive coordinator with setup
+    instructions on top of its role (`src/coordinator/setup.md`). It says
+    what orchestrator does, looks at the machine, and asks, one subject at a
+    time: whether `watch` may wake it, with which model (it proposes Sonnet
+    5.5), the user's priorities, and admission thresholds it proposes from
+    the machine's facts. It writes each part once the user agrees, through
+    `orchestrator config coordinator` and `orchestrator config admission`,
+    which refuse values that make no sense on the machine or together, and
+    the priorities with the file tools; never the configuration file
+    itself.
+  - **Consent**: `wake` in the `coordinator` section. Without it, `watch`
+    queues nothing and starts no coordinator: nothing spends tokens unless
+    the user opens one.
   - **What wakes it**: `memory_pressure`, and `admission_wait`, which
     `watch` writes once per Bash call that admission has held back for the
     configured time. Orphans do not wake it yet.
@@ -177,14 +188,15 @@ One binary, `orchestrator`, with subcommands.
     came in meanwhile and what it left unhandled.
   - **What it may do**: read more of the state, note in its journal and,
     outside setup, message sessions with Claude Code's messages between
-    sessions. It loads
-    none of the user's settings, hooks, plugins, MCP servers or CLAUDE.md,
-    only the project settings of its own directory. A run started by `watch`
-    or `setup` is denied anything else without asking (`dontAsk`); an
-    interactive coordinator asks its user, for the thresholds and the
-    priorities among others. Both modes prompt for permissions, like the
-    sessions they message. A run for events cannot change the thresholds: it
-    reports them when they look wrong.
+    sessions. It loads none of the user's settings, hooks, plugins, MCP
+    servers or CLAUDE.md, only the project settings of its own directory. A
+    run started by `watch` is denied anything else without asking
+    (`dontAsk`). The setup conversation writes the configuration and the
+    priorities without a permission prompt, the user having agreed in the
+    conversation; an interactive coordinator asks its user for them. Both
+    prompt for anything else, like the sessions they message. A run for
+    events cannot change the thresholds: it reports them when they look
+    wrong.
   - **Bounds**: each run has the configured model and a time limit, past
     which `watch` stops its process group: a guard against a stuck run, not
     a spending limit. No spending cap by default; `max_budget_usd` sets one,
@@ -271,8 +283,9 @@ replacing itself with the shell:
 ### Configuration
 
 The thresholds live in `$XDG_CONFIG_HOME/orchestrator/config.json`, by default
-`~/.config/orchestrator/config.json`. The coordinator is meant to write it on
-its first start, adapted to the machine; until it exists, a human does.
+`~/.config/orchestrator/config.json`. The coordinator writes it in the setup
+conversation, adapted to the machine and to the user's answers, through the
+validated `orchestrator config` commands; a human may write it too.
 Without the file, or without its `admission` section, nothing waits. A file
 that cannot be read whole, an unknown field included, lets everything through
 too, and the error goes to `prefix.log` in the runtime directory.
@@ -528,12 +541,19 @@ October 2026, with scratch directories and sessions:
   | :- | :- | -: | -: | -: | -: | -: |
   | `admission_wait` | Sonnet 5.5 | 3 | 8 s | 10,703 | 9,938 | 697 |
   | `admission_wait` | Haiku | 3 | 18 s | 14,185 | 12,547 | 1,656 |
-  | setup, no configuration | Sonnet 5.5 | 3 | 10 s | 7,825 | 7,122 | 1,062 |
-  | setup, no configuration | Haiku | 3 | 17 s | 11,690 | 21,734 | 1,328 |
+  | `admission_wait`, after a setup conversation | Sonnet 5.5 | 3 | 8 s | 5,662 | 15,806 | 833 |
 
-  Sonnet 5.5 chose sensible thresholds (1,000 MB heavy, 1,500 MB margin,
-  30 s on 31 GB) and, on the event, left the absurd ones alone and noted
-  what it would change.
+  Both left the absurd thresholds alone and noted what they would change.
+- A setup conversation, Sonnet 5.5, opened with `orchestrator coordinator`
+  without a configuration and answered in plain words: it introduced
+  orchestrator, summarised the machine from its briefing, asked about
+  waking, the model, the priorities, and proposed thresholds with a reason
+  each (1,500 MB heavy, 2,000 MB margin, 90 s). Asked for a 40 GB margin on
+  31 GB, it declined; told to try anyway, it ran `orchestrator config
+  admission`, which refused, explained the refusal and proposed values the
+  command accepts. About 9 turns of 3 to 5 s each; usage per conversation
+  could not be read, since an interactive session working under Claude
+  Code's own temporary directory kept no transcript.
 - Organization instructions set for the account still reach a coordinator,
   whatever `--setting-sources`; one run replied in their language.
 - An interactive coordinator under a terminal started `orchestrator
@@ -545,8 +565,8 @@ October 2026, with scratch directories and sessions:
   transcript held no usage figures to measure.
 - Allowed to write the thresholds during an event run, Haiku rewrote them
   after one call (a heavy threshold of 60 MB on 31 GB of memory); an
-  interactive one did so unasked. Hence writes at setup only, or asked of
-  the user.
+  interactive one did so unasked. Hence writes in the setup conversation
+  only, or asked of the user.
 
 ## Known gaps
 
