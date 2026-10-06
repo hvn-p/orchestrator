@@ -1,0 +1,32 @@
+name: Claude Code dependency
+
+# The merge guard of docs/claude-code-dependency.md. It runs again when a
+# label is added or removed, so that the label's verdict replaces the last one.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+permissions:
+  contents: read
+
+jobs:
+  claude-code-dependency:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The guard compares the pull request with its merge base.
+          fetch-depth: 0
+      - name: Check that docs/claude-code-dependency.md follows the code
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          UNCHANGED: ${{ contains(github.event.pull_request.labels.*.name, 'claude-code-dependency-unchanged') }}
+        run: |
+          status=0
+          scripts/claude-code-guard.sh "$BASE" "$HEAD" || status=$?
+          if [ "$status" -eq 1 ] && [ "$UNCHANGED" = true ]; then
+            echo "::notice::Labelled claude-code-dependency-unchanged: the document stays as it is."
+            exit 0
+          fi
+          exit "$status"
