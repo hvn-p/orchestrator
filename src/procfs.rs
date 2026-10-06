@@ -7,6 +7,7 @@ use std::path::Path;
 /// The only environ variable orchestrator reads. Every process a Claude session
 /// launches inherits it. Nothing else in environ is ever kept: it also holds
 /// the session's messaging token.
+// claude-code: session-id-variable
 const SESSION_VAR: &[u8] = b"CLAUDE_CODE_SESSION_ID=";
 
 /// Longest command line kept, in characters.

@@ -6,6 +6,7 @@ use serde::Deserialize;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+// claude-code: session-file-fields
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClaudeSession {
@@ -23,6 +24,7 @@ pub struct ClaudeSession {
 }
 
 /// `$CLAUDE_CONFIG_DIR/sessions`, or `~/.claude/sessions`.
+// claude-code: config-dir
 pub fn default_dir() -> Option<PathBuf> {
     let base = std::env::var_os("CLAUDE_CONFIG_DIR")
         .map(PathBuf::from)
@@ -32,6 +34,7 @@ pub fn default_dir() -> Option<PathBuf> {
 
 /// Reads every `<pid>.json` in `dir`. A file that cannot be parsed is reported
 /// on stderr and skipped: Claude Code may be rewriting it.
+// claude-code: session-file
 pub fn read_sessions(dir: &Path) -> std::io::Result<Vec<ClaudeSession>> {
     let mut sessions = Vec::new();
     for entry in fs::read_dir(dir)? {

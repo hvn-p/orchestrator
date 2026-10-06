@@ -11,7 +11,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// The shell prefix binary, installed next to `orchestrator`.
+// claude-code: shell-prefix-variable
 pub const PREFIX_BIN: &str = "orchestrator-prefix";
+// claude-code: shell-prefix-variable
 const PREFIX_VAR: &str = "CLAUDE_CODE_SHELL_PREFIX";
 
 /// Replaces this process with `systemd-run`, which runs
