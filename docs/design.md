@@ -128,14 +128,26 @@ One binary, `orchestrator`, with subcommands.
     ended before its watch was in place;
   - planned: `memory.events` and memory pressure (PSI) per job; listening sockets every one or two seconds, attributed to their job;
     classification, levers; the token quota left by the status line.
-- **The coordinator** (planned): a Claude Code session started with its role
-  appended to the system prompt. On its first start it examines the machine
-  (memory, swap, CPU, what the systemd user manager delegates) and writes the
-  configuration (see "Configuration"): the thresholds the code then applies.
-  It waits for the next
-  event with a background command that exits when one arrives, sets priorities,
-  tells sessions about their delays, negotiates a slot when the limit of
-  long-running servers is reached, and answers "who is working on X?".
+- **The coordinator** (planned): a fresh Claude Code session, started by
+  `watch` with its role appended to the system prompt, for each batch of
+  events that need judgment. It is never resumed: what it must remember
+  between wakes lives in files it reads on start, a journal of its actions
+  and of the exchanges still open, and the user's priorities. It also gets the
+  events and the machine's current state through `orchestrator`'s commands.
+  - **One at a time**: `watch` never starts a coordinator while another runs.
+    Events arriving meanwhile wait, duplicates merge, and the next coordinator
+    gets them together as soon as the current one ends.
+  - **Talking to it**: `orchestrator coordinator` opens an interactive one. It
+    takes the coordinator lock, once any running coordinator has ended, and
+    receives the events itself, waiting for them with a background command,
+    for as long as it stays open. When it closes, `watch` starts fresh ones
+    again with what came in meanwhile.
+  - **Its work**: on its first start it examines the machine (memory, swap,
+    CPU, what the systemd user manager delegates) and writes the configuration
+    (see "Configuration"). It sets priorities, tells sessions about their
+    delays through Claude Code's messages between sessions, negotiates a slot
+    when the limit of long-running servers is reached, and answers "who is
+    working on X?".
 - **`orchestrator sessions`** (exists): memory per session and orphaned
   processes, for a human.
 - **`orchestrator peaks`** (exists): the learned peaks, per repository, for a
@@ -402,6 +414,35 @@ From the Claude Code documentation:
 - An appended system prompt is reused on resume until the conversation is
   compacted, so a launcher passes it again on every resume.
 
+Coordinator spike, Claude Code 2.1.291, Haiku, October 2026:
+
+- Claude Code's supervisor (`claude daemon`) hosts background sessions
+  (`claude --bg`) without a terminal. Started on demand, it detaches but stays
+  in the cgroup of whatever started it, with every session it hosts, and
+  exits once idle with no client. `claude daemon run` keeps one in the
+  foreground: under `orchestrator launch`, its sessions carry the prefix and
+  their commands land in job groups, all sessions sharing its one scope.
+- `processWrapper` (or `CLAUDE_CODE_PROCESS_WRAPPER`, user settings only) set
+  to `orchestrator launch --` gave the supervisor, each background session,
+  its terminal host and the standby session the supervisor keeps ready a
+  scope of their own, with the prefix. Sessions started from a terminal are
+  not covered.
+- A background session waiting on a background command it started reads
+  `working` in `claude agents --json`, so the supervisor keeps its process.
+  Appending an event woke it in 3.5 to 6 s. Its appended system prompt and its
+  waiting command both survived `claude respawn`.
+- A background session, and a `claude -p` one, sent a message to another
+  session with `SendMessage`, without a permission prompt. Claude Code holds a
+  message when the receiver's permission mode is stricter than the sender's.
+- `claude agents --json` lists interactive and background sessions, but gives
+  no process start time; background sessions also write
+  `~/.claude/sessions/<pid>.json`.
+- Cost at list price: a background coordinator, about 0.09 USD to start and
+  0.02 USD per event, nothing while idle; a resumed `claude -p` run, about
+  0.007 USD per event. Memory: about 280 MB per background session, plus its
+  terminal host (87 MB), the supervisor (145 MB) and the standby session the
+  supervisor keeps ready (220 to 370 MB).
+
 ## Known gaps
 
 - **Outside the session's group**: Docker containers, anything started through
@@ -419,6 +460,14 @@ From the Claude Code documentation:
   that process ends.
 - **Processes Claude Code starts without the prefix** are counted with claude in
   `main/`.
+- **Claude Code's own memory cap** (`CLAUDE_CODE_TOOL_MEMORY_LIMIT`) kills a
+  session's commands past a size, with a memory cgroup of its own. It must
+  stay off under orchestrator: it refuses work and competes with the job
+  groups.
+- **Background sessions**: Claude Code's supervisor (`claude daemon`) starts
+  on demand in the cgroup of whatever started it, and hosts every background
+  session there. Unless `processWrapper` routes it through `orchestrator
+  launch`, those sessions are not orchestrated.
 
 ## Open questions
 
@@ -442,10 +491,15 @@ From the Claude Code documentation:
 - Docker: regulated separately (`docker pause`, `docker update`, attribution by
   compose label), or left out of scope.
 - Launching: the short command's name, and whether sessions started by other
-  tools (a worktree manager, for instance) go through it.
-- Where the coordinator runs: a terminal tab, or a background session (which
-  needs a permission rule only the user can add). It is needed from the first
-  start, to write the configuration.
+  tools (a worktree manager, for instance) go through it. A lead: Claude Code's
+  `processWrapper` setting starts every process Claude Code starts itself
+  through a launcher, and `orchestrator launch` can be that launcher (see
+  "Measured"); sessions started from a terminal would need a `claude` script
+  earlier on `PATH`. `orchestrator launch` must then print nothing before it
+  replaces itself, which `enter` does not guarantee today.
+- Coordinator: what wakes it (which events, and the admission's long waits,
+  which emit none yet), the actions `orchestrator` exposes to it, what its
+  journal holds, and a spending limit.
 - `memory.reclaim` on a frozen job, and the coordinator waiting through a
   background command: not tested yet.
 
@@ -463,6 +517,12 @@ From the Claude Code documentation:
 ## Rejected
 
 - **Refusing a command**: contrary to the intent.
+- **A permanent background coordinator** (`claude --bg`): it works (see
+  "Measured"), but holds 0.5 to 0.7 GB of memory all the time, on a tool meant
+  to spare it.
+- **A coordinator resumed from one conversation**: its context grows with
+  every event, and a user reopening the conversation would race with `watch`.
+  Files keep what it must remember instead.
 - **The kernel process connector to see sessions end**: it reports every
   process of the machine, thousands per second during a build. A pidfd on each
   session's claude process reports only what matters.
