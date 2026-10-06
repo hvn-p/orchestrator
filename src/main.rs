@@ -6,7 +6,7 @@ use clap::{Args, Parser, Subcommand};
 use orchestrator::config::{self, Admission, Coordinator};
 use orchestrator::coordinator::state::{self as briefing, Places};
 use orchestrator::coordinator::{self, Holder, journal, run};
-use orchestrator::{cgroup, launch, machine, report, runtime, sessions, state, watch};
+use orchestrator::{cgroup, language, launch, machine, report, runtime, sessions, state, watch};
 use std::ffi::OsString;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -132,6 +132,9 @@ struct CoordinatorConfigArgs {
     /// How long admission holds a call before it wakes the coordinator, in seconds.
     #[arg(long)]
     wait_secs: Option<u64>,
+    /// The language the coordinator writes in: a tag such as fr, en or pt-BR.
+    #[arg(long)]
+    language: Option<String>,
 }
 
 #[derive(Args)]
@@ -297,6 +300,9 @@ fn set_coordinator(c: CoordinatorConfigArgs) -> Result<()> {
         if let Some(secs) = c.wait_secs {
             section.wait_secs = secs;
         }
+        if let Some(tag) = c.language {
+            section.language = Some(tag);
+        }
     })?;
     println!(
         "Wrote {}\n{}",
@@ -324,7 +330,7 @@ fn become_coordinator(mode: &run::Mode<'_>) -> anyhow::Error {
             mode,
             &paths,
             now_secs(),
-            &briefing::briefing(&places, &paths),
+            &briefing::briefing(&places, &paths, &system_language()),
         );
         // An interactive coordinator runs with the user's model.
         let cfg = Coordinator::default();
@@ -356,6 +362,11 @@ fn bin_dir() -> Result<PathBuf> {
         .parent()
         .map(Path::to_path_buf)
         .unwrap_or_default())
+}
+
+/// The language of the user at this terminal, from the locale.
+fn system_language() -> String {
+    language::of_system(|name| std::env::var(name).ok())
 }
 
 fn now_secs() -> u64 {

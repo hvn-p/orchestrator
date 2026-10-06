@@ -245,6 +245,19 @@ pub fn prompt(mode: &Mode<'_>, paths: &Paths, now: u64, briefing: &Briefing) -> 
             );
         }
     }
+    let tag = &briefing.language.tag;
+    let language = match (mode, briefing.language.configured) {
+        (Mode::Setup { .. }, false) => format!(
+            "The system's language, from its locale, is {tag}. Start the conversation in it, and in your first message offer to switch, as in \"I'll continue in <its name>; tell me if you prefer another.\" Write the language you settle on with `orchestrator config coordinator --language <tag>`."
+        ),
+        (Mode::Setup { .. }, true) => format!(
+            "Language: {tag}, as configured. Hold the conversation in it unless the user asks for another; then write the new one with `orchestrator config coordinator --language <tag>`."
+        ),
+        (Mode::Batch(_) | Mode::Interactive, _) => format!(
+            "Language: {tag}. Write your replies, your journal notes and your messages to sessions in it, whatever other instructions say."
+        ),
+    };
+    let _ = writeln!(prompt, "\n{language}");
     let _ = write!(
         prompt,
         "\n## State when you were woken\n\n{}\n## Your journal, latest lines ({}{})\n\n{}\n\n## The user's priorities ({}{})\n\n{}\n",
@@ -393,6 +406,10 @@ mod tests {
             state: "### Machine\n\nMemory: 31250 MB total\n\n".into(),
             journal: Some("2026-10-05 14:00 UTC  asked alpha".into()),
             priorities: None,
+            language: crate::coordinator::state::Language {
+                tag: "fr".into(),
+                configured: true,
+            },
         }
     }
 
@@ -464,6 +481,10 @@ mod tests {
         );
         assert!(prompt.contains("asked alpha"), "{prompt}");
         assert!(prompt.contains("None written."), "{prompt}");
+        assert!(
+            prompt.contains("Language: fr. Write your replies"),
+            "{prompt}"
+        );
         assert!(prompt.contains("(does not exist yet)"), "{prompt}");
     }
 
@@ -494,6 +515,15 @@ mod tests {
         assert!(prompt.contains("### Machine"), "{prompt}");
         let review = prompt_of(&Mode::Setup { configured: true });
         assert!(review.contains("to review the configuration"), "{review}");
+        assert!(review.contains("Language: fr, as configured"), "{review}");
+        let mut first = briefing();
+        first.language.configured = false;
+        let prompt = super::prompt(&Mode::Setup { configured: false }, &paths(), 0, &first);
+        assert!(
+            prompt.contains("The system's language, from its locale, is fr. Start the conversation in it, and in your first message offer to switch"),
+            "{prompt}"
+        );
+        assert!(prompt.contains("--language <tag>"), "{prompt}");
     }
 
     fn prompt_of(mode: &Mode<'_>) -> String {

@@ -308,7 +308,9 @@ impl Service {
             return Ok(());
         }
         let at = now_ms() / 1000;
-        let briefing = state::briefing(&self.places, &self.paths);
+        // Nobody is at a terminal to set the language from: the configured
+        // one, else English.
+        let briefing = state::briefing(&self.places, &self.paths, crate::language::DEFAULT);
         let prompt = run::prompt(&run::Mode::Batch(&batch), &self.paths, at, &briefing);
         let mode = run::Mode::Batch(&batch);
         let spawned =
@@ -576,6 +578,7 @@ printf '{"type":"result","is_error":false,"num_turns":1,"usage":{"input_tokens":
         assert!(merged.contains(r#""count":2"#), "{merged}");
         assert!(merged.contains("### Machine"), "briefed: {merged}");
         assert!(merged.contains("8000 MB available"), "{merged}");
+        assert!(merged.contains("Language: en. "), "{merged}");
         assert_eq!(s.service.paths.lock().unwrap().holder(), None, "free");
     }
 

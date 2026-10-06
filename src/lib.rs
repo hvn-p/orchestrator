@@ -13,6 +13,7 @@ pub mod coordinator;
 pub mod events;
 pub mod exits;
 pub mod jobs;
+pub mod language;
 pub mod launch;
 pub mod machine;
 pub mod memory;

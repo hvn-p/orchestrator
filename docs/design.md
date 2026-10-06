@@ -151,9 +151,11 @@ One binary, `orchestrator`, with subcommands.
     answers in plain words, even dictated, and propose values.
     `orchestrator setup`, or `orchestrator coordinator` when no
     configuration exists, opens the interactive coordinator with setup
-    instructions on top of its role (`src/coordinator/setup.md`). It says
-    what orchestrator does, looks at the machine, and asks, one subject at a
-    time: whether `watch` may wake it, with which model (it proposes Sonnet
+    instructions on top of its role (`src/coordinator/setup.md`). It starts
+    in the system's language, from the locale (`LC_ALL`, `LC_MESSAGES`,
+    `LANG`, in that order; English without one), and offers to switch in
+    its first message. It says what orchestrator does, looks at the machine,
+    and asks, one subject at a time: whether `watch` may wake it, with which model (it proposes Sonnet
     5.5), the user's priorities, and admission thresholds it proposes from
     the machine's facts. It writes each part once the user agrees, through
     `orchestrator config coordinator` and `orchestrator config admission`,
@@ -163,6 +165,12 @@ One binary, `orchestrator`, with subcommands.
   - **Consent**: `wake` in the `coordinator` section. Without it, `watch`
     queues nothing and starts no coordinator: nothing spends tokens unless
     the user opens one.
+  - **Language**: `language` in the same section, a tag such as `fr` or
+    `pt-BR`, settled in the setup conversation. The role and every prompt
+    state it, so that runs, the interactive coordinator, its journal and
+    its messages use it, whatever organization-level instructions say;
+    English when unset. What code writes, admission's notices included,
+    stays in English: Claude reads it.
   - **What wakes it**: `memory_pressure`, and `admission_wait`, which
     `watch` writes once per Bash call that admission has held back for the
     configured time. Orphans do not wake it yet.
@@ -554,8 +562,14 @@ October 2026, with scratch directories and sessions:
   command accepts. About 9 turns of 3 to 5 s each; usage per conversation
   could not be read, since an interactive session working under Claude
   Code's own temporary directory kept no transcript.
+- With a French locale, the setup conversation opened with "Je continue en
+  français ; dites-moi si vous préférez une autre langue", switched to
+  English when asked, and wrote `language: en` with the other coordinator
+  settings. The next `watch` run replied, noted and messaged in English,
+  though the account's organization instructions are in French.
 - Organization instructions set for the account still reach a coordinator,
-  whatever `--setting-sources`; one run replied in their language.
+  whatever `--setting-sources`; before the language was stated, one run
+  replied in their language.
 - An interactive coordinator under a terminal started `orchestrator
   coordinator next` in the background and went idle; when `watch` queued an
   event, the command ended, the session woke and handled it, and started the

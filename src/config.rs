@@ -65,6 +65,11 @@ pub struct Coordinator {
     /// A Bash call that admission has held back this long wakes the
     /// coordinator, once.
     pub wait_secs: u64,
+    /// The language a coordinator writes in, a tag such as `fr` or `pt-BR`
+    /// (see `language`): chosen in the setup conversation, English when
+    /// unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
 }
 
 impl Default for Coordinator {
@@ -77,6 +82,7 @@ impl Default for Coordinator {
             max_budget_usd: None,
             max_minutes: 5,
             wait_secs: 20,
+            language: None,
         }
     }
 }
@@ -181,6 +187,9 @@ pub fn check_coordinator(c: &Coordinator, admission: Option<&Admission>) -> Resu
         "model {:?} is not a model name or alias, such as {DEFAULT_MODEL}, sonnet or haiku",
         c.model
     );
+    if let Some(tag) = &c.language {
+        crate::language::check(tag)?;
+    }
     ensure!(
         (1..=MAX_MINUTES).contains(&c.max_minutes),
         "max_minutes ({}) must be between 1 and {MAX_MINUTES}",
@@ -276,6 +285,7 @@ mod tests {
                 max_budget_usd: Some(0.5),
                 max_minutes: 3,
                 wait_secs: 15,
+                language: None,
             })
         );
         assert_eq!(config.admission, None);
@@ -351,6 +361,12 @@ mod tests {
             };
             assert!(check_coordinator(&c, None).is_err(), "{model:?}");
         }
+        let speaking = |tag: &str| Coordinator {
+            language: Some(tag.into()),
+            ..ok.clone()
+        };
+        assert!(check_coordinator(&speaking("fr"), None).is_ok());
+        assert!(check_coordinator(&speaking("French"), None).is_err());
         let minutes = |max_minutes| Coordinator {
             max_minutes,
             ..ok.clone()

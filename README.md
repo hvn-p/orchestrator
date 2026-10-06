@@ -111,9 +111,11 @@ orchestrator setup
 ```
 
 `setup` opens a conversation with the coordinator (Claude Code, `claude` on
-the `PATH`): it says what orchestrator does, looks at the machine, then asks
-you, in plain words, whether it may be woken automatically, with which model
-(it proposes claude-sonnet-5-5), what your priorities are, and proposes
+the `PATH`), in the system's language, taken from the locale (`LC_ALL`, then
+`LC_MESSAGES`, then `LANG`; English without one), which it offers to change.
+It says what orchestrator does, looks at the machine, then asks you, in
+plain words, whether it may be woken automatically, with which model (it
+proposes claude-sonnet-5-5), what your priorities are, and proposes
 admission thresholds from the machine's facts, adjusted to your answers. It
 writes each part once you agree, through the commands below, which refuse
 values that make no sense on the machine, and ends by saying what it wrote.
@@ -123,7 +125,7 @@ the same conversation when there is no configuration yet.
 `orchestrator config` prints the file. The commands setup uses also work by
 hand: `orchestrator config admission --heavy-mb … --margin-mb …
 --max-wait-secs …` sets the thresholds, and `orchestrator config
-coordinator --wake yes --model …` the coordinator. Written by hand, for a
+coordinator --wake yes --model … --language …` the coordinator. Written by hand, for a
 machine with about 30 GB of RAM:
 
 ```json
@@ -159,7 +161,8 @@ the error goes to `$XDG_RUNTIME_DIR/orchestrator/prefix.log`.
     "wake": true,
     "model": "claude-sonnet-5-5",
     "max_minutes": 5,
-    "wait_secs": 20
+    "wait_secs": 20,
+    "language": "en"
   }
 }
 ```
@@ -168,7 +171,11 @@ the error goes to `$XDG_RUNTIME_DIR/orchestrator/prefix.log`.
 itself, one at a time, for each batch of `memory_pressure` events and calls
 that admission has held back `wait_secs`, each run with `model` and stopped
 past `max_minutes`, a guard against a stuck run. Without it, nothing spends
-tokens unless you open a coordinator. Nothing caps a run's spending unless
+tokens unless you open a coordinator. `language`, a tag such as `fr`, `en` or
+`pt-BR` (two or three lowercase letters, then subtags joined by `-`), is the
+language every coordinator writes in: replies, journal notes and messages to
+sessions; English when unset. What orchestrator itself prints, admission's
+notices included, stays in English. Nothing caps a run's spending unless
 you add `"max_budget_usd"`, which Claude Code checks against its estimate at
 API list price, not against a subscription's quota.
 

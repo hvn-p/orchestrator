@@ -56,11 +56,32 @@ pub struct Briefing {
     /// The recent part of its journal.
     pub journal: Option<String>,
     pub priorities: Option<String>,
+    pub language: Language,
 }
 
-/// The briefing of a coordinator waking now.
-pub fn briefing(places: &Places, paths: &Paths) -> Briefing {
+/// The language a coordinator writes in.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Language {
+    /// A language tag, such as `fr`.
+    pub tag: String,
+    /// Chosen by the user and kept in the configuration, rather than taken
+    /// from the system or the default.
+    pub configured: bool,
+}
+
+/// The briefing of a coordinator waking now, writing in the configured
+/// language, else in `fallback`.
+pub fn briefing(places: &Places, paths: &Paths, fallback: &str) -> Briefing {
+    let configured = config::load(&places.config)
+        .ok()
+        .flatten()
+        .and_then(|c| c.coordinator)
+        .and_then(|c| c.language);
     Briefing {
+        language: Language {
+            configured: configured.is_some(),
+            tag: configured.unwrap_or_else(|| fallback.to_string()),
+        },
         state: gather(places),
         journal: journal::tail(&paths.journal(), JOURNAL_LINES),
         priorities: fs::read_to_string(&paths.priorities)
@@ -160,7 +181,14 @@ mod tests {
         journal::note(&paths.journal(), "asked alpha", 0).unwrap();
         fs::create_dir_all(base.join("config")).unwrap();
         fs::write(&paths.priorities, "beta matters most\n").unwrap();
-        let b = briefing(&places, &paths);
+        let b = briefing(&places, &paths, "de");
+        assert_eq!(
+            b.language,
+            Language {
+                tag: "de".into(),
+                configured: false
+            }
+        );
         for section in [
             "### Configuration",
             "### Machine",
@@ -181,5 +209,14 @@ mod tests {
             Some("1970-01-01 00:00 UTC  asked alpha")
         );
         assert_eq!(b.priorities.as_deref(), Some("beta matters most\n"));
+        config::set_coordinator(&places.config, |c| c.language = Some("fr".into())).unwrap();
+        let b = briefing(&places, &paths, "de");
+        assert_eq!(
+            b.language,
+            Language {
+                tag: "fr".into(),
+                configured: true
+            }
+        );
     }
 }
