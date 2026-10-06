@@ -104,7 +104,9 @@ One binary, `orchestrator`, with subcommands.
   in a delegated systemd user scope in `orchestrator.slice`, moves claude into the `main/` leaf (a group that hands controllers to
   its children cannot hold processes itself), then enables `+cpu +memory +pids`
   for the sub-groups. A session started with `claude` alone stays outside
-  orchestration.
+  orchestration. Before replacing itself with `systemd-run`, it checks that the
+  user manager answers on the socket `systemd-run` will use; when it does not,
+  the session starts unorchestrated, with a warning.
 - **The shell prefix**, `orchestrator-prefix` (exists):
   Claude Code calls it with the full command line as a single argument, for
   every Bash call, hook, status line refresh and MCP stdio server start. It
@@ -393,6 +395,12 @@ Other measurements:
   `rate_limits.seven_day` (used percentage, reset time). The documentation lists
   this for some subscription types only; it was present on the reference
   machine's account.
+- `systemd-run --user` talks to `$XDG_RUNTIME_DIR/systemd/private` when that
+  variable is set, with no fallback to the session bus, and to the session bus
+  otherwise. With nothing listening there it exits with an error; with a
+  manager that never answers, it was still waiting after 40 s. The user
+  manager logs a failure for each connection closed before it accepted it; a
+  D-Bus authentication waits for that, and adds about 1.5 ms to `launch`.
 
 From the Claude Code documentation:
 
@@ -449,6 +457,10 @@ Coordinator spike, Claude Code 2.1.291, Haiku, October 2026:
   `systemd-run --user`, services activated over D-Bus, an `xdg-open` handed to an
   already running browser. A shared service counts for the session that started
   it.
+- **`systemd-run` failing after the check**: once `launch` has replaced itself
+  with `systemd-run`, nothing can fall back. A user manager that answers the
+  check but then refuses the scope, or stalls, keeps the session from
+  starting.
 - **Freezing frees no RAM** by itself; with little swap it only stops growth.
 - **systemd-oomd**: some distributions arm it on `user@.service` (kill above 50 %
   memory pressure for 20 s on the reference machine). Throttling too hard might

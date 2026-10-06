@@ -51,8 +51,9 @@ This installs two binaries side by side: `orchestrator` and
 orchestrator launch -- claude
 ```
 
-Arguments after `--` go to `claude` unchanged. When the session's cgroup cannot
-be set up, the session still starts, unorchestrated, with a warning.
+Arguments after `--` go to `claude` unchanged. When the systemd user manager
+does not answer, or the session's cgroup cannot be set up, the session still
+starts, unorchestrated, with a warning.
 
 ```sh
 orchestrator sessions
