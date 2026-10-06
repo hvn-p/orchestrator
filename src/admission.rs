@@ -55,8 +55,8 @@ const LOCK_RETRY: Duration = Duration::from_millis(5);
 /// A command of a call with a learned peak.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Known {
-    /// What the notices show of the command: never its full words.
-    pub head: String,
+    /// What the notices show of the command: its learned label.
+    pub label: String,
     pub peak_mb: u64,
     /// It ran alone in one of its latest calls, so its peak was measured
     /// rather than shared with other commands.
@@ -66,8 +66,8 @@ pub struct Known {
 /// A heavy call.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Heavy {
-    /// The head of the command it goes by.
-    pub head: String,
+    /// The label of the command it goes by.
+    pub label: String,
     /// Its expected peak.
     pub peak_mb: u64,
 }
@@ -144,7 +144,7 @@ pub fn known(invocation: &str, cwd: &Path, home: Option<&Path>, peaks_dir: &Path
         };
         if let Some(entry) = peaks::entry(peaks_dir, &key, c) {
             known.push(Known {
-                head: entry.label,
+                label: entry.label,
                 peak_mb: entry.peak_mb,
                 alone: entry.recent.iter().any(|call| call.1),
             });
@@ -161,7 +161,7 @@ pub fn heavy(known: &[Known], cfg: &Admission) -> Option<Heavy> {
     let mut heavy = known.iter().filter(|k| is_heavy(k.peak_mb, cfg));
     let first = heavy.clone().find(|k| k.alone).or_else(|| heavy.next())?;
     Some(Heavy {
-        head: first.head.clone(),
+        label: first.label.clone(),
         peak_mb,
     })
 }
@@ -387,12 +387,12 @@ fn sleep_until_change(groups: &[PathBuf], timeout: Duration) {
     let _ = poll(&mut fds, Some(&timeout));
 }
 
-/// The command as notices show it: its head, never its full words.
+/// The command as notices show it: its label.
 fn shown(call: &Heavy) -> String {
-    if call.head.is_empty() {
+    if call.label.is_empty() {
         "this command".into()
     } else {
-        format!("`{}`", call.head)
+        format!("`{}`", call.label)
     }
 }
 
@@ -456,17 +456,17 @@ mod tests {
     const SESSION: &str = "/u/orchestrator.slice/s.scope";
     const SEC: Duration = Duration::from_secs(1);
 
-    fn k(head: &str, peak_mb: u64, alone: bool) -> Known {
+    fn k(label: &str, peak_mb: u64, alone: bool) -> Known {
         Known {
-            head: head.into(),
+            label: label.into(),
             peak_mb,
             alone,
         }
     }
 
-    fn h(head: &str, peak_mb: u64) -> Heavy {
+    fn h(label: &str, peak_mb: u64) -> Heavy {
         Heavy {
-            head: head.into(),
+            label: label.into(),
             peak_mb,
         }
     }

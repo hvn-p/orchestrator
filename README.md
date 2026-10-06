@@ -114,7 +114,7 @@ of RAM:
   counts toward the Bash call's timeout (2 min by default, 10 min at most).
 
 While a call waits, its output starts with a notice naming the command by its
-head, its expected peak and the memory it needs, then a second one when it
+label, its expected peak and the memory it needs, then a second one when it
 runs. Remove the file, or its `admission` section, to turn admission off. A
 file that cannot be read, an unknown field included, also turns it off, and
 the error goes to `$XDG_RUNTIME_DIR/orchestrator/prefix.log`.

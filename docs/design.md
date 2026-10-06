@@ -190,7 +190,7 @@ replacing itself with the shell:
   frees up, and every second otherwise: available memory has no notification.
 - It writes one notice to its standard error when it starts waiting and one
   when it runs; Claude reads them with the call's output. A notice names the
-  call by the head of its first heavy command that has run alone (its peak
+  call by the label of its first heavy command that has run alone (its peak
   was measured, not shared), else of its first heavy command, and gives the
   expected peak, the memory needed and the memory free.
 - After the longest wait, the call runs anyway, with its reservation, and its
