@@ -25,9 +25,13 @@ Early. What exists:
   memory peak of each finished Bash call of an orchestrated session, learns it
   per repository and command, then removes the call's empty group.
 - `orchestrator peaks` prints the peaks learned so far.
+- A first coordinator, once enabled: a Claude Code session that `watch`
+  starts when memory runs short or admission holds a call back long. It asks
+  sessions to free memory, or tells them why a call waits; it pulls no
+  lever. `orchestrator setup` enables it and has it write the configuration.
 
-Everything else is design (throttling, the coordinator): see
-[docs/design.md](docs/design.md).
+Everything else is design (throttling, priorities between waiting calls):
+see [docs/design.md](docs/design.md).
 
 ## Requirements
 
@@ -78,6 +82,15 @@ it ran in. `--help` lists every option.
 orchestrator peaks
 ```
 
+```sh
+orchestrator admission
+orchestrator machine
+```
+
+`admission` prints the Bash calls waiting for memory and the memory reserved
+by heavy calls running; `machine` prints memory, swap, CPUs and what the
+systemd user manager delegates.
+
 Learned peaks live in `$XDG_STATE_HOME/orchestrator/peaks/` (by default
 `~/.local/state/orchestrator/peaks/`) unless `--state-dir` says otherwise, for
 `watch` as for `peaks`. A command is stored under a hash, with a label for
@@ -87,12 +100,22 @@ wrote land there; see "Recognising a command" in
 
 ## Configuration
 
-Without a configuration, nothing waits. Admission reads
-`$XDG_CONFIG_HOME/orchestrator/config.json`, by default
+Without a configuration, nothing waits and nothing spends tokens. Admission
+reads `$XDG_CONFIG_HOME/orchestrator/config.json`, by default
 `~/.config/orchestrator/config.json`, and knows only the peaks `orchestrator
-watch` has learned. The coordinator is meant to write this file, adapted to
-the machine; until it exists, write it by hand. For a machine with about 30 GB
-of RAM:
+watch` has learned.
+
+```sh
+orchestrator setup
+```
+
+`setup` adds a `coordinator` section, your consent to spend tokens, then
+starts a coordinator (Claude Code, `claude` on the `PATH`) that examines the
+machine, writes the admission thresholds and ends with a summary. Running it
+again reviews them. `orchestrator config` prints the file;
+`orchestrator config admission --heavy-mb … --margin-mb … --max-wait-secs …`
+sets the thresholds by hand, refusing values that make no sense on the
+machine. Written by hand, for a machine with about 30 GB of RAM:
 
 ```json
 {
@@ -119,6 +142,40 @@ runs. Remove the file, or its `admission` section, to turn admission off. A
 file that cannot be read, an unknown field included, also turns it off, and
 the error goes to `$XDG_RUNTIME_DIR/orchestrator/prefix.log`.
 
+### The coordinator
+
+```json
+{
+  "coordinator": {
+    "model": "haiku",
+    "max_budget_usd": 0.25,
+    "max_minutes": 5,
+    "wait_secs": 20
+  }
+}
+```
+
+The values are what `setup` writes. With this section, `orchestrator watch`
+starts a coordinator, one at a time, for each batch of `memory_pressure`
+events and calls that admission has held back `wait_secs`, each run with
+`model`, at most `max_budget_usd` as Claude Code estimates it, and stopped
+past `max_minutes`. Remove the section to turn it off. A run may read the
+state, keep its journal and message sessions, nothing else; it messages
+under the name `orchestrator-coordinator`.
+
+```sh
+orchestrator coordinator
+```
+
+opens an interactive coordinator: you talk to it, and it receives the events
+for as long as it stays open; meanwhile `watch` starts no run. Tell it your
+priorities (which sessions matter, which can wait), and it keeps them in
+`priorities.md` next to the configuration, a file you can also edit. It
+remembers what it did in a journal under
+`$XDG_STATE_HOME/orchestrator/coordinator/`; each run `watch` started is
+summarised, cost and reply included, in
+`$XDG_RUNTIME_DIR/orchestrator/coordinator/runs.jsonl`.
+
 ## Claude Code dependency
 
 orchestrator relies on Claude Code only through the contracts listed in
@@ -130,9 +187,9 @@ installed Claude Code:
 cargo test --test claude_code -- --ignored --nocapture
 ```
 
-This starts a real headless session through `orchestrator launch`, so it
-needs a signed-in `claude`, a systemd user manager with cgroup v2, and spends
-about a cent of tokens. It never runs in CI.
+This starts a real headless session through `orchestrator launch`, then a
+coordinator, so it needs a signed-in `claude`, a systemd user manager with
+cgroup v2, and spends a few cents of tokens. It never runs in CI.
 
 ## Continuous integration
 
