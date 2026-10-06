@@ -3,9 +3,9 @@
 
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
-use orchestrator::{launch, memory, procfs, runtime, sessions, watch};
+use orchestrator::{launch, memory, peaks, procfs, runtime, sessions, state, watch};
 use std::ffi::OsString;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 /// Characters of a command line shown by `orchestrator sessions`.
@@ -27,6 +27,8 @@ enum Command {
     Watch(WatchArgs),
     /// Print memory per Claude session and the orphaned processes.
     Sessions(Sources),
+    /// Print the memory peaks learned per repository and command.
+    Peaks(StateDir),
     /// Start a command, normally `claude`, as an orchestrated session.
     Launch(Launched),
     /// Set up a new session scope, then run its command. Started by `launch`.
@@ -52,9 +54,18 @@ struct Sources {
 }
 
 #[derive(Args)]
+struct StateDir {
+    /// Where learned peaks are kept [default: `$XDG_STATE_HOME/orchestrator`].
+    #[arg(long)]
+    state_dir: Option<PathBuf>,
+}
+
+#[derive(Args)]
 struct WatchArgs {
     #[command(flatten)]
     sources: Sources,
+    #[command(flatten)]
+    state: StateDir,
     /// Where the events file is written [default: `$XDG_RUNTIME_DIR/orchestrator`].
     #[arg(long)]
     runtime_dir: Option<PathBuf>,
@@ -78,6 +89,7 @@ fn main() -> Result<()> {
                 Some(dir) => dir,
                 None => runtime::default_dir()?,
             },
+            state_dir: state_dir(args.state)?,
             orphan_interval: Duration::from_secs(args.orphan_interval_secs.max(1)),
             thresholds: watch::Thresholds {
                 stall_ms: args.stall_ms,
@@ -85,6 +97,7 @@ fn main() -> Result<()> {
             },
         }),
         Command::Sessions(sources) => print_sessions(&sources),
+        Command::Peaks(dir) => print_peaks(&state_dir(dir)?),
         Command::Launch(l) => {
             let e = launch::launch(&l.command);
             eprintln!("orchestrator: {e:#}; the session runs unorchestrated");
@@ -99,6 +112,52 @@ fn sessions_dir(sources: &Sources) -> Result<PathBuf> {
         Some(dir) => Ok(dir.clone()),
         None => sessions::default_dir().context("neither CLAUDE_CONFIG_DIR nor HOME is set"),
     }
+}
+
+fn state_dir(arg: StateDir) -> Result<PathBuf> {
+    match arg.state_dir {
+        Some(dir) => Ok(dir),
+        None => state::default_dir(),
+    }
+}
+
+/// Heaviest first. A command shows as its label; its id's start tells apart
+/// two commands with the same label.
+fn print_peaks(state: &Path) -> Result<()> {
+    let learned = peaks::list(&peaks::dir(state))?;
+    if learned.is_empty() {
+        println!("No peak learned yet.");
+    }
+    for repo in learned {
+        let mut commands = repo.commands;
+        commands.sort_by(|a, b| b.peak_mb.cmp(&a.peak_mb).then_with(|| a.id.cmp(&b.id)));
+        let width = commands
+            .iter()
+            .map(|c| c.label.chars().count().min(peaks::LABEL_MAX))
+            .fold("COMMAND".len(), usize::max);
+        println!("{}", repo.repository);
+        println!(
+            "  {:>7}  {:<8}  {:<width$}  LATEST CALLS, MB (* ALONE)",
+            "PEAK MB", "ID", "COMMAND",
+        );
+        for c in commands {
+            let calls: Vec<String> = c
+                .recent
+                .iter()
+                .rev()
+                .map(|peaks::Call(mb, alone)| format!("{mb}{}", if *alone { "*" } else { "" }))
+                .collect();
+            println!(
+                "  {:>7}  {:<8}  {:<width$}  {}",
+                c.peak_mb,
+                c.id.get(..8).unwrap_or(&c.id),
+                procfs::truncate(&c.label, peaks::LABEL_MAX),
+                calls.join(" "),
+            );
+        }
+        println!();
+    }
+    Ok(())
 }
 
 fn print_sessions(sources: &Sources) -> Result<()> {
