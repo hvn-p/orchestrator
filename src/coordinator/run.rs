@@ -5,15 +5,18 @@
 //!
 //! A coordinator sees only what its role needs. It loads no user settings,
 //! hooks, plugins, MCP servers nor the user's CLAUDE.md, only the project
-//! settings of its own directory, which the user may add. It may read the
-//! state through `orchestrator` commands and keep its journal; at setup,
-//! write the admission thresholds through one; outside setup, message
-//! sessions. Runs started by `watch` and `setup` are denied anything else
-//! without asking (`dontAsk`); an interactive coordinator asks its user.
+//! settings of its own directory, which the user may add. It starts from a
+//! briefing code gathered (see `state`); it may read more through
+//! `orchestrator` commands and note in its journal through one; at setup,
+//! write the admission thresholds; outside setup, message sessions. Runs
+//! started by `watch` and `setup` are denied anything else without asking
+//! (`dontAsk`); an interactive coordinator asks its user.
 //! Both modes prompt for permissions, like the sessions they message: Claude
 //! Code holds a message from a session that skips permission prompts.
 
-use super::{Paths, Pending};
+use super::Paths;
+use super::queue::Queued;
+use super::state::{Briefing, missing};
 use crate::config::Coordinator;
 use anyhow::{Context, Result};
 use serde::Serialize;
@@ -28,13 +31,15 @@ use std::process::{Command, Stdio};
 pub const ROLE: &str = include_str!("role.md");
 /// The name a coordinator goes by: sessions see their messages come from it.
 pub const NAME: &str = "orchestrator-coordinator";
-/// What a coordinator may run to read the state, exactly as written.
-const READ: [&str; 5] = [
+/// What a coordinator may run without asking, exactly as written: reading
+/// the state, and noting in its journal.
+const ALLOWED: [&str; 6] = [
     "orchestrator sessions --heads",
     "orchestrator admission",
     "orchestrator peaks",
     "orchestrator machine",
     "orchestrator config",
+    "orchestrator coordinator note *",
 ];
 /// What writes the admission thresholds, allowed without asking at setup
 /// only. An interactive coordinator asks its user first; a run for events
@@ -51,7 +56,7 @@ pub enum Mode<'a> {
     /// `orchestrator setup`: examine the machine and write the thresholds.
     Setup { reconfigure: bool },
     /// `watch`: handle a batch of events, then end.
-    Batch(&'a [Pending]),
+    Batch(&'a [Queued]),
     /// `orchestrator coordinator`: stay open with the user, receiving events.
     Interactive,
 }
@@ -70,13 +75,19 @@ pub fn write_role(paths: &Paths) -> Result<()> {
     fs::write(paths.role(), ROLE).with_context(|| format!("writing {}", paths.role().display()))
 }
 
-/// The `claude` command starting a coordinator in `mode`, in its own
-/// directory, with `bin` first on its `PATH` so that its `orchestrator`
-/// commands are this orchestrator's. `cfg` bounds runs; an interactive
-/// coordinator has its user instead.
+/// The `claude` command starting a coordinator in `mode` with `prompt`, in
+/// its own directory, with `bin` first on its `PATH` so that its
+/// `orchestrator` commands are this orchestrator's. `cfg` gives a run its
+/// model; an interactive coordinator has its user instead.
 // claude-code: coordinator-session
-pub fn command(mode: &Mode<'_>, cfg: &Coordinator, paths: &Paths, bin: &Path, now: u64) -> Command {
-    command_of(OsStr::new("claude"), mode, cfg, paths, bin, now)
+pub fn command(
+    mode: &Mode<'_>,
+    cfg: &Coordinator,
+    paths: &Paths,
+    bin: &Path,
+    prompt: &str,
+) -> Command {
+    command_of(OsStr::new("claude"), mode, cfg, paths, bin, prompt)
 }
 
 /// `command`, with `program` for `claude`.
@@ -86,10 +97,10 @@ pub fn command_of(
     cfg: &Coordinator,
     paths: &Paths,
     bin: &Path,
-    now: u64,
+    prompt: &str,
 ) -> Command {
     let mut cmd = Command::new(program);
-    cmd.args(args(mode, cfg, paths, now))
+    cmd.args(args(mode, cfg, paths, prompt))
         .current_dir(&paths.home)
         .env("PATH", search_path(bin));
     if !matches!(mode, Mode::Interactive) {
@@ -106,26 +117,26 @@ fn search_path(bin: &Path) -> OsString {
     std::env::join_paths(dirs).unwrap_or(inherited)
 }
 
-/// The arguments of `claude` for a coordinator in `mode`.
+/// The arguments of `claude` for a coordinator in `mode`, asked `prompt`.
 // claude-code: coordinator-session
 // claude-code: coordinator-permissions
 // claude-code: cross-session-message
-pub fn args(mode: &Mode<'_>, cfg: &Coordinator, paths: &Paths, now: u64) -> Vec<OsString> {
-    let journal = absolute_rule(&paths.journal());
-    let mut tools = vec!["Bash", "Read", "Edit", "Write"];
-    let mut allowed: Vec<String> = READ.iter().map(|c| format!("Bash({c})")).collect();
-    if matches!(mode, Mode::Setup { .. }) {
-        allowed.push(format!("Bash({WRITE_ADMISSION})"));
-    }
-    allowed.push(format!("Edit({journal})"));
-    if !matches!(mode, Mode::Setup { .. }) {
-        tools.extend(["SendMessage", "ListAgents"]);
-        allowed.extend(["SendMessage".to_string(), "ListAgents".to_string()]);
-    }
-    // What an interactive coordinator does beyond that, its priorities file
-    // and the thresholds included, it asks its user first.
-    if matches!(mode, Mode::Interactive) {
-        allowed.push(format!("Bash({NEXT})"));
+pub fn args(mode: &Mode<'_>, cfg: &Coordinator, paths: &Paths, prompt: &str) -> Vec<OsString> {
+    let mut tools = vec!["Bash", "Read"];
+    let mut allowed: Vec<String> = ALLOWED.iter().map(|c| format!("Bash({c})")).collect();
+    match mode {
+        Mode::Setup { .. } => allowed.push(format!("Bash({WRITE_ADMISSION})")),
+        Mode::Batch(_) => {
+            tools.extend(["SendMessage", "ListAgents"]);
+            allowed.extend(["SendMessage".to_string(), "ListAgents".to_string()]);
+        }
+        // The file tools edit the priorities, which it asks its user for,
+        // like the thresholds.
+        Mode::Interactive => {
+            tools.extend(["Edit", "Write", "SendMessage", "ListAgents"]);
+            allowed.extend(["SendMessage".to_string(), "ListAgents".to_string()]);
+            allowed.push(format!("Bash({NEXT})"));
+        }
     }
     let settings = serde_json::json!({
         "autoMemoryEnabled": false,
@@ -153,55 +164,33 @@ pub fn args(mode: &Mode<'_>, cfg: &Coordinator, paths: &Paths, now: u64) -> Vec<
     match mode {
         Mode::Interactive => args.extend(["--permission-mode".into(), "default".into()]),
         Mode::Setup { .. } | Mode::Batch(_) => {
-            let output = if matches!(mode, Mode::Batch(_)) {
-                "json"
-            } else {
-                "text"
-            };
             args.extend(
                 [
                     "-p",
                     "--model",
                     &cfg.model,
-                    "--max-budget-usd",
-                    &cfg.max_budget_usd.to_string(),
                     "--permission-mode",
                     "dontAsk",
                     "--no-session-persistence",
                     "--output-format",
-                    output,
+                    "json",
                 ]
                 .map(OsString::from),
             );
+            if let Some(usd) = cfg.max_budget_usd {
+                args.extend(["--max-budget-usd".into(), usd.to_string().into()]);
+            }
         }
     }
     // The prompt last, after `--`: it may start with a dash.
-    args.extend(["--".into(), prompt(mode, paths, now).into()]);
+    args.extend(["--".into(), prompt.into()]);
     args
 }
 
-/// `path` as a permission rule names an absolute path.
-fn absolute_rule(path: &Path) -> String {
-    format!("/{}", path.display())
-}
-
-/// What the coordinator is asked, after its role.
-pub fn prompt(mode: &Mode<'_>, paths: &Paths, now: u64) -> String {
-    let state = |path: &Path| {
-        if path.exists() {
-            ""
-        } else {
-            ", which does not exist yet"
-        }
-    };
-    let mut prompt = format!(
-        "Now: {} ({now} s since the Unix epoch).\nYour journal: {}{}. The user's priorities: {}{}.\n\n",
-        utc(now),
-        paths.journal().display(),
-        state(&paths.journal()),
-        paths.priorities.display(),
-        state(&paths.priorities),
-    );
+/// What the coordinator is asked, after its role, at `now` in seconds since
+/// the Unix epoch.
+pub fn prompt(mode: &Mode<'_>, paths: &Paths, now: u64, briefing: &Briefing) -> String {
+    let mut prompt = format!("Now: {} ({now} s since the Unix epoch).\n\n", utc(now));
     match mode {
         Mode::Setup { reconfigure } => {
             prompt.push_str(if *reconfigure {
@@ -210,28 +199,36 @@ pub fn prompt(mode: &Mode<'_>, paths: &Paths, now: u64) -> String {
                 "`orchestrator setup` started you: there are no admission thresholds yet. "
             });
             prompt.push_str(
-                "Do the setup your role describes, then end with a short summary of the thresholds you chose and why, for the user.",
+                "Do the setup your role describes from the state below, gathered just now, then end with a short summary of the thresholds you chose and why, for the user.\n",
             );
         }
         Mode::Batch(batch) => {
             prompt.push_str(
-                "orchestrator woke you for these events, oldest first, one JSON object per line. `at` is when the latest event of its kind came, `count` how many merged into it, `first_at` when the first came, in seconds since the Unix epoch:\n\n",
+                "orchestrator woke you for the events below. Decide from them and from the state below, gathered when you were woken; run a read command only for something it lacks. Then send your messages and note in your journal, in the same turn when you can. This run ends with your reply: nobody reads answers to your messages, so ask for none. End with one or two sentences saying what you did.\n\n## Events\n\nOldest first, one JSON object per line. `at` is when the latest event of its kind came, `count` how many merged into it, `first_at` when the first came, in seconds since the Unix epoch.\n\n",
             );
-            for p in *batch {
-                prompt.push_str(&p.line());
+            for q in *batch {
+                prompt.push_str(&q.line());
                 prompt.push('\n');
             }
-            prompt.push_str(
-                "\nHandle them following your role. This run ends with your reply: nobody reads answers to your messages, so ask for none.",
-            );
         }
         Mode::Interactive => {
-            let _ = write!(
+            let _ = writeln!(
                 prompt,
-                "The user opened you with `orchestrator coordinator` and is at this terminal. Read your journal and the priorities. Then run `{NEXT}` with the Bash tool in the background (run_in_background): it ends when events are pending, and prints them as JSON lines. Each time it ends, handle the events it printed following your role, then start it again; keep one running for as long as this session lasts. While you are open, no other coordinator starts. Between events, answer the user; change the priorities file or the thresholds only when the user asks you to. Sessions you message may answer while you are open."
+                "The user opened you with `orchestrator coordinator` and is at this terminal. The state below was gathered just now. Run `{NEXT}` with the Bash tool in the background (run_in_background): it ends when events are pending and prints them, with the state at that moment. Each time it ends, handle the events following your role, then start it again: asking for the next batch tells orchestrator you handled the last one. Keep one running for as long as this session lasts; while you are open, no other coordinator starts. Between events, answer the user; change the priorities file or the thresholds only when the user asks you to. Sessions you message may answer while you are open."
             );
         }
     }
+    let _ = write!(
+        prompt,
+        "\n## State when you were woken\n\n{}\n## Your journal, latest lines ({}{})\n\n{}\n\n## The user's priorities ({}{})\n\n{}\n",
+        briefing.state,
+        paths.journal().display(),
+        missing(&paths.journal()),
+        briefing.journal.as_deref().unwrap_or("Nothing yet."),
+        paths.priorities.display(),
+        missing(&paths.priorities),
+        briefing.priorities.as_deref().unwrap_or("None written."),
+    );
     prompt
 }
 
@@ -256,20 +253,38 @@ pub fn utc(secs: u64) -> String {
     )
 }
 
-/// What is kept of a run `watch` started, one line of `runs.jsonl`.
+/// How a run ended, seen from outside.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Outcome {
+    pub secs: u64,
+    /// Its exit code, None when a signal ended it.
+    pub exit: Option<i32>,
+    /// Stopped at its time limit.
+    pub stopped: bool,
+}
+
+/// What is kept of a run, one line of `runs.jsonl`: what it used first,
+/// then how it ended and what it says it did.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct RunRecord {
     /// When it started, in seconds since the Unix epoch.
     pub at: u64,
+    /// `events`, for a run `watch` started, or `setup`.
+    pub kind: String,
     pub events: usize,
     pub secs: u64,
-    /// Its exit code, None when a signal ended it.
-    pub exit: Option<i32>,
-    /// `watch` stopped it at its time limit.
-    pub stopped: bool,
-    pub cost_usd: Option<f64>,
     pub turns: Option<u64>,
+    /// Input tokens processed, cache writes included, cache reads not.
+    pub input_tokens: Option<u64>,
+    /// Input tokens read from the prompt cache.
+    pub cache_read_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+    pub exit: Option<i32>,
+    pub stopped: bool,
     pub is_error: Option<bool>,
+    /// Claude Code's estimate at API list price; a subscription counts
+    /// tokens against its quota instead.
+    pub list_price_estimate_usd: Option<f64>,
     /// Its final reply: what it says it did.
     pub reply: Option<String>,
 }
@@ -277,26 +292,49 @@ pub struct RunRecord {
 impl RunRecord {
     /// From what the run printed with `--output-format json`.
     // claude-code: print-json-result
-    pub fn new(
-        at: u64,
-        events: usize,
-        secs: u64,
-        exit: Option<i32>,
-        stopped: bool,
-        output: &[u8],
-    ) -> RunRecord {
+    pub fn new(kind: &str, at: u64, events: usize, outcome: Outcome, output: &[u8]) -> RunRecord {
         let result: Value = serde_json::from_slice(output).unwrap_or(Value::Null);
+        let usage = &result["usage"];
+        let input = [
+            usage["input_tokens"].as_u64(),
+            usage["cache_creation_input_tokens"].as_u64(),
+        ];
         RunRecord {
             at,
+            kind: kind.to_string(),
             events,
-            secs,
-            exit,
-            stopped,
-            cost_usd: result["total_cost_usd"].as_f64(),
+            secs: outcome.secs,
             turns: result["num_turns"].as_u64(),
+            input_tokens: input
+                .iter()
+                .any(Option::is_some)
+                .then(|| input.iter().flatten().sum()),
+            cache_read_tokens: usage["cache_read_input_tokens"].as_u64(),
+            output_tokens: usage["output_tokens"].as_u64(),
+            exit: outcome.exit,
+            stopped: outcome.stopped,
             is_error: result["is_error"].as_bool(),
+            list_price_estimate_usd: result["total_cost_usd"].as_f64(),
             reply: result["result"].as_str().map(str::to_string),
         }
+    }
+
+    /// The run handled its events: it ended by itself, successfully.
+    pub fn handled(&self) -> bool {
+        self.exit == Some(0) && !self.stopped && self.is_error != Some(true)
+    }
+
+    /// How much it took, for a human: tokens and time first.
+    pub fn summary(&self) -> String {
+        let n = |v: Option<u64>| v.map_or("?".to_string(), |v| v.to_string());
+        format!(
+            "{} turns, {} s, {} input tokens, {} read from cache, {} output tokens",
+            n(self.turns),
+            self.secs,
+            n(self.input_tokens),
+            n(self.cache_read_tokens),
+            n(self.output_tokens),
+        )
     }
 }
 
@@ -329,23 +367,34 @@ mod tests {
             .collect()
     }
 
-    fn batch() -> Vec<Pending> {
+    fn batch() -> Vec<Queued> {
         let event = Event::MemoryPressure {
             available_mb: 700,
             stall_ms: 200,
             largest: None,
             next: vec![],
         };
-        vec![Pending::new(1_791_210_633, &event).unwrap().unwrap()]
+        vec![Queued::new(1_791_210_633, &event).unwrap().unwrap()]
+    }
+
+    fn briefing() -> Briefing {
+        Briefing {
+            state: "### Machine\n\nMemory: 31250 MB total\n\n".into(),
+            journal: Some("2026-10-05 14:00 UTC  asked alpha".into()),
+            priorities: None,
+        }
     }
 
     #[test]
-    fn a_run_is_bounded_and_denies_what_it_was_not_given() {
+    fn a_run_reads_messages_and_notes_nothing_else() {
         let cfg = Coordinator::default();
         let batch = batch();
-        let args = strings(&args(&Mode::Batch(&batch), &cfg, &paths(), 1_791_210_633));
-        assert_eq!(values(&args, "--model"), ["haiku"]);
-        assert_eq!(values(&args, "--max-budget-usd"), ["0.25"]);
+        let args = strings(&args(&Mode::Batch(&batch), &cfg, &paths(), "the prompt"));
+        assert_eq!(values(&args, "--model"), ["claude-sonnet-5-5"]);
+        assert!(
+            !args.contains(&"--max-budget-usd".to_string()),
+            "no cap by default"
+        );
         assert_eq!(values(&args, "--permission-mode"), ["dontAsk"]);
         assert_eq!(values(&args, "--output-format"), ["json"]);
         assert_eq!(values(&args, "--name"), [NAME]);
@@ -356,7 +405,7 @@ mod tests {
         );
         assert_eq!(
             values(&args, "--tools"),
-            ["Bash,Read,Edit,Write,SendMessage,ListAgents"]
+            ["Bash,Read,SendMessage,ListAgents"]
         );
         assert_eq!(
             values(&args, "--allowedTools"),
@@ -366,7 +415,7 @@ mod tests {
                 "Bash(orchestrator peaks)",
                 "Bash(orchestrator machine)",
                 "Bash(orchestrator config)",
-                "Edit(//home/u/.local/state/orchestrator/coordinator/journal.md)",
+                "Bash(orchestrator coordinator note *)",
                 "SendMessage",
                 "ListAgents",
             ]
@@ -379,33 +428,56 @@ mod tests {
             settings["permissions"]["blockReadsOutsideWorkingDirectories"],
             true
         );
-        let prompt = args.last().unwrap();
-        assert_eq!(args[args.len() - 2], "--");
+        assert_eq!(args[args.len() - 2..], ["--", "the prompt"]);
+        let capped = Coordinator {
+            max_budget_usd: Some(0.5),
+            ..cfg
+        };
+        let capped = strings(&super::args(&Mode::Batch(&batch), &capped, &paths(), "p"));
+        assert_eq!(values(&capped, "--max-budget-usd"), ["0.5"]);
+    }
+
+    #[test]
+    fn a_run_is_briefed_with_its_events_and_the_state() {
+        let batch = batch();
+        let prompt = prompt(&Mode::Batch(&batch), &paths(), 1_791_210_633, &briefing());
         assert!(
             prompt.starts_with("Now: 2026-10-05 14:30 UTC (1791210633 s"),
             "{prompt}"
         );
         assert!(prompt.contains(r#""kind":"memory_pressure""#), "{prompt}");
         assert!(prompt.contains(r#""count":1"#), "{prompt}");
+        assert!(
+            prompt.contains("## State when you were woken\n\n### Machine"),
+            "{prompt}"
+        );
+        assert!(prompt.contains("asked alpha"), "{prompt}");
+        assert!(prompt.contains("None written."), "{prompt}");
+        assert!(prompt.contains("(does not exist yet)"), "{prompt}");
     }
 
     #[test]
-    fn setup_messages_no_one() {
+    fn setup_writes_thresholds_and_messages_no_one() {
         let args = strings(&args(
             &Mode::Setup { reconfigure: false },
             &Coordinator::default(),
             &paths(),
-            0,
+            "p",
         ));
-        assert_eq!(values(&args, "--tools"), ["Bash,Read,Edit,Write"]);
+        assert_eq!(values(&args, "--tools"), ["Bash,Read"]);
         let allowed = values(&args, "--allowedTools");
         assert!(allowed.contains(&"Bash(orchestrator config admission *)"));
         assert!(
             !allowed.iter().any(|r| r.contains("SendMessage")),
             "{allowed:?}"
         );
-        assert_eq!(values(&args, "--output-format"), ["text"]);
-        assert!(args.last().unwrap().contains("no admission thresholds yet"));
+        let prompt = prompt(
+            &Mode::Setup { reconfigure: false },
+            &paths(),
+            0,
+            &briefing(),
+        );
+        assert!(prompt.contains("no admission thresholds yet"), "{prompt}");
     }
 
     #[test]
@@ -414,22 +486,31 @@ mod tests {
             &Mode::Interactive,
             &Coordinator::default(),
             &paths(),
-            0,
+            "p",
         ));
         assert_eq!(values(&args, "--permission-mode"), ["default"]);
         assert!(!args.contains(&"-p".to_string()));
-        assert!(!args.contains(&"--max-budget-usd".to_string()));
+        assert!(!args.contains(&"--model".to_string()));
         let allowed = values(&args, "--allowedTools");
         assert!(allowed.contains(&"Bash(orchestrator coordinator next)"));
         // Asked of the user, not allowed beforehand.
         assert!(!allowed.iter().any(|r| r.contains("config admission")));
-        assert!(!allowed.iter().any(|r| r.contains("priorities")));
-        assert!(args.last().unwrap().contains("run_in_background"));
+        assert!(
+            !allowed
+                .iter()
+                .any(|r| r.starts_with("Edit") || r.starts_with("Write"))
+        );
+        assert_eq!(
+            values(&args, "--tools"),
+            ["Bash,Read,Edit,Write,SendMessage,ListAgents"]
+        );
+        let prompt = prompt(&Mode::Interactive, &paths(), 0, &briefing());
+        assert!(prompt.contains("run_in_background"), "{prompt}");
     }
 
     #[test]
     fn the_role_names_every_command_it_may_run() {
-        for command in READ.iter().chain([&WRITE_ADMISSION]) {
+        for command in ALLOWED.iter().chain([&WRITE_ADMISSION]) {
             let shown = command.trim_end_matches(" *");
             assert!(ROLE.contains(&format!("`{shown}")), "{shown}");
         }
@@ -443,18 +524,61 @@ mod tests {
         assert_eq!(utc(951_782_400 + 86_399), "2000-02-29 23:59 UTC");
     }
 
+    const DONE: Outcome = Outcome {
+        secs: 30,
+        exit: Some(0),
+        stopped: false,
+    };
+
     #[test]
-    fn a_run_record_reads_the_result() {
-        let output = br#"{"type":"result","subtype":"success","is_error":false,"num_turns":4,"total_cost_usd":0.012,"result":"Asked alpha to stop its dev server."}"#;
-        let r = RunRecord::new(5, 2, 30, Some(0), false, output);
-        assert_eq!(r.cost_usd, Some(0.012));
+    fn a_run_record_reports_tokens_and_time_first() {
+        let output = br#"{"type":"result","subtype":"success","is_error":false,"num_turns":4,"total_cost_usd":0.012,"usage":{"input_tokens":10,"cache_creation_input_tokens":4000,"cache_read_input_tokens":9000,"output_tokens":300},"result":"Asked alpha to stop its dev server."}"#;
+        let r = RunRecord::new("events", 5, 2, DONE, output);
         assert_eq!(r.turns, Some(4));
-        assert_eq!(r.is_error, Some(false));
+        assert_eq!(
+            (r.input_tokens, r.cache_read_tokens, r.output_tokens),
+            (Some(4010), Some(9000), Some(300))
+        );
+        assert_eq!(r.list_price_estimate_usd, Some(0.012));
         assert_eq!(
             r.reply.as_deref(),
             Some("Asked alpha to stop its dev server.")
         );
-        let killed = RunRecord::new(5, 2, 300, None, true, b"");
-        assert_eq!((killed.cost_usd, killed.reply), (None, None));
+        assert!(r.handled());
+        assert_eq!(
+            r.summary(),
+            "4 turns, 30 s, 4010 input tokens, 9000 read from cache, 300 output tokens"
+        );
+        let line = serde_json::to_string(&r).unwrap();
+        assert!(
+            line.starts_with(
+                r#"{"at":5,"kind":"events","events":2,"secs":30,"turns":4,"input_tokens":4010,"#
+            ),
+            "{line}"
+        );
+    }
+
+    #[test]
+    fn a_stopped_failed_or_erring_run_did_not_handle_its_events() {
+        let killed = RunRecord::new(
+            "events",
+            5,
+            2,
+            Outcome {
+                exit: None,
+                stopped: true,
+                ..DONE
+            },
+            b"",
+        );
+        assert_eq!((killed.input_tokens, killed.reply.as_deref()), (None, None));
+        assert!(!killed.handled());
+        let failed = Outcome {
+            exit: Some(1),
+            ..DONE
+        };
+        assert!(!RunRecord::new("events", 5, 2, failed, b"{}").handled());
+        let erring = br#"{"is_error":true,"result":"Not logged in"}"#;
+        assert!(!RunRecord::new("events", 5, 2, DONE, erring).handled());
     }
 }

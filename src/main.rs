@@ -4,17 +4,16 @@
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{Args, Parser, Subcommand};
 use orchestrator::config::{self, Admission, Coordinator};
-use orchestrator::coordinator::{self, Holder, run};
-use orchestrator::{
-    admission, cgroup, launch, machine, memory, peaks, procfs, runtime, sessions, state, watch,
-};
+use orchestrator::coordinator::state::{self as briefing, Places};
+use orchestrator::coordinator::{self, Holder, journal, run};
+use orchestrator::{cgroup, launch, machine, report, runtime, sessions, state, watch};
+use rustix::process::{Pid, Signal, kill_process};
 use std::ffi::OsString;
+use std::io::{BufRead, IsTerminal, Write};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-/// Characters of a command line shown by `orchestrator sessions`.
-const DISPLAY_CMDLINE: usize = 70;
 /// Where this process's own and other processes' state is read.
 const PROC: &str = "/proc";
 
@@ -43,7 +42,7 @@ enum Command {
     /// Print the configuration, or set its admission thresholds.
     Config(ConfigArgs),
     /// Enable the coordinator, then have one examine the machine and write the admission thresholds.
-    Setup,
+    Setup(SetupArgs),
     /// Open an interactive coordinator, which receives the events while it stays open.
     Coordinator(CoordinatorArgs),
     /// Start a command, normally `claude`, as an orchestrated session.
@@ -132,6 +131,13 @@ struct AdmissionArgs {
 }
 
 #[derive(Args)]
+struct SetupArgs {
+    /// The model of the coordinator's runs, without asking [default: the configured one, else claude-sonnet-5-5].
+    #[arg(long)]
+    model: Option<String>,
+}
+
+#[derive(Args)]
 struct CoordinatorArgs {
     #[command(subcommand)]
     command: Option<CoordinatorCommand>,
@@ -139,8 +145,14 @@ struct CoordinatorArgs {
 
 #[derive(Subcommand)]
 enum CoordinatorCommand {
-    /// Wait until events are pending for the coordinator, then print them and take them off the queue.
+    /// Close the batch taken before, wait until events are pending, then print them with the state.
     Next,
+    /// Add a line to the coordinator's journal.
+    Note {
+        /// What to note; each line becomes a line of the journal.
+        #[arg(required = true)]
+        text: Vec<String>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -160,9 +172,26 @@ fn main() -> Result<()> {
                 cooldown_secs: args.cooldown_secs,
             },
         }),
-        Command::Sessions(args) => print_sessions(&args.sources, args.heads),
-        Command::Peaks(dir) => print_peaks(&state_dir(dir)?),
-        Command::Admission => print_admission(),
+        Command::Sessions(args) => {
+            let dir = sessions_dir(&args.sources)?;
+            print!(
+                "{}",
+                report::sessions(&args.sources.proc_root, &dir, args.heads)?
+            );
+            Ok(())
+        }
+        Command::Peaks(dir) => {
+            print!("{}", report::peaks(&state_dir(dir)?, None, None)?);
+            Ok(())
+        }
+        Command::Admission => {
+            let places = Places::from_env()?;
+            print!(
+                "{}",
+                report::admission(&places.admission, &places.config, &places.sessions_dir)?
+            );
+            Ok(())
+        }
         Command::Machine => {
             let m = machine::read(Path::new(PROC), Path::new(cgroup::ROOT))?;
             print!("{}", machine::describe(&m));
@@ -172,10 +201,14 @@ fn main() -> Result<()> {
             None => print_config(),
             Some(ConfigCommand::Admission(a)) => set_admission(&a),
         },
-        Command::Setup => setup(),
+        Command::Setup(args) => setup(args.model),
         Command::Coordinator(args) => match args.command {
             None => open_coordinator(),
             Some(CoordinatorCommand::Next) => next_events(),
+            Some(CoordinatorCommand::Note { text }) => {
+                let paths = coordinator::Paths::from_env()?;
+                journal::note(&paths.journal(), &text.join(" "), now_secs())
+            }
         },
         Command::Launch(l) => {
             let e = launch::launch(&l.command);
@@ -202,184 +235,6 @@ fn state_dir(arg: StateDir) -> Result<PathBuf> {
         Some(dir) => Ok(dir),
         None => state::default_dir(),
     }
-}
-
-/// Heaviest first. A command shows as its label; its id's start tells apart
-/// two commands with the same label.
-fn print_peaks(state: &Path) -> Result<()> {
-    let learned = peaks::list(&peaks::dir(state))?;
-    if learned.is_empty() {
-        println!("No peak learned yet.");
-    }
-    for repo in learned {
-        let mut commands = repo.commands;
-        commands.sort_by(|a, b| b.peak_mb.cmp(&a.peak_mb).then_with(|| a.id.cmp(&b.id)));
-        let width = commands
-            .iter()
-            .map(|c| c.label.chars().count().min(peaks::LABEL_MAX))
-            .fold("COMMAND".len(), usize::max);
-        println!("{}", repo.repository);
-        println!(
-            "  {:>7}  {:<8}  {:<width$}  LATEST CALLS, MB (* ALONE)",
-            "PEAK MB", "ID", "COMMAND",
-        );
-        for c in commands {
-            let calls: Vec<String> = c
-                .recent
-                .iter()
-                .rev()
-                .map(|peaks::Call(mb, alone)| format!("{mb}{}", if *alone { "*" } else { "" }))
-                .collect();
-            println!(
-                "  {:>7}  {:<8}  {:<width$}  {}",
-                c.peak_mb,
-                c.id.get(..8).unwrap_or(&c.id),
-                procfs::truncate(&c.label, peaks::LABEL_MAX),
-                calls.join(" "),
-            );
-        }
-        println!();
-    }
-    Ok(())
-}
-
-/// With `heads`, processes show as events name them: no argument that could
-/// hold a credential, for a reader that hands the output to a model. A
-/// session shows by its name, which messages address.
-// claude-code: cross-session-message
-fn print_sessions(sources: &Sources, heads: bool) -> Result<()> {
-    let available = memory::available_mb(&sources.proc_root.join("meminfo"))?;
-    let att = watch::scan(&sources.proc_root, &sessions_dir(sources)?)?;
-    let shown = |p: &orchestrator::attribution::ProcRef| {
-        if heads {
-            p.command_head.clone()
-        } else {
-            procfs::truncate(&p.cmdline, DISPLAY_CMDLINE)
-        }
-    };
-    println!("Available memory: {available} MB\n");
-    println!("{:<34} {:>7}  LARGEST PROCESS", "SESSION", "RSS MB");
-    for s in &att.sessions {
-        println!(
-            "{:<34} {:>7}  {} MB  pid {}  {}",
-            s.name,
-            s.rss_kb / 1024,
-            s.largest.rss_kb / 1024,
-            s.largest.pid,
-            shown(&s.largest),
-        );
-    }
-    if att.orphans.is_empty() {
-        println!("\nNo orphaned process.");
-    } else {
-        println!("\nORPHANS (session gone)");
-        for o in &att.orphans {
-            println!(
-                "{:>7} MB  {} process(es)  pid {}  session {}  {}",
-                o.rss_kb / 1024,
-                o.processes,
-                o.root.pid,
-                o.session_id.chars().take(8).collect::<String>(),
-                shown(&o.root),
-            );
-        }
-    }
-    Ok(())
-}
-
-fn admission_paths() -> Result<admission::Paths> {
-    Ok(admission::Paths {
-        cgroup_root: PathBuf::from(cgroup::ROOT),
-        meminfo: Path::new(PROC).join("meminfo"),
-        runtime: runtime::default_dir()?,
-    })
-}
-
-/// The session a job group belongs to, by name, which messages address,
-/// and the start of its id, else by its scope.
-// claude-code: cross-session-message
-fn session_label(group: &str, cgroup_root: &Path, known: &[sessions::ClaudeSession]) -> String {
-    let scope = cgroup::session_of(group);
-    let session = scope
-        .and_then(|s| cgroup::main_pid(cgroup_root, s))
-        .and_then(|pid| known.iter().find(|s| s.pid == pid));
-    match (session, scope) {
-        (Some(s), _) => format!(
-            "{} ({})",
-            s.name,
-            s.session_id.chars().take(8).collect::<String>()
-        ),
-        (None, Some(scope)) => scope.rsplit('/').next().unwrap_or(scope).to_string(),
-        (None, None) => group.to_string(),
-    }
-}
-
-fn print_admission() -> Result<()> {
-    let paths = admission_paths()?;
-    let snap = admission::snapshot(&paths)?;
-    let config_path = config::default_path()?;
-    match config::load(&config_path) {
-        Ok(Some(config::Config {
-            admission: Some(a), ..
-        })) => println!(
-            "Admission: a call expected to peak at {} MB or more waits until free memory covers its peak plus {} MB, {} s at most.",
-            a.heavy_mb, a.margin_mb, a.max_wait_secs
-        ),
-        Ok(_) => println!(
-            "Admission: off, no admission section in {}.",
-            config_path.display()
-        ),
-        Err(e) => println!("Admission: off, {e:#}."),
-    }
-    println!(
-        "Available memory: {} MB; running heavy calls still hold {} MB of it: {} MB free for admission.\n",
-        snap.available_mb,
-        snap.held_mb,
-        snap.free_mb()
-    );
-    let known = sessions::read_sessions(&default_sessions_dir()?).unwrap_or_default();
-    let label = |group: &str| session_label(group, &paths.cgroup_root, &known);
-    let now = u64::try_from(runtime::now_ms()).unwrap_or(u64::MAX);
-    if snap.waiting.is_empty() {
-        println!("No call waits for memory.");
-    } else {
-        println!("WAITING FOR MEMORY");
-        println!(
-            "  {:<40} {:>7} {:>8} {:>9}  COMMAND",
-            "SESSION", "WAITED", "PEAK MB", "NEEDS MB"
-        );
-        for w in &snap.waiting {
-            println!(
-                "  {:<40} {:>5} s {:>8} {:>9}  {}",
-                label(&w.group),
-                now.saturating_sub(w.since_ms) / 1000,
-                w.peak_mb,
-                w.need_mb,
-                w.label
-            );
-        }
-    }
-    println!();
-    if snap.reserved.is_empty() {
-        println!("No heavy call runs with a reservation.");
-    } else {
-        println!("RESERVED BY RUNNING HEAVY CALLS");
-        println!(
-            "  {:<40} {:>8} {:>8} {:>8}  COMMAND",
-            "SESSION", "HOLDS MB", "PEAK MB", "USES MB"
-        );
-        for r in &snap.reserved {
-            println!(
-                "  {:<40} {:>8} {:>8} {:>8}  {}",
-                label(&r.group),
-                r.held_mb,
-                r.peak_mb,
-                r.current_mb.map_or("?".to_string(), |mb| mb.to_string()),
-                if r.label.is_empty() { "?" } else { &r.label }
-            );
-        }
-    }
-    Ok(())
 }
 
 fn print_config() -> Result<()> {
@@ -416,36 +271,126 @@ fn set_admission(a: &AdmissionArgs) -> Result<()> {
     Ok(())
 }
 
-/// Enables the coordinator if it is not, then replaces this process with a
-/// coordinator run that writes the admission thresholds. The user running it
-/// is the consent.
-fn setup() -> Result<()> {
-    let path = config::default_path()?;
-    let mut config = config::load(&path)?.unwrap_or_default();
-    let cfg = if let Some(cfg) = &config.coordinator {
-        cfg.clone()
+/// The model the user chooses for the coordinator: `flag` when given, else
+/// asked on a terminal with `current` as the default, else `current`.
+fn choose_model(flag: Option<String>, current: &str) -> Result<String> {
+    if let Some(model) = flag {
+        return Ok(model);
+    }
+    if !std::io::stdin().is_terminal() {
+        return Ok(current.to_string());
+    }
+    print!("Model of the coordinator's runs [{current}]: ");
+    std::io::stdout().flush().context("asking for the model")?;
+    let mut answer = String::new();
+    std::io::stdin()
+        .lock()
+        .read_line(&mut answer)
+        .context("reading the model")?;
+    let answer = answer.trim();
+    Ok(if answer.is_empty() {
+        current.to_string()
     } else {
-        let cfg = Coordinator::default();
-        config.coordinator = Some(cfg.clone());
-        config::save(&path, &config)?;
-        println!(
-            "Enabled the coordinator in {}: model {}, at most {} USD and {} min per run, woken when admission holds a call {} s. Remove the `coordinator` section to turn it off.",
-            path.display(),
-            cfg.model,
-            cfg.max_budget_usd,
-            cfg.max_minutes,
-            cfg.wait_secs
-        );
-        cfg
-    };
-    println!("Starting a coordinator to examine the machine; it ends with a summary.");
-    let mode = run::Mode::Setup {
-        reconfigure: config.admission.is_some(),
-    };
-    Err(become_coordinator(&mode, &cfg))
+        answer.to_string()
+    })
 }
 
-/// Opens an interactive coordinator, once the user has enabled it.
+/// Enables the coordinator with the model the user chooses, then runs one
+/// that examines the machine and writes the admission thresholds, and
+/// reports what it took. The user running it is the consent.
+fn setup(model: Option<String>) -> Result<()> {
+    let path = config::default_path()?;
+    let mut config = config::load(&path)?.unwrap_or_default();
+    let enabled = config.coordinator.is_some();
+    let mut cfg = config.coordinator.clone().unwrap_or_default();
+    cfg.model = choose_model(model, &cfg.model)?;
+    if config.coordinator.as_ref() != Some(&cfg) {
+        config.coordinator = Some(cfg.clone());
+        config::save(&path, &config)?;
+        if enabled {
+            println!("The coordinator's runs now use {}.", cfg.model);
+        } else {
+            println!(
+                "Enabled the coordinator in {}: model {}, each run stopped past {} min, woken when admission holds a call {} s. Remove the `coordinator` section to turn it off.",
+                path.display(),
+                cfg.model,
+                cfg.max_minutes,
+                cfg.wait_secs
+            );
+        }
+    }
+    println!("Starting a coordinator to examine the machine; it ends with a summary.");
+    let places = Places::from_env()?;
+    let paths = briefing::paths(&places);
+    let proc_root = Path::new(PROC);
+    let me = Holder::of(proc_root, std::process::id()).context("reading this process's start")?;
+    coordinator::acquire(&paths, proc_root, me)?;
+    let ran = run_setup(&places, &paths, &cfg, config.admission.is_some());
+    if let Ok(locked) = paths.lock() {
+        let _ = locked.clear_holder(me);
+    }
+    let record = ran?;
+    if let Some(reply) = &record.reply {
+        println!("{reply}");
+    }
+    println!("\n{}", record.summary());
+    if record.handled() {
+        Ok(())
+    } else {
+        bail!(
+            "the coordinator did not finish; see {}",
+            paths.last_errors().display()
+        )
+    }
+}
+
+/// Runs the setup coordinator, within the configured time, and records it.
+fn run_setup(
+    places: &Places,
+    paths: &coordinator::Paths,
+    cfg: &Coordinator,
+    reconfigure: bool,
+) -> Result<run::RunRecord> {
+    run::write_role(paths)?;
+    let at = now_secs();
+    let mode = run::Mode::Setup { reconfigure };
+    let prompt = run::prompt(&mode, paths, at, &briefing::briefing(places, paths));
+    let out = std::fs::File::create(paths.last_run()).context("creating the run's output")?;
+    let err = std::fs::File::create(paths.last_errors()).context("creating the run's errors")?;
+    let started = Instant::now();
+    let deadline = started + Duration::from_secs(cfg.max_minutes.saturating_mul(60));
+    let mut child = run::command(&mode, cfg, paths, &bin_dir()?, &prompt)
+        .stdout(out)
+        .stderr(err)
+        .spawn()
+        .context("starting claude")?;
+    let mut stopped = false;
+    let status = loop {
+        if let Some(status) = child.try_wait().context("waiting for claude")? {
+            break status;
+        }
+        if Instant::now() >= deadline && !stopped {
+            eprintln!("orchestrator: the coordinator ran past its time limit; stopping it");
+            let _ = kill_process(Pid::from_child(&child), Signal::TERM);
+            stopped = true;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    };
+    let outcome = run::Outcome {
+        secs: started.elapsed().as_secs(),
+        exit: status.code(),
+        stopped,
+    };
+    let output = std::fs::read(paths.last_run()).unwrap_or_default();
+    let record = run::RunRecord::new("setup", at, 0, outcome, &output);
+    orchestrator::events::append_line(&paths.runs(), &record)?;
+    Ok(record)
+}
+
+/// Opens an interactive coordinator, once the user has enabled it: takes
+/// the coordinator, waiting for a running one to end, then replaces this
+/// process with `claude`. The holder's pid and start time stay this
+/// process's, so the coordinator frees itself when claude exits.
 fn open_coordinator() -> Result<()> {
     let path = config::default_path()?;
     let Some(cfg) = config::load(&path)?.and_then(|c| c.coordinator) else {
@@ -454,39 +399,45 @@ fn open_coordinator() -> Result<()> {
             path.display()
         );
     };
-    Err(become_coordinator(&run::Mode::Interactive, &cfg))
+    let places = Places::from_env()?;
+    let paths = briefing::paths(&places);
+    let proc_root = Path::new(PROC);
+    let me = Holder::of(proc_root, std::process::id()).context("reading this process's start")?;
+    coordinator::acquire(&paths, proc_root, me)?;
+    run::write_role(&paths)?;
+    let mode = run::Mode::Interactive;
+    let prompt = run::prompt(
+        &mode,
+        &paths,
+        now_secs(),
+        &briefing::briefing(&places, &paths),
+    );
+    let err = run::command(&mode, &cfg, &paths, &bin_dir()?, &prompt).exec();
+    Err(anyhow!(err).context("running claude"))
 }
 
-/// Takes the coordinator, waiting for a running one to end, then replaces
-/// this process with `claude`: the holder's pid and start time stay this
-/// process's, so the coordinator frees itself when claude exits. Only
-/// returns on an error.
-fn become_coordinator(mode: &run::Mode<'_>, cfg: &Coordinator) -> anyhow::Error {
-    let started = || -> Result<std::process::Command> {
-        let paths = coordinator::Paths::from_env()?;
-        let proc_root = Path::new(PROC);
-        let me =
-            Holder::of(proc_root, std::process::id()).context("reading this process's start")?;
-        coordinator::acquire(&paths, proc_root, me)?;
-        run::write_role(&paths)?;
-        let bin = std::env::current_exe()
-            .context("locating orchestrator")?
-            .parent()
-            .map(Path::to_path_buf)
-            .unwrap_or_default();
-        let now = u64::try_from(runtime::now_ms() / 1000).unwrap_or(u64::MAX);
-        Ok(run::command(mode, cfg, &paths, &bin, now))
-    };
-    match started() {
-        Ok(mut cmd) => anyhow!(cmd.exec()).context("running claude"),
-        Err(e) => e,
-    }
-}
-
+/// The batch an interactive coordinator asks for, with the state now.
 fn next_events() -> Result<()> {
-    let paths = coordinator::Paths::from_env()?;
-    for pending in coordinator::next(&paths, &admission_paths()?)? {
-        println!("{}", pending.line());
+    let places = Places::from_env()?;
+    let paths = briefing::paths(&places);
+    let taken = coordinator::next(&paths, &places.admission)?;
+    println!("## Events\n");
+    for q in &taken {
+        println!("{}", q.line());
     }
+    print!("\n## State now\n\n{}", briefing::gather(&places));
     Ok(())
+}
+
+/// This binary's directory, first on a coordinator's `PATH`.
+fn bin_dir() -> Result<PathBuf> {
+    Ok(std::env::current_exe()
+        .context("locating orchestrator")?
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_default())
+}
+
+fn now_secs() -> u64 {
+    u64::try_from(runtime::now_ms() / 1000).unwrap_or(u64::MAX)
 }

@@ -255,17 +255,18 @@ pub fn run(cfg: &Config) -> Result<()> {
 
 /// The coordinator as `watch` drives it, with `watch`'s own places.
 fn coordinator_service(cfg: &Config, meminfo: &Path, events_path: &Path) -> Service {
-    Service::new(
-        coordinator::Paths::new(&cfg.runtime_dir, &cfg.state_dir, &cfg.config_path),
-        admission::Paths {
+    let places = coordinator::state::Places {
+        proc_root: cfg.proc_root.clone(),
+        sessions_dir: cfg.sessions_dir.clone(),
+        admission: admission::Paths {
             cgroup_root: PathBuf::from(cgroup::ROOT),
             meminfo: meminfo.to_path_buf(),
             runtime: cfg.runtime_dir.clone(),
         },
-        cfg.config_path.clone(),
-        cfg.sessions_dir.clone(),
-        events_path.to_path_buf(),
-    )
+        state_dir: cfg.state_dir.clone(),
+        config: cfg.config_path.clone(),
+    };
+    Service::new(places, events_path.to_path_buf())
 }
 
 /// Sets up each kernel signal, reporting the ones that cannot be.

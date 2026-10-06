@@ -21,6 +21,7 @@ pub mod prefix;
 pub mod pressure;
 pub mod procfs;
 pub mod recognise;
+pub mod report;
 pub mod repository;
 pub mod runtime;
 pub mod sessions;

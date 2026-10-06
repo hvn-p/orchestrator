@@ -37,16 +37,23 @@ pub struct Admission {
     pub max_wait_secs: u64,
 }
 
+/// The model a coordinator runs with unless the user chooses another.
+pub const DEFAULT_MODEL: &str = "claude-sonnet-5-5";
+
 /// The coordinator: a Claude Code session `watch` starts for each batch of
 /// events that need judgment. Its presence is the consent to spend tokens.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Coordinator {
-    /// The model of the runs `watch` and `setup` start.
+    /// The model of the runs `watch` and `setup` start: the user's choice.
     pub model: String,
-    /// The most one run may spend, in USD, as Claude Code estimates it.
-    pub max_budget_usd: f64,
-    /// The longest one run may last; then `watch` stops it.
+    /// The most one run may spend, in USD at list price as Claude Code
+    /// estimates it; none by default. The estimate is not what a
+    /// subscription counts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_budget_usd: Option<f64>,
+    /// The longest one run may last; then `watch` stops it. A guard against
+    /// a stuck run, not a spending limit.
     pub max_minutes: u64,
     /// A Bash call that admission has held back this long wakes the
     /// coordinator, once.
@@ -54,12 +61,12 @@ pub struct Coordinator {
 }
 
 impl Default for Coordinator {
-    /// What `orchestrator setup` writes when the section is missing: a small
-    /// model and small bounds, raised by hand when needed.
+    /// What `orchestrator setup` writes when the section is missing, the
+    /// model aside, which it asks for.
     fn default() -> Self {
         Coordinator {
-            model: "haiku".into(),
-            max_budget_usd: 0.25,
+            model: DEFAULT_MODEL.into(),
+            max_budget_usd: None,
             max_minutes: 5,
             wait_secs: 20,
         }
@@ -208,12 +215,19 @@ mod tests {
             config.coordinator,
             Some(Coordinator {
                 model: "haiku".into(),
-                max_budget_usd: 0.5,
+                max_budget_usd: Some(0.5),
                 max_minutes: 3,
                 wait_secs: 15,
             })
         );
         assert_eq!(config.admission, None);
+        // No budget cap unless one is written.
+        let config = load_text(
+            r#"{"coordinator": {"model": "claude-sonnet-5-5", "max_minutes": 5, "wait_secs": 20}}"#,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(config.coordinator, Some(Coordinator::default()));
     }
 
     #[test]

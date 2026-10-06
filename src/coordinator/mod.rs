@@ -5,24 +5,26 @@
 //! Its runtime state lives in `<runtime>/coordinator/`. `holder.json` names
 //! the coordinator running now by its pid and start time: `watch`'s runs,
 //! `orchestrator setup` and `orchestrator coordinator` all take it before
-//! starting one, and it frees itself when that process ends. `pending.json`
-//! holds the events waiting for a coordinator, duplicates merged. Both change
-//! only under the file lock `lock`. What the coordinator remembers between
-//! runs lives in its own directory under the state directory, its working
-//! directory: its journal.
+//! starting one, and it frees itself when that process ends. `queue.json`
+//! holds the events for coordinators and where each stands (see `queue`).
+//! Both change only under the file lock `lock`. What the coordinator
+//! remembers between runs lives in its own directory under the state
+//! directory, its working directory: its journal.
 
+pub mod journal;
+pub mod queue;
 pub mod run;
 pub mod service;
+pub mod state;
 
 use crate::admission::{self, Waiting};
-use crate::events::{self, Event};
-use crate::{procfs, runtime, state};
+use crate::{procfs, runtime};
 use anyhow::{Context, Result};
 use inotify::{Inotify, WatchMask};
+use queue::Queued;
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use rustix::process::{Pid, PidfdFlags, pidfd_open};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use std::collections::HashSet;
 use std::fs::{self, File};
 use std::io::ErrorKind;
@@ -63,7 +65,7 @@ impl Paths {
     pub fn from_env() -> Result<Paths> {
         Ok(Paths::new(
             &runtime::default_dir()?,
-            &state::default_dir()?,
+            &crate::state::default_dir()?,
             &crate::config::default_path()?,
         ))
     }
@@ -76,7 +78,7 @@ impl Paths {
         self.runtime.join("role.md")
     }
 
-    /// One line per run `watch` started.
+    /// One line per run `watch` or `setup` started.
     pub fn runs(&self) -> PathBuf {
         self.runtime.join("runs.jsonl")
     }
@@ -95,8 +97,8 @@ impl Paths {
         self.runtime.join("holder.json")
     }
 
-    fn pending(&self) -> PathBuf {
-        self.runtime.join("pending.json")
+    fn queue(&self) -> PathBuf {
+        self.runtime.join("queue.json")
     }
 
     /// Takes the lock under which the holder and the queue change.
@@ -161,16 +163,21 @@ impl Locked<'_> {
         Ok(())
     }
 
-    /// The events waiting for a coordinator, oldest first.
-    pub fn pending(&self) -> Vec<Pending> {
-        fs::read(self.paths.pending())
+    /// The queued events, oldest first.
+    pub fn queue(&self) -> Vec<Queued> {
+        fs::read(self.paths.queue())
             .ok()
             .and_then(|json| serde_json::from_slice(&json).ok())
             .unwrap_or_default()
     }
 
-    pub fn set_pending(&self, queue: &[Pending]) -> Result<()> {
-        write_json(&self.paths.pending(), &queue)
+    /// Changes the queue with `change`, dropping old done events.
+    pub fn update<T>(&self, change: impl FnOnce(&mut Vec<Queued>) -> T) -> Result<T> {
+        let mut queue = self.queue();
+        let out = change(&mut queue);
+        queue::prune(&mut queue);
+        write_json(&self.paths.queue(), &queue)?;
+        Ok(out)
     }
 }
 
@@ -185,101 +192,17 @@ fn write_json(path: &Path, value: &impl Serialize) -> Result<()> {
     })
 }
 
-/// An event waiting for a coordinator. Events of the same key merge.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Pending {
-    pub key: String,
-    /// How many events merged into this one.
-    pub count: u32,
-    /// When the first of them came, in seconds since the Unix epoch.
-    pub first_at: u64,
-    /// The latest of them, as the events file holds it.
-    pub event: Value,
+/// Adds `queued` to the queue.
+pub fn enqueue(paths: &Paths, queued: Queued) -> Result<()> {
+    paths.lock()?.update(|q| queue::merge(q, queued))
 }
 
-impl Pending {
-    /// The event `watch` wrote at `at`, if it needs judgment. Memory pressure
-    /// events all merge, the latest one standing for the others; an
-    /// admission wait is reported once per call. Orphans are not the
-    /// coordinator's yet.
-    pub fn new(at: u64, event: &Event) -> Result<Option<Pending>> {
-        let key = match event {
-            Event::MemoryPressure { .. } => "memory_pressure".to_string(),
-            Event::AdmissionWait { job, .. } => format!("admission_wait {job}"),
-            Event::Orphans { .. } => return Ok(None),
-        };
-        Ok(Some(Pending {
-            key,
-            count: 1,
-            first_at: at,
-            event: events::to_value(at, event)?,
-        }))
-    }
-
-    /// The call an admission wait is about.
-    fn waiting_job(&self) -> Option<&str> {
-        (self.event["kind"] == "admission_wait")
-            .then(|| self.event["job"].as_str())
-            .flatten()
-    }
-
-    /// What the coordinator reads: the event, with how many merged into it
-    /// and when the first came.
-    pub fn line(&self) -> String {
-        let mut event = self.event.clone();
-        if let Value::Object(fields) = &mut event {
-            fields.insert("count".into(), self.count.into());
-            fields.insert("first_at".into(), self.first_at.into());
-        }
-        event.to_string()
-    }
-}
-
-/// Adds `new` to `queue`: an event of the same key replaces the one there,
-/// which keeps its place.
-pub fn merge(queue: &mut Vec<Pending>, new: Pending) {
-    match queue.iter_mut().find(|p| p.key == new.key) {
-        Some(p) => {
-            p.count = p.count.saturating_add(new.count);
-            p.first_at = p.first_at.min(new.first_at);
-            p.event = new.event;
-        }
-        None => queue.push(new),
-    }
-}
-
-/// The events that still need judgment, given the jobs of the calls waiting
-/// now: an admission wait whose call runs already does not.
-pub fn due(queue: Vec<Pending>, waiting: &[String]) -> Vec<Pending> {
-    queue
-        .into_iter()
-        .filter(|p| {
-            p.waiting_job()
-                .is_none_or(|job| waiting.iter().any(|w| w == job))
-        })
-        .collect()
-}
-
-/// Adds `pending` to the queue.
-pub fn enqueue(paths: &Paths, pending: Pending) -> Result<()> {
-    let locked = paths.lock()?;
-    let mut queue = locked.pending();
-    merge(&mut queue, pending);
-    locked.set_pending(&queue)
-}
-
-/// Takes the queue's events that still need judgment, emptying it.
-pub fn take_due(locked: &Locked<'_>, admission: &admission::Paths) -> Result<Vec<Pending>> {
-    let queue = locked.pending();
-    if queue.is_empty() {
-        return Ok(queue);
-    }
-    let waiting: Vec<String> = admission::waiting(admission, false)
+/// The jobs of the calls waiting for memory now.
+pub fn waiting_jobs(admission: &admission::Paths) -> Vec<String> {
+    admission::waiting(admission, false)
         .into_iter()
         .map(|w| w.job)
-        .collect();
-    locked.set_pending(&[])?;
-    Ok(due(queue, &waiting))
+        .collect()
 }
 
 /// Which calls have waited long enough to wake the coordinator. Each is
@@ -320,13 +243,15 @@ impl Waits {
 }
 
 /// Takes the coordinator for the process `me`, waiting for a running one to
-/// end. `proc_root` tells which processes run.
+/// end. `proc_root` tells which processes run. Events a previous holder left
+/// in progress are pending again.
 pub fn acquire(paths: &Paths, proc_root: &Path, me: Holder) -> Result<()> {
     let mut told = false;
     loop {
         let locked = paths.lock()?;
         let other = locked.holder().filter(|h| *h != me && h.running(proc_root));
         let Some(other) = other else {
+            locked.update(|q| queue::give_back(q))?;
             return locked.set_holder(me);
         };
         drop(locked);
@@ -362,9 +287,10 @@ fn poll_one(fd: &impl AsFd, timeout: Duration) {
     let _ = poll(&mut fds, Some(&timeout));
 }
 
-/// The events pending for an interactive coordinator, once some are due:
-/// waits until there are. They leave the queue.
-pub fn next(paths: &Paths, admission: &admission::Paths) -> Result<Vec<Pending>> {
+/// For an interactive coordinator: the batch it took before is handled, and
+/// the next one is the pending events, waited for until there are some. They
+/// are in progress from then on.
+pub fn next(paths: &Paths, admission: &admission::Paths) -> Result<Vec<Queued>> {
     fs::create_dir_all(&paths.runtime)
         .with_context(|| format!("creating {}", paths.runtime.display()))?;
     let inotify = Inotify::init().context("watching the coordinator's queue")?;
@@ -375,10 +301,12 @@ pub fn next(paths: &Paths, admission: &admission::Paths) -> Result<Vec<Pending>>
         .with_context(|| format!("watching {}", paths.runtime.display()))?;
     let mut inotify = inotify;
     let mut buffer = [0; EVENT_BUFFER];
+    paths.lock()?.update(|q| queue::finish(q, true))?;
     loop {
-        let due = take_due(&paths.lock()?, admission)?;
-        if !due.is_empty() {
-            return Ok(due);
+        let waiting = waiting_jobs(admission);
+        let taken = paths.lock()?.update(|q| queue::take(q, &waiting))?;
+        if !taken.is_empty() {
+            return Ok(taken);
         }
         poll_one(&inotify, RECHECK);
         while inotify
@@ -400,17 +328,15 @@ fn pidfd(pid: u32) -> std::io::Result<OwnedFd> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::events::SessionBrief;
+    use crate::events::Event;
+    use queue::Status;
 
     fn pressure(available_mb: u64) -> Event {
         Event::MemoryPressure {
             available_mb,
             stall_ms: 200,
             largest: None,
-            next: vec![SessionBrief {
-                session: "alpha".into(),
-                rss_mb: 4000,
-            }],
+            next: vec![],
         }
     }
 
@@ -427,50 +353,8 @@ mod tests {
         }
     }
 
-    fn pending(at: u64, event: &Event) -> Pending {
-        Pending::new(at, event).unwrap().unwrap()
-    }
-
-    #[test]
-    fn duplicates_merge_into_the_latest() {
-        let mut queue = Vec::new();
-        merge(&mut queue, pending(10, &pressure(900)));
-        merge(&mut queue, pending(11, &wait("job-bash-1-1")));
-        merge(&mut queue, pending(70, &pressure(500)));
-        merge(&mut queue, pending(71, &wait("job-bash-2-1")));
-        assert_eq!(queue.len(), 3);
-        assert_eq!(
-            (
-                queue[0].count,
-                queue[0].first_at,
-                &queue[0].event["available_mb"]
-            ),
-            (2, 10, &Value::from(500))
-        );
-        assert_eq!(queue[0].event["at"], 70);
-        assert_eq!(queue[1].key, "admission_wait job-bash-1-1");
-        assert_eq!(queue[2].key, "admission_wait job-bash-2-1");
-        let line: Value = serde_json::from_str(&queue[0].line()).unwrap();
-        assert_eq!(line["kind"], "memory_pressure");
-        assert_eq!((&line["count"], &line["first_at"]), (&2.into(), &10.into()));
-    }
-
-    #[test]
-    fn orphans_are_not_queued() {
-        let orphans = Event::Orphans { orphans: vec![] };
-        assert_eq!(Pending::new(1, &orphans).unwrap(), None);
-    }
-
-    #[test]
-    fn a_wait_that_ended_needs_no_judgment() {
-        let queue = vec![
-            pending(1, &pressure(900)),
-            pending(2, &wait("job-bash-1-1")),
-            pending(3, &wait("job-bash-2-1")),
-        ];
-        let kept = due(queue, &["job-bash-2-1".to_string()]);
-        let keys: Vec<&str> = kept.iter().map(|p| p.key.as_str()).collect();
-        assert_eq!(keys, ["memory_pressure", "admission_wait job-bash-2-1"]);
+    fn queued(at: u64, event: &Event) -> Queued {
+        Queued::new(at, event).unwrap().unwrap()
     }
 
     fn waiting(job: &str, since_ms: u64) -> Waiting {
@@ -504,39 +388,46 @@ mod tests {
         assert_eq!(waits.reported.len(), 0);
     }
 
-    fn temp_paths() -> (tempfile::TempDir, Paths) {
+    fn temp_paths() -> (tempfile::TempDir, Paths, admission::Paths) {
         let tmp = tempfile::tempdir().unwrap();
         let paths = Paths::new(
             &tmp.path().join("run"),
             &tmp.path().join("state"),
             &tmp.path().join("config/config.json"),
         );
-        (tmp, paths)
-    }
-
-    #[test]
-    fn the_queue_survives_on_disk_and_empties_when_taken() {
-        let (tmp, paths) = temp_paths();
         let admission = admission::Paths {
             cgroup_root: tmp.path().join("cgroup"),
             meminfo: tmp.path().join("meminfo"),
             runtime: tmp.path().join("run"),
         };
-        enqueue(&paths, pending(1, &pressure(900))).unwrap();
-        enqueue(&paths, pending(2, &wait("job-bash-1-1"))).unwrap();
-        enqueue(&paths, pending(3, &pressure(800))).unwrap();
-        let locked = paths.lock().unwrap();
-        assert_eq!(locked.pending().len(), 2);
-        // No call waits: only the pressure is still due.
-        let taken = take_due(&locked, &admission).unwrap();
-        assert_eq!(taken.len(), 1);
-        assert_eq!(taken[0].count, 2);
-        assert_eq!(locked.pending(), []);
+        (tmp, paths, admission)
+    }
+
+    fn statuses(paths: &Paths) -> Vec<Status> {
+        paths
+            .lock()
+            .unwrap()
+            .queue()
+            .iter()
+            .map(|q| q.status)
+            .collect()
+    }
+
+    #[test]
+    fn the_queue_survives_on_disk() {
+        let (_tmp, paths, _) = temp_paths();
+        enqueue(&paths, queued(1, &pressure(900))).unwrap();
+        enqueue(&paths, queued(2, &wait("job-bash-1-1"))).unwrap();
+        enqueue(&paths, queued(3, &pressure(800))).unwrap();
+        let queue = paths.lock().unwrap().queue();
+        assert_eq!(queue.len(), 2);
+        assert_eq!(queue[0].count, 2);
+        assert_eq!(statuses(&paths), [Status::Pending, Status::Pending]);
     }
 
     #[test]
     fn one_holder_at_a_time() {
-        let (_tmp, paths) = temp_paths();
+        let (_tmp, paths, _) = temp_paths();
         let proc_root = Path::new("/proc");
         let me = Holder::of(proc_root, std::process::id()).unwrap();
         assert!(me.running(proc_root));
@@ -554,26 +445,28 @@ mod tests {
         locked.clear_holder(me).unwrap();
         assert_eq!(locked.holder(), None);
         drop(locked);
-        // A holder that ended frees the coordinator: taking it does not wait.
-        paths.lock().unwrap().set_holder(other).unwrap();
+        // A holder that ended frees the coordinator, and gives its events
+        // back: taking it does not wait.
+        enqueue(&paths, queued(1, &pressure(900))).unwrap();
+        let locked = paths.lock().unwrap();
+        locked.set_holder(other).unwrap();
+        locked.update(|q| queue::take(q, &[])).unwrap();
+        drop(locked);
+        assert_eq!(statuses(&paths), [Status::InProgress]);
         acquire(&paths, proc_root, me).unwrap();
         assert_eq!(paths.lock().unwrap().holder(), Some(me));
+        assert_eq!(statuses(&paths), [Status::Pending]);
     }
 
     #[test]
-    fn next_waits_for_an_event() {
-        let (tmp, paths) = temp_paths();
-        let admission = admission::Paths {
-            cgroup_root: tmp.path().join("cgroup"),
-            meminfo: tmp.path().join("meminfo"),
-            runtime: tmp.path().join("run"),
-        };
+    fn next_waits_for_events_and_closes_the_batch_before() {
+        let (_tmp, paths, admission) = temp_paths();
         fs::create_dir_all(&paths.runtime).unwrap();
         let writer = {
             let paths = paths.clone();
             std::thread::spawn(move || {
                 std::thread::sleep(Duration::from_millis(200));
-                enqueue(&paths, pending(5, &pressure(700))).unwrap();
+                enqueue(&paths, queued(5, &pressure(700))).unwrap();
             })
         };
         let start = std::time::Instant::now();
@@ -582,6 +475,11 @@ mod tests {
         assert!(start.elapsed() < Duration::from_secs(10));
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].event["available_mb"], 700);
-        assert_eq!(paths.lock().unwrap().pending(), []);
+        assert_eq!(statuses(&paths), [Status::InProgress]);
+        // Asking for the next batch says this one was handled.
+        enqueue(&paths, queued(6, &pressure(600))).unwrap();
+        let got = next(&paths, &admission).unwrap();
+        assert_eq!(got[0].event["available_mb"], 600);
+        assert_eq!(statuses(&paths), [Status::Done, Status::InProgress]);
     }
 }

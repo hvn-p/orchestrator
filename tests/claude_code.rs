@@ -1,7 +1,8 @@
 //! Checks the installed Claude Code against the contracts orchestrator relies
 //! on, listed by id in docs/claude-code-dependency.md. Manual only: it starts
 //! real headless sessions, which need a signed-in `claude` on the `PATH`, a
-//! systemd user manager with cgroup v2, and spend a few cents of tokens.
+//! systemd user manager with cgroup v2, and spend a few tens of thousands of
+//! tokens, most read from the prompt cache.
 //! Run it with `cargo test --test claude_code -- --ignored`.
 //!
 //! The session runs through `orchestrator launch`, from a temporary git
@@ -95,9 +96,24 @@ fn the_installed_claude_code_runs_a_coordinator() {
         }
     }
     let report = report.join("\n");
+    let used = run::RunRecord::new(
+        "events",
+        0,
+        0,
+        run::Outcome {
+            secs: 0,
+            exit: Some(0),
+            stopped: false,
+        },
+        c.result.to_string().as_bytes(),
+    );
     eprintln!(
-        "Claude Code {} (coordinator, {} USD)\n{report}",
-        c.version, c.result["total_cost_usd"]
+        "Claude Code {} (coordinator: {} turns, {} input tokens, {} from cache, {} output)\n{report}",
+        c.version,
+        used.turns.unwrap_or(0),
+        used.input_tokens.unwrap_or(0),
+        used.cache_read_tokens.unwrap_or(0),
+        used.output_tokens.unwrap_or(0),
     );
     assert!(
         broken == 0,
@@ -142,24 +158,25 @@ impl CoordinatorRun {
         let prompt = format!(
             "This is an automated compatibility test of orchestrator, not an event: message no \
              one. Do these steps in order, one tool call each, and go on after a denial. 1) Run \
-             `orchestrator machine` with the Bash tool. 2) Write the word checked to {}. 3) \
-             Write the word x to {}. 4) Run `cat {}` with the Bash tool. 5) Call ListAgents \
-             once. Then reply with exactly three lines: the first line `orchestrator machine` \
-             printed, the first line of the ListAgents result, and the first line of the role \
-             appended to your system prompt.",
-            paths.journal().display(),
+             `orchestrator machine` with the Bash tool. 2) Run `orchestrator coordinator note \
+             checked` with the Bash tool. 3) Run `touch {}` with the Bash tool. 4) Run `cat {}` \
+             with the Bash tool. 5) Call ListAgents once. Then reply with exactly three lines: \
+             the first line `orchestrator machine` printed, the first line of the ListAgents \
+             result, and the first line of the role appended to your system prompt.",
             paths.home.join("other.md").display(),
             outside.display(),
         );
         let bin = Path::new(env!("CARGO_BIN_EXE_orchestrator"))
             .parent()
             .expect("the binary's directory");
-        let cfg = Coordinator::default();
-        let built = run::command(&run::Mode::Batch(&[]), &cfg, &paths, bin, 0);
+        // A small model and a spending cap, for a test.
+        let cfg = Coordinator {
+            model: "haiku".into(),
+            max_budget_usd: Some(0.25),
+            ..Coordinator::default()
+        };
+        let built = run::command(&run::Mode::Batch(&[]), &cfg, &paths, bin, &prompt);
         let mut args: Vec<OsString> = built.get_args().map(ToOwned::to_owned).collect();
-        // The test's prompt in place of events.
-        args.pop();
-        args.push(prompt.into());
         // Never message the user's sessions from a test.
         for a in &mut args {
             if a.to_string_lossy().contains("SendMessage,") {
@@ -259,28 +276,31 @@ fn coordinator_session(c: &CoordinatorRun) -> Check {
     Ok(())
 }
 
-/// Its allowed command and file write ran; a write elsewhere and a read
-/// outside its directories were denied without asking.
+/// Its allowed commands ran, the journal note included; a command it was
+/// not given and a read outside its directories were denied without asking.
 fn coordinator_permissions(c: &CoordinatorRun) -> Check {
     if !c.reply().contains("Memory:") {
         return Err("`orchestrator machine` did not run, or not this orchestrator".into());
     }
     let journal = fs::read_to_string(c.paths.journal()).unwrap_or_default();
-    if journal.trim() != "checked" {
-        return Err(format!(
-            "the journal holds {journal:?}, not the word written"
-        ));
+    if !journal.trim_end().ends_with("  checked") {
+        return Err(format!("the journal holds {journal:?}, not the note"));
     }
     let other = c.paths.home.join("other.md");
     if other.exists() {
-        return Err(format!("{} was written", other.display()));
+        return Err(format!("{} was created", other.display()));
     }
-    let cat = format!("cat {}", c.outside.display());
-    if !c.denied("Bash", "command").contains(&cat) {
-        return Err(format!(
-            "`{cat}` was not denied; denials: {}",
-            c.result["permission_denials"]
-        ));
+    let denied = c.denied("Bash", "command");
+    for command in [
+        format!("touch {}", other.display()),
+        format!("cat {}", c.outside.display()),
+    ] {
+        if !denied.contains(&command) {
+            return Err(format!(
+                "`{command}` was not denied; denials: {}",
+                c.result["permission_denials"]
+            ));
+        }
     }
     Ok(())
 }
@@ -298,12 +318,20 @@ fn cross_session_message(c: &CoordinatorRun) -> Check {
 }
 
 fn print_json_result(c: &CoordinatorRun) -> Check {
-    let record = run::RunRecord::new(0, 0, 0, Some(0), false, c.result.to_string().as_bytes());
+    let outcome = run::Outcome {
+        secs: 0,
+        exit: Some(0),
+        stopped: false,
+    };
+    let record = run::RunRecord::new("events", 0, 0, outcome, c.result.to_string().as_bytes());
     let mut missing = Vec::new();
     if record.reply.is_none() {
         missing.push("result");
     }
-    if record.cost_usd.is_none() {
+    if record.input_tokens.is_none() || record.output_tokens.is_none() {
+        missing.push("usage");
+    }
+    if record.list_price_estimate_usd.is_none() {
         missing.push("total_cost_usd");
     }
     if record.turns.is_none() {

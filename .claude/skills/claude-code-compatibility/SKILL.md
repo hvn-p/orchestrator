@@ -37,12 +37,12 @@ contract becomes an issue, and fixing it is a separate decision.
    cargo test --test claude_code -- --ignored --nocapture
    ```
 
-   It starts two real headless sessions, a probe and a coordinator (Haiku, a
-   few cents), and prints each contract as `ok` or `BROKEN`. When an
-   orchestrated session may be running binaries from this repository's
-   `target/`, set `CARGO_TARGET_DIR` to a scratch directory first. "Haiku did
-   not run the probe" is a setup failure, not a broken contract: run it
-   again. So is a coordinator check that fails on what Haiku's reply quotes,
+   It starts two real headless sessions, a probe and a coordinator (Haiku,
+   some tens of thousands of tokens), and prints each contract as `ok` or
+   `BROKEN`. When an orchestrated session may be running binaries from this
+   repository's `target/`, set `CARGO_TARGET_DIR` to a scratch directory
+   first. "Haiku did not run the probe" is a setup failure, not a broken
+   contract: run it again. So is a coordinator check that fails on what Haiku's reply quotes,
    until a second run fails the same way.
 
 4. **Every contract holds**, and no changelog entry casts doubt on one the

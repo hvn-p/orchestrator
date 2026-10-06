@@ -25,7 +25,8 @@ Last verified: Claude Code 2.1.291, 2026-10-06.
   `orchestrator launch` and checks every contract it can see from outside.
   It also starts a coordinator as `watch` would. It is manual: it needs a
   signed-in `claude`, a systemd user manager with cgroup v2, and spends a
-  few cents of tokens. Never in CI.
+  few tens of thousands of tokens, most read from the prompt cache. Never in
+  CI.
 - **A new Claude Code version**: the project skill `claude-code-compatibility` reads
   the changelog since the version above, runs the integration test, then
   updates the line above or drafts an issue.
@@ -227,9 +228,11 @@ hooks, plugins and CLAUDE.md; `--settings` takes inline JSON
 (`autoMemoryEnabled`, `permissions.blockReadsOutsideWorkingDirectories`);
 `--strict-mcp-config` without `--mcp-config` starts no MCP server; `--`
 ends the options before the prompt. In print mode (`-p`), `--model` picks
-the model, `--max-budget-usd` stops the run once its estimated spend reaches
-the amount, `--no-session-persistence` keeps no transcript, and a standard
-input left open is waited for.
+the model and takes a full model id (`claude-sonnet-5-5`, the default) as
+well as an alias, `--max-budget-usd`, passed only when the user configures
+one, stops the run once its estimated spend at list price reaches the
+amount, `--no-session-persistence` keeps no transcript, and a standard input
+left open is waited for.
 
 - Code: `src/coordinator/run.rs` (`args`, `command`).
 - If it changes: a coordinator starts without its role, with the user's
@@ -238,25 +241,27 @@ input left open is waited for.
 - Verified: integration test (the reply quotes the role's first line and the
   session's name). Measured on 2.1.291: with `--setting-sources project`, a
   run's context was 4,000 tokens instead of 12,000 and held none of the
-  user's CLAUDE.md. Documentation: cli-reference.
+  user's CLAUDE.md; `--model claude-sonnet-5-5` ran that model.
+  Documentation: cli-reference.
 
 ### coordinator-permissions
 
 `--tools` takes the names of built-in tools, `SendMessage` and `ListAgents`
 among them, and leaves the others out. `--allowedTools` takes rules:
-`Bash(<command>)` matches that command exactly, `Bash(<command> *)` that
-command with any arguments, and `Edit(//<path>)` every file-editing tool,
-Write included, on that one absolute path (a `Write(...)` rule is ignored,
-with a warning). With `--permission-mode dontAsk`, any call no rule allows
-is denied without asking; with `default`, it is asked. `--add-dir` makes a
-directory readable; with `blockReadsOutsideWorkingDirectories`, read-only
-commands such as `cat` are denied outside the working directories.
+`Bash(<command>)` matches that command exactly, and `Bash(<command> *)` that
+command with any arguments. With `--permission-mode dontAsk`, any call no
+rule allows is denied without asking; with `default`, it is asked.
+`--add-dir` makes a directory readable; with
+`blockReadsOutsideWorkingDirectories`, read-only commands such as `cat` are
+denied outside the working directories.
 
 - Code: `src/coordinator/run.rs` (`args`).
-- If it changes: a coordinator cannot read the state or keep its journal,
-  or, worse, may run what it was not given.
-- Verified: integration test (`orchestrator machine` and the journal write
-  run; a write to another file and a `cat` outside are denied). Documentation:
+- If it changes: a coordinator cannot read the state or note in its
+  journal, or, worse, may run what it was not given.
+- Verified: integration test (`orchestrator machine` and the journal note
+  run; a `touch` and a `cat` outside are denied). Measured on 2.1.291: an
+  `Edit(//<path>)` rule covers every file-editing tool, and a `Write(...)`
+  rule is ignored with a warning; orchestrator uses neither. Documentation:
   permissions, permission-modes.
 
 ### cross-session-message
@@ -272,7 +277,7 @@ new turn when idle. `ListAgents` lists the reachable sessions, its first line
 naming the session itself.
 
 - Code: `src/coordinator/run.rs` (`args`), `src/coordinator/service.rs`
-  (`check_waits`), `src/main.rs` (`session_label`, `print_sessions`).
+  (`check_waits`), `src/report.rs` (`sessions`, `session_label`).
 - If it changes: the coordinator's messages do not arrive, arrive held, or
   go to another session of the same name.
 - Verified: integration test (`ListAgents` runs and names the session; the
@@ -283,13 +288,16 @@ naming the session itself.
 ### print-json-result
 
 `claude -p --output-format json` prints one JSON object when the run ends:
-`result` holds the final reply, `total_cost_usd` the estimated spend,
-`num_turns` the turns, `is_error` whether it failed, and
-`permission_denials` the calls denied.
+`result` holds the final reply, `num_turns` the turns, `usage` the tokens
+summed over the run (`input_tokens`, `cache_creation_input_tokens`,
+`cache_read_input_tokens`, `output_tokens`), `is_error` whether it failed,
+`permission_denials` the calls denied, and `total_cost_usd` the estimated
+spend at API list price, which a subscription does not pay.
 
 - Code: `src/coordinator/run.rs` (`RunRecord::new`).
-- If it changes: `runs.jsonl` loses the cost and the reply of each run; the
-  run itself is unaffected.
+- If it changes: `runs.jsonl` and `orchestrator setup` lose the tokens and
+  the reply of each run. A run that exits successfully still counts as
+  having handled its events; one whose `is_error` reads true does not.
 - Verified: integration test (the fields are present). Documentation:
   headless (`result`, `total_cost_usd`, `permission_denials`); the other
   fields measured on 2.1.291.
