@@ -233,9 +233,9 @@ mod tests {
     #[test]
     fn records_land_under_the_session_scope() {
         let runtime = tempfile::tempdir().unwrap();
-        let session = "/u/orchestrator.slice/run-p9-i9.scope";
+        let session = "/u/orchestrator.slice/orchestrator-9-9.scope";
         let dir = records_dir(runtime.path(), session);
-        assert_eq!(dir, runtime.path().join("jobs/run-p9-i9.scope"));
+        assert_eq!(dir, runtime.path().join("jobs/orchestrator-9-9.scope"));
         let record = JobRecord {
             command: BASH_CALL.into(),
             cwd: "/repo".into(),
