@@ -18,7 +18,7 @@ const SOURCES: [&str; 2] = ["src", "tests"];
 const MARKER: &str = "// claude-code: ";
 /// What a comment that means to be a marker holds.
 const MARKER_WORD: &str = "claude-code:";
-/// The line the check-claude-code skill reads and updates.
+/// The line the claude-code-compatibility skill reads and updates.
 const LAST_VERIFIED: &str = "Last verified: Claude Code ";
 
 /// Files by contract id.

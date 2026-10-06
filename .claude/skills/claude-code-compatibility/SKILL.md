@@ -1,9 +1,9 @@
 ---
-name: check-claude-code
-description: Checks that orchestrator still works with the installed Claude Code. Reads Claude Code's changelog since the last verified version, runs the manual integration test, then records the new version or drafts an issue naming the broken contract. Use when a new Claude Code version is out or installed, or when asked to "check Claude Code compatibility", "/check-claude-code", "does orchestrator still work with the new Claude Code", "vérifie la compatibilité avec Claude Code", "nouvelle version de Claude Code", "Claude Code a été mis à jour". Never in CI.
+name: claude-code-compatibility
+description: Use when Claude Code was updated or a new version is out, before trusting orchestrator with it; when orchestrator misbehaves right after a Claude Code update (commands no longer placed in job groups, no admission notice, sessions or orphans not seen); or when asked "does orchestrator still work with this Claude Code", "/claude-code-compatibility", "vérifie la compatibilité avec Claude Code", "nouvelle version de Claude Code", "Claude Code a été mis à jour". It verifies orchestrator against the installed version and drafts an issue for what broke. Never in CI.
 ---
 
-# Check Claude Code compatibility
+# orchestrator and Claude Code compatibility
 
 orchestrator relies on Claude Code only through the contracts listed in
 `docs/claude-code-dependency.md`, each with an id. This skill checks them
