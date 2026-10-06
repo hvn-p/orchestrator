@@ -109,10 +109,12 @@ watch` has learned.
 orchestrator setup
 ```
 
-`setup` adds a `coordinator` section, your consent to spend tokens, then
-starts a coordinator (Claude Code, `claude` on the `PATH`) that examines the
-machine, writes the admission thresholds and ends with a summary. Running it
-again reviews them. `orchestrator config` prints the file;
+`setup` asks which model the coordinator runs with (`--model` answers
+without asking), adds a `coordinator` section, your consent to spend tokens,
+then starts a coordinator (Claude Code, `claude` on the `PATH`) that examines
+the machine, writes the admission thresholds and ends with a summary of its
+choice and of what the run took: turns, seconds and tokens. Running it again
+reviews them, and lets you change the model. `orchestrator config` prints the file;
 `orchestrator config admission --heavy-mb … --margin-mb … --max-wait-secs …`
 sets the thresholds by hand, refusing values that make no sense on the
 machine. Written by hand, for a machine with about 30 GB of RAM:
@@ -147,34 +149,46 @@ the error goes to `$XDG_RUNTIME_DIR/orchestrator/prefix.log`.
 ```json
 {
   "coordinator": {
-    "model": "haiku",
-    "max_budget_usd": 0.25,
+    "model": "claude-sonnet-5-5",
     "max_minutes": 5,
     "wait_secs": 20
   }
 }
 ```
 
-The values are what `setup` writes. With this section, `orchestrator watch`
-starts a coordinator, one at a time, for each batch of `memory_pressure`
-events and calls that admission has held back `wait_secs`, each run with
-`model`, at most `max_budget_usd` as Claude Code estimates it, and stopped
-past `max_minutes`. Remove the section to turn it off. A run may read the
-state, keep its journal and message sessions, nothing else; it messages
-under the name `orchestrator-coordinator`.
+The values are what `setup` writes, the model being your choice. With this
+section, `orchestrator watch` starts a coordinator, one at a time, for each
+batch of `memory_pressure` events and calls that admission has held back
+`wait_secs`, each run with `model` and stopped past `max_minutes`, a guard
+against a stuck run. Nothing caps a run's spending unless you add
+`"max_budget_usd"`, which Claude Code checks against its estimate at API
+list price, not against a subscription's quota. Remove the section to turn
+the coordinator off.
+
+`watch` gathers the state a run needs (the machine, the sessions, the calls
+waiting for memory and the reservations, the heavy commands learned, the
+latest lines of the journal, the priorities) and puts it in the run's prompt,
+so the run only decides, messages sessions and notes what it did. Each queued
+event is pending, in progress, then done; a run that fails gives its events
+back for the next one, and gives up on an event after three failed runs. A
+run may read more of the state, note in its journal
+(`orchestrator coordinator note`) and message sessions, nothing else; it
+messages under the name `orchestrator-coordinator`.
 
 ```sh
 orchestrator coordinator
 ```
 
 opens an interactive coordinator: you talk to it, and it receives the events
-for as long as it stays open; meanwhile `watch` starts no run. Tell it your
+for as long as it stays open; meanwhile `watch` starts no run. Events it took
+but did not handle when it closes go back to the next run. Tell it your
 priorities (which sessions matter, which can wait), and it keeps them in
 `priorities.md` next to the configuration, a file you can also edit. It
 remembers what it did in a journal under
-`$XDG_STATE_HOME/orchestrator/coordinator/`; each run `watch` started is
-summarised, cost and reply included, in
-`$XDG_RUNTIME_DIR/orchestrator/coordinator/runs.jsonl`.
+`$XDG_STATE_HOME/orchestrator/coordinator/`. Each run is summarised in
+`$XDG_RUNTIME_DIR/orchestrator/coordinator/runs.jsonl`: turns, seconds and
+tokens first, then its reply, and Claude Code's dollar estimate at list
+price, which a subscription does not pay.
 
 ## Claude Code dependency
 
@@ -189,7 +203,8 @@ cargo test --test claude_code -- --ignored --nocapture
 
 This starts a real headless session through `orchestrator launch`, then a
 coordinator, so it needs a signed-in `claude`, a systemd user manager with
-cgroup v2, and spends a few cents of tokens. It never runs in CI.
+cgroup v2, and spends a few tens of thousands of tokens, most read from the
+prompt cache. It never runs in CI.
 
 ## Continuous integration
 
