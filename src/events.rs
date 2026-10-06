@@ -4,7 +4,9 @@
 //!
 //! A process is named by its pid, its `comm` and the head of its command line
 //! (`procfs::command_head`), never by the full command line: arguments can
-//! hold credentials, and the coordinator hands what it reads to a model.
+//! hold credentials, and the coordinator hands what it reads to a model. A
+//! Bash call is named by its label instead (see `peaks`): a command Claude
+//! wrote, which went through the model already.
 
 use crate::attribution::{Attribution, Orphan, SessionUsage};
 use anyhow::{Context, Result};
@@ -57,6 +59,23 @@ pub enum Event {
     },
     Orphans {
         orphans: Vec<OrphanSummary>,
+    },
+    /// Admission has held a heavy Bash call back this long; reported once
+    /// per call.
+    AdmissionWait {
+        /// The waiting session's name and id, when its claude process has a
+        /// session file.
+        session: Option<String>,
+        session_id: Option<String>,
+        job: String,
+        /// The call's label.
+        command: String,
+        waited_secs: u64,
+        peak_mb: u64,
+        /// The free memory it waits for.
+        need_mb: u64,
+        /// The memory free for admission now.
+        free_mb: u64,
     },
 }
 
@@ -119,6 +138,11 @@ pub fn to_line(at: u64, event: &Event) -> Result<String> {
     serde_json::to_string(&Line { at, event }).context("serializing event")
 }
 
+/// The event as its line holds it.
+pub fn to_value(at: u64, event: &Event) -> Result<serde_json::Value> {
+    serde_json::to_value(Line { at, event }).context("serializing event")
+}
+
 /// Appends one line. The file is opened per event: the coordinator tails it
 /// and may truncate it between two events.
 pub fn append(path: &Path, at: u64, event: &Event) -> Result<()> {
@@ -173,6 +197,26 @@ mod tests {
         assert_eq!(v["largest"]["process_command"], "python3");
         assert!(v["largest"].get("process_cmdline").is_none());
         assert_eq!(v["next"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn admission_wait_line_shape() {
+        let event = Event::AdmissionWait {
+            session: Some("alpha".into()),
+            session_id: Some("a".into()),
+            job: "job-bash-7-1".into(),
+            command: "pnpm typecheck".into(),
+            waited_secs: 21,
+            peak_mb: 3000,
+            need_mb: 5048,
+            free_mb: 1200,
+        };
+        let v: serde_json::Value = serde_json::from_str(&to_line(5, &event).unwrap()).unwrap();
+        assert_eq!(v["kind"], "admission_wait");
+        assert_eq!(v["session"], "alpha");
+        assert_eq!(v["command"], "pnpm typecheck");
+        assert_eq!(v["waited_secs"], 21);
+        assert_eq!(v["need_mb"], 5048);
     }
 
     #[test]

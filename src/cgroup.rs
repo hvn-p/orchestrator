@@ -74,6 +74,14 @@ pub fn enter_job(root: &Path, session: &str, name: &str, pid: u32) -> io::Result
     Ok(job)
 }
 
+/// The first process of the session's `main/` leaf: its claude process.
+pub fn main_pid(root: &Path, session: &str) -> Option<u32> {
+    fs::read_to_string(dir(root, session).join("main/cgroup.procs"))
+        .ok()?
+        .lines()
+        .find_map(|l| l.trim().parse().ok())
+}
+
 fn dir(root: &Path, path: &str) -> PathBuf {
     root.join(path.trim_start_matches('/'))
 }
@@ -131,6 +139,16 @@ mod tests {
             fs::read_to_string(dir.join("cgroup.subtree_control")).unwrap(),
             "+cpu +memory"
         );
+    }
+
+    #[test]
+    fn finds_the_claude_process_of_a_session() {
+        let root = tempfile::tempdir().unwrap();
+        let main = dir(root.path(), SESSION).join("main");
+        fs::create_dir_all(&main).unwrap();
+        assert_eq!(main_pid(root.path(), SESSION), None);
+        fs::write(main.join("cgroup.procs"), "42\n43\n").unwrap();
+        assert_eq!(main_pid(root.path(), SESSION), Some(42));
     }
 
     #[test]

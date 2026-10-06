@@ -13,9 +13,14 @@ pub fn available_mb(meminfo: &Path) -> Result<u64> {
 }
 
 fn parse_available_kb(meminfo: &str) -> Option<u64> {
+    field_kb(meminfo, "MemAvailable")
+}
+
+/// The value of the meminfo line `name`, in kB.
+pub fn field_kb(meminfo: &str, name: &str) -> Option<u64> {
     meminfo
         .lines()
-        .find_map(|l| l.strip_prefix("MemAvailable:"))
+        .find_map(|l| l.strip_prefix(name)?.strip_prefix(':'))
         .and_then(|v| v.split_whitespace().next())
         .and_then(|n| n.parse().ok())
 }

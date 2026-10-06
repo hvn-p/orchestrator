@@ -1,7 +1,7 @@
 //! Checks the installed Claude Code against the contracts orchestrator relies
 //! on, listed by id in docs/claude-code-dependency.md. Manual only: it starts
-//! a real headless session, which needs a signed-in `claude` on the `PATH`, a
-//! systemd user manager with cgroup v2, and spends about a cent of tokens.
+//! real headless sessions, which need a signed-in `claude` on the `PATH`, a
+//! systemd user manager with cgroup v2, and spend a few cents of tokens.
 //! Run it with `cargo test --test claude_code -- --ignored`.
 //!
 //! The session runs through `orchestrator launch`, from a temporary git
@@ -11,13 +11,21 @@
 //! and the test fails naming every broken contract. The session's
 //! `XDG_RUNTIME_DIR` is temporary too, so that a running `orchestrator watch`
 //! neither learns from the probe nor removes its job record.
+//!
+//! A second test starts a coordinator as `watch` would, with temporary
+//! runtime, state and configuration directories, and a test prompt in place
+//! of events. It may list the user's sessions but never message them: its
+//! `SendMessage` tool is removed.
 
 // Clippy exempts only `#[test]` functions; every function here is test code.
 #![allow(clippy::expect_used)]
 
+use orchestrator::config::Coordinator;
+use orchestrator::coordinator::{self, run};
 use orchestrator::prefix::{JobRecord, Kind};
 use orchestrator::{cgroup, prefix, procfs, recognise, sessions};
 use serde_json::Value;
+use std::ffi::OsString;
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
@@ -65,8 +73,251 @@ fn the_installed_claude_code_keeps_every_contract() {
     );
 }
 
+#[test]
+#[ignore = "manual: starts a real Claude Code session; run with --ignored"]
+fn the_installed_claude_code_runs_a_coordinator() {
+    let c = CoordinatorRun::run();
+    let checks: [(&str, CoordinatorChecker); 4] = [
+        ("coordinator-session", coordinator_session),
+        ("coordinator-permissions", coordinator_permissions),
+        ("cross-session-message", cross_session_message),
+        ("print-json-result", print_json_result),
+    ];
+    let mut report = Vec::new();
+    let mut broken = 0;
+    for (id, check) in checks {
+        match check(&c) {
+            Ok(()) => report.push(format!("ok      {id}")),
+            Err(why) => {
+                broken += 1;
+                report.push(format!("BROKEN  {id}: {why}"));
+            }
+        }
+    }
+    let report = report.join("\n");
+    eprintln!(
+        "Claude Code {} (coordinator, {} USD)\n{report}",
+        c.version, c.result["total_cost_usd"]
+    );
+    assert!(
+        broken == 0,
+        "Claude Code {} broke {broken} contract(s) of docs/claude-code-dependency.md while \
+         running a coordinator.\n{report}\nIts reply: {:?}",
+        c.version,
+        c.reply()
+    );
+}
+
 type Check = Result<(), String>;
 type Checker = fn(&Session) -> Check;
+type CoordinatorChecker = fn(&CoordinatorRun) -> Check;
+
+/// A finished coordinator run and what it left.
+struct CoordinatorRun {
+    version: String,
+    /// Deleted when the run is dropped.
+    _tmp: tempfile::TempDir,
+    paths: coordinator::Paths,
+    outside: PathBuf,
+    /// What it printed: one JSON object.
+    result: Value,
+}
+
+impl CoordinatorRun {
+    fn run() -> CoordinatorRun {
+        let version = claude_version();
+        let tmp = tempfile::tempdir().expect("creating a temporary directory");
+        let base = tmp
+            .path()
+            .canonicalize()
+            .expect("resolving the temporary directory");
+        let paths = coordinator::Paths::new(
+            &base.join("run/orchestrator"),
+            &base.join("state/orchestrator"),
+            &base.join("config/orchestrator/config.json"),
+        );
+        run::write_role(&paths).expect("writing the role");
+        let outside = base.join("outside.txt");
+        fs::write(&outside, "outside").expect("writing a file outside");
+        let prompt = format!(
+            "This is an automated compatibility test of orchestrator, not an event: message no \
+             one. Do these steps in order, one tool call each, and go on after a denial. 1) Run \
+             `orchestrator machine` with the Bash tool. 2) Write the word checked to {}. 3) \
+             Write the word x to {}. 4) Run `cat {}` with the Bash tool. 5) Call ListAgents \
+             once. Then reply with exactly three lines: the first line `orchestrator machine` \
+             printed, the first line of the ListAgents result, and the first line of the role \
+             appended to your system prompt.",
+            paths.journal().display(),
+            paths.home.join("other.md").display(),
+            outside.display(),
+        );
+        let bin = Path::new(env!("CARGO_BIN_EXE_orchestrator"))
+            .parent()
+            .expect("the binary's directory");
+        let cfg = Coordinator::default();
+        let built = run::command(&run::Mode::Batch(&[]), &cfg, &paths, bin, 0);
+        let mut args: Vec<OsString> = built.get_args().map(ToOwned::to_owned).collect();
+        // The test's prompt in place of events.
+        args.pop();
+        args.push(prompt.into());
+        // Never message the user's sessions from a test.
+        for a in &mut args {
+            if a.to_string_lossy().contains("SendMessage,") {
+                *a = a.to_string_lossy().replace("SendMessage,", "").into();
+            }
+        }
+        let stdout = base.join("stdout");
+        let stderr = base.join("stderr");
+        let mut cmd = Command::new(built.get_program());
+        cmd.args(&args)
+            .current_dir(built.get_current_dir().expect("a directory"))
+            .env("XDG_RUNTIME_DIR", base.join("run"))
+            .env("XDG_STATE_HOME", base.join("state"))
+            .env("XDG_CONFIG_HOME", base.join("config"))
+            .stdin(Stdio::null())
+            .stdout(File::create(&stdout).expect("creating the output file"))
+            .stderr(File::create(&stderr).expect("creating the error file"));
+        for (key, value) in built.get_envs() {
+            if let Some(value) = value {
+                cmd.env(key, value);
+            }
+        }
+        let mut child = cmd.spawn().expect("starting claude");
+        let start = Instant::now();
+        let status = loop {
+            if let Some(status) = child.try_wait().expect("waiting for the coordinator") {
+                break status;
+            }
+            if start.elapsed() > TIMEOUT {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("the coordinator did not end within {TIMEOUT:?}; it was killed");
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        };
+        let errors = fs::read_to_string(&stderr).unwrap_or_default();
+        assert!(
+            status.success(),
+            "the coordinator failed ({status}); this is not a broken contract yet. Its error \
+             output:\n{}",
+            tail(&errors)
+        );
+        let result = fs::read(&stdout)
+            .ok()
+            .and_then(|out| serde_json::from_slice(&out).ok())
+            .unwrap_or(Value::Null);
+        CoordinatorRun {
+            version,
+            _tmp: tmp,
+            paths,
+            outside,
+            result,
+        }
+    }
+
+    fn reply(&self) -> &str {
+        self.result["result"].as_str().unwrap_or_default()
+    }
+
+    /// The commands or files of the calls denied to `tool`.
+    fn denied(&self, tool: &str, field: &str) -> Vec<String> {
+        self.result["permission_denials"]
+            .as_array()
+            .map(|denials| {
+                denials
+                    .iter()
+                    .filter(|d| d["tool_name"] == tool)
+                    .filter_map(|d| d["tool_input"][field].as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+}
+
+/// Its role reached the system prompt, and it ran under its name.
+fn coordinator_session(c: &CoordinatorRun) -> Check {
+    let reply = c.reply();
+    // Its heading or its first line of text: the model reads "first line"
+    // either way.
+    let first: Vec<&str> = run::ROLE
+        .lines()
+        .map(|l| l.trim_start_matches("# ").trim())
+        .filter(|l| !l.is_empty())
+        .take(2)
+        .collect();
+    if !first.iter().any(|line| reply.contains(line)) {
+        return Err(format!(
+            "the reply quotes neither of the role's first lines {first:?}"
+        ));
+    }
+    if !reply.contains(run::NAME) {
+        return Err(format!(
+            "the reply does not show the session's name {:?}",
+            run::NAME
+        ));
+    }
+    Ok(())
+}
+
+/// Its allowed command and file write ran; a write elsewhere and a read
+/// outside its directories were denied without asking.
+fn coordinator_permissions(c: &CoordinatorRun) -> Check {
+    if !c.reply().contains("Memory:") {
+        return Err("`orchestrator machine` did not run, or not this orchestrator".into());
+    }
+    let journal = fs::read_to_string(c.paths.journal()).unwrap_or_default();
+    if journal.trim() != "checked" {
+        return Err(format!(
+            "the journal holds {journal:?}, not the word written"
+        ));
+    }
+    let other = c.paths.home.join("other.md");
+    if other.exists() {
+        return Err(format!("{} was written", other.display()));
+    }
+    let cat = format!("cat {}", c.outside.display());
+    if !c.denied("Bash", "command").contains(&cat) {
+        return Err(format!(
+            "`{cat}` was not denied; denials: {}",
+            c.result["permission_denials"]
+        ));
+    }
+    Ok(())
+}
+
+/// `ListAgents` runs and names the session itself; delivery is measured, not
+/// tested, since it would take a second session.
+fn cross_session_message(c: &CoordinatorRun) -> Check {
+    if c.reply()
+        .contains(&format!("This session is {}", run::NAME))
+    {
+        Ok(())
+    } else {
+        Err("the reply does not quote ListAgents naming this session".into())
+    }
+}
+
+fn print_json_result(c: &CoordinatorRun) -> Check {
+    let record = run::RunRecord::new(0, 0, 0, Some(0), false, c.result.to_string().as_bytes());
+    let mut missing = Vec::new();
+    if record.reply.is_none() {
+        missing.push("result");
+    }
+    if record.cost_usd.is_none() {
+        missing.push("total_cost_usd");
+    }
+    if record.turns.is_none() {
+        missing.push("num_turns");
+    }
+    if record.is_error != Some(false) {
+        missing.push("is_error false");
+    }
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(format!("the output lacks {}", missing.join(", ")))
+    }
+}
 
 /// One finished session and what it left to check.
 struct Session {

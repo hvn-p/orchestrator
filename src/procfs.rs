@@ -82,6 +82,20 @@ pub fn start_time(root: &Path, pid: u32) -> Option<u64> {
     parse_stat(&stat).map(|(_, _, start)| start)
 }
 
+/// Whether process `pid` under `root` is the one that started at
+/// `start_time` and has not exited: a zombie waiting for its parent has.
+pub fn running(root: &Path, pid: u32, start_time: u64) -> bool {
+    let Ok(stat) = fs::read_to_string(root.join(pid.to_string()).join("stat")) else {
+        return false;
+    };
+    let state = stat
+        .rfind(')')
+        .and_then(|close| stat.get(close + 1..))
+        .and_then(|rest| rest.split_whitespace().next());
+    parse_stat(&stat).is_some_and(|(_, _, start)| start == start_time)
+        && !matches!(state, Some("Z" | "X" | "x"))
+}
+
 /// Returns (comm, ppid, starttime). comm sits between the first `(` and the
 /// last `)` and may itself contain spaces or parentheses, so fields are counted
 /// from the last `)`: state is field 3, ppid field 4, starttime field 22.
@@ -184,6 +198,26 @@ mod tests {
         rest.push(start.to_string());
         rest.extend((23..=52).map(|i| i.to_string()));
         format!("{pid} ({comm}) {}\n", rest.join(" "))
+    }
+
+    #[test]
+    fn a_zombie_or_a_reused_pid_is_not_running() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write_proc(
+            root,
+            7,
+            &stat_line(7, "claude (x)", 1, 500),
+            Some(1),
+            b"",
+            b"",
+        );
+        assert!(running(root, 7, 500));
+        assert!(!running(root, 7, 501));
+        assert!(!running(root, 8, 500));
+        let zombie = stat_line(7, "claude (x)", 1, 500).replacen(") S ", ") Z ", 1);
+        fs::write(root.join("7/stat"), zombie).unwrap();
+        assert!(!running(root, 7, 500));
     }
 
     fn write_proc(root: &Path, pid: u32, stat: &str, rss: Option<u64>, environ: &[u8], cmd: &[u8]) {

@@ -26,9 +26,14 @@
 //! notification. It writes one notice to standard error when it starts
 //! waiting and one when it proceeds: the call's output goes back to Claude.
 //! After the configured longest wait, it runs anyway, reserving its peak.
+//!
+//! While it waits, a call is also recorded in the runtime directory, so that
+//! `orchestrator admission` can show it and `watch` can wake the coordinator
+//! when it waits long. Reading the waiting calls and the reservations takes
+//! no lock: what a reader shows may be a check behind.
 
 use crate::config::Admission;
-use crate::{memory, peaks, recognise, repository};
+use crate::{memory, peaks, recognise, repository, runtime};
 use anyhow::{Context, Result, bail};
 use inotify::{Inotify, WatchMask};
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
@@ -97,6 +102,57 @@ struct Reservation {
     /// The job group, from the cgroup root.
     group: String,
     peak_mb: u64,
+    /// The call's label; empty in a reservation written before labels.
+    #[serde(default)]
+    label: String,
+}
+
+/// A heavy call waiting for memory, kept as `<runtime>/waiting/<job>.json`
+/// from its first wait until it runs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Waiting {
+    /// Its job's name.
+    pub job: String,
+    /// Its job group, from the cgroup root.
+    pub group: String,
+    pub label: String,
+    pub peak_mb: u64,
+    /// The free memory it waits for.
+    pub need_mb: u64,
+    /// When it started waiting, in ms since the Unix epoch.
+    pub since_ms: u64,
+}
+
+/// A heavy call running with a reservation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Reserved {
+    pub job: String,
+    /// Its job group, from the cgroup root.
+    pub group: String,
+    pub label: String,
+    pub peak_mb: u64,
+    /// What its group uses now, None without a memory controller.
+    pub current_mb: Option<u64>,
+    /// What its reservation still holds.
+    pub held_mb: u64,
+}
+
+/// Admission's state as a reader sees it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Snapshot {
+    pub available_mb: u64,
+    /// What the reservations still hold, together.
+    pub held_mb: u64,
+    /// Oldest first.
+    pub waiting: Vec<Waiting>,
+    pub reserved: Vec<Reserved>,
+}
+
+impl Snapshot {
+    /// Free memory as admission counts it.
+    pub fn free_mb(&self) -> u64 {
+        free_mb(self.available_mb, self.held_mb)
+    }
 }
 
 /// What a check decides.
@@ -227,11 +283,11 @@ fn admit_every(
     let start = Instant::now();
     let need = need_mb(call.peak_mb, cfg);
     let max_wait = Duration::from_secs(cfg.max_wait_secs);
-    let mut waiting = false;
+    let mut waiting: Option<Recorded> = None;
     let result = loop {
         let waited = start.elapsed();
         let decide = |free| step(free, need, waited, max_wait, recheck);
-        let check = match check(paths, job, call.peak_mb, decide) {
+        let check = match check(paths, job, call, decide) {
             Ok(check) => check,
             Err(e) => break Err(e),
         };
@@ -239,15 +295,23 @@ fn admit_every(
             Step::Run => break Ok(None),
             Step::RunOverdue => break Ok(Some(check.free_mb)),
             Step::Wait(timeout) => {
-                if !waiting {
+                if waiting.is_none() {
                     let _ = writeln!(out, "{}", waiting_notice(call, cfg, &check));
-                    waiting = true;
+                    let record = Waiting {
+                        job: job.name.clone(),
+                        group: job.group.clone(),
+                        label: call.label.clone(),
+                        peak_mb: call.peak_mb,
+                        need_mb: need,
+                        since_ms: u64::try_from(runtime::now_ms()).unwrap_or(u64::MAX),
+                    };
+                    waiting = Some(Recorded::write(&paths.runtime, &record));
                 }
                 sleep_until_change(&check.holders, timeout);
             }
         }
     };
-    if waiting {
+    if waiting.take().is_some() {
         let still_short = result.as_ref().ok().copied().flatten();
         let notice = running_notice(call, start.elapsed(), still_short.map(|f| (f, need)));
         let _ = writeln!(out, "{notice}");
@@ -255,13 +319,38 @@ fn admit_every(
     result.map(|_| ())
 }
 
+/// The record of a waiting call, removed when the call stops waiting, the
+/// prefix included when it fails. A record that cannot be written only goes
+/// unseen.
+struct Recorded(Option<PathBuf>);
+
+impl Recorded {
+    fn write(runtime: &Path, record: &Waiting) -> Recorded {
+        let dir = waiting_dir(runtime);
+        let path = dir.join(format!("{}.json", record.job));
+        let written = fs::create_dir_all(&dir)
+            .ok()
+            .and_then(|()| serde_json::to_vec(record).ok())
+            .and_then(|json| fs::write(&path, json).ok());
+        Recorded(written.map(|()| path))
+    }
+}
+
+impl Drop for Recorded {
+    fn drop(&mut self) {
+        if let Some(path) = &self.0 {
+            let _ = fs::remove_file(path);
+        }
+    }
+}
+
 /// Counts free memory net of reservations, removing those that hold nothing,
-/// and reserves `peak_mb` for `job` when `decide` lets it run. All under the
-/// lock.
+/// and reserves the call's expected peak for `job` when `decide` lets it run.
+/// All under the lock.
 fn check(
     paths: &Paths,
     job: &Job,
-    peak_mb: u64,
+    call: &Heavy,
     decide: impl FnOnce(u64) -> Step,
 ) -> Result<Check> {
     let dir = reservations_dir(&paths.runtime);
@@ -271,9 +360,9 @@ fn check(
     let mut holders = Vec::new();
     let entries = fs::read_dir(&dir).with_context(|| format!("reading {}", dir.display()))?;
     for path in entries.flatten().map(|e| e.path()) {
-        if let Some((group, mb)) = holding(&paths.cgroup_root, &path) {
-            held = mb.saturating_add(held);
-            holders.push(group);
+        if let Some(r) = reserved(&paths.cgroup_root, &path) {
+            held = r.held_mb.saturating_add(held);
+            holders.push(paths.cgroup_root.join(r.group.trim_start_matches('/')));
         } else {
             let _ = fs::remove_file(&path);
         }
@@ -284,7 +373,8 @@ fn check(
         let path = dir.join(format!("{}.json", job.name));
         let reservation = Reservation {
             group: job.group.clone(),
-            peak_mb,
+            peak_mb: call.peak_mb,
+            label: call.label.clone(),
         };
         let json = serde_json::to_vec(&reservation).context("serializing a reservation")?;
         fs::write(&path, json).with_context(|| format!("writing {}", path.display()))?;
@@ -302,18 +392,72 @@ pub fn reservations_dir(runtime: &Path) -> PathBuf {
     runtime.join("reservations")
 }
 
-/// The job group a reservation file names, with what it still holds. None
-/// when it holds nothing: the file cannot be read, or its group is gone or
-/// empty.
-fn holding(cgroup_root: &Path, file: &Path) -> Option<(PathBuf, u64)> {
+/// Where waiting calls are recorded.
+pub fn waiting_dir(runtime: &Path) -> PathBuf {
+    runtime.join("waiting")
+}
+
+/// The call a reservation file names, with what it still holds. None when it
+/// holds nothing: the file cannot be read, or its group is gone or empty.
+fn reserved(cgroup_root: &Path, file: &Path) -> Option<Reserved> {
     let r: Reservation = serde_json::from_slice(&fs::read(file).ok()?).ok()?;
     let group = cgroup_root.join(r.group.trim_start_matches('/'));
     if !populated(&group) {
         return None;
     }
-    // Without a memory controller, count the whole peak.
-    let held = current_mb(&group).map_or(r.peak_mb, |current| held_mb(r.peak_mb, current));
-    Some((group, held))
+    let current_mb = current_mb(&group);
+    Some(Reserved {
+        job: file.file_stem()?.to_string_lossy().into_owned(),
+        // Without a memory controller, count the whole peak.
+        held_mb: current_mb.map_or(r.peak_mb, |current| held_mb(r.peak_mb, current)),
+        group: r.group,
+        label: r.label,
+        peak_mb: r.peak_mb,
+        current_mb,
+    })
+}
+
+/// The calls waiting for memory now, oldest first. A record whose group is
+/// gone or empty belongs to a call that ended while it waited, its prefix
+/// killed: with `prune`, it is removed.
+pub fn waiting(paths: &Paths, prune: bool) -> Vec<Waiting> {
+    let Ok(entries) = fs::read_dir(waiting_dir(&paths.runtime)) else {
+        return Vec::new();
+    };
+    let mut waiting = Vec::new();
+    for path in entries.flatten().map(|e| e.path()) {
+        let record = fs::read(&path)
+            .ok()
+            .and_then(|json| serde_json::from_slice::<Waiting>(&json).ok());
+        // A record being written reads as unparsable for an instant.
+        let Some(w) = record else { continue };
+        if populated(&paths.cgroup_root.join(w.group.trim_start_matches('/'))) {
+            waiting.push(w);
+        } else if prune {
+            let _ = fs::remove_file(&path);
+        }
+    }
+    waiting.sort_by(|a, b| a.since_ms.cmp(&b.since_ms).then_with(|| a.job.cmp(&b.job)));
+    waiting
+}
+
+/// The waiting calls, the reservations and the memory free for admission.
+pub fn snapshot(paths: &Paths) -> Result<Snapshot> {
+    let mut reserved_calls = Vec::new();
+    if let Ok(entries) = fs::read_dir(reservations_dir(&paths.runtime)) {
+        for path in entries.flatten().map(|e| e.path()) {
+            reserved_calls.extend(reserved(&paths.cgroup_root, &path));
+        }
+    }
+    reserved_calls.sort_by(|a, b| b.held_mb.cmp(&a.held_mb).then_with(|| a.job.cmp(&b.job)));
+    Ok(Snapshot {
+        available_mb: memory::available_mb(&paths.meminfo)?,
+        held_mb: reserved_calls
+            .iter()
+            .fold(0, |sum, r| sum.saturating_add(r.held_mb)),
+        waiting: waiting(paths, false),
+        reserved: reserved_calls,
+    })
 }
 
 fn populated(group: &Path) -> bool {
@@ -330,9 +474,9 @@ fn current_mb(group: &Path) -> Option<u64> {
     Some(bytes / (1024 * 1024))
 }
 
-/// Takes the admission lock, trying for `patience`. It is released when the
-/// returned file closes, at the latest when the process ends.
-fn lock(path: &Path, patience: Duration) -> Result<File> {
+/// Takes the lock file at `path`, trying for `patience`. It is released when
+/// the returned file closes, at the latest when the process ends.
+pub(crate) fn lock(path: &Path, patience: Duration) -> Result<File> {
     let file = OpenOptions::new()
         .create(true)
         .append(true)
@@ -606,7 +750,7 @@ mod tests {
         fn try_admit(&self, name: &str, peak_mb: u64) -> Check {
             let job = self.job(name, 0);
             let need = need_mb(peak_mb, &CFG);
-            check(&self.paths, &job, peak_mb, |free| {
+            check(&self.paths, &job, &h("make", peak_mb), |free| {
                 step(free, need, Duration::ZERO, 30 * SEC, SEC)
             })
             .unwrap()
@@ -682,7 +826,7 @@ mod tests {
                     let job = m.job(&format!("job-bash-{i}-1"), 0);
                     barrier.wait();
                     let need = need_mb(2000, &CFG);
-                    check(&m.paths, &job, 2000, |free| {
+                    check(&m.paths, &job, &h("make", 2000), |free| {
                         step(free, need, Duration::ZERO, 30 * SEC, SEC)
                     })
                     .unwrap()
@@ -747,6 +891,81 @@ mod tests {
         assert!(lines[1].starts_with("orchestrator: running `pnpm typecheck` after waiting "));
         assert!(lines[1].ends_with(" s for memory."), "{}", lines[1]);
         assert_eq!(m.reserved(), ["job-bash-2-1.json"]);
+    }
+
+    #[test]
+    fn a_call_is_recorded_while_it_waits() {
+        let m = Arc::new(Machine::new(4000));
+        assert_eq!(m.try_admit("job-bash-1-1", 3000).step, Step::Run);
+        let first = format!("{SESSION}/job-bash-1-1");
+        m.set_current(&first, 1000);
+        let job = m.job("job-bash-2-1", 0);
+        let waiter = {
+            let m = Arc::clone(&m);
+            let job = job.clone();
+            std::thread::spawn(move || {
+                let mut out = Vec::new();
+                admit_every(&m.paths, &CFG, &job, &typecheck(3000), 60 * SEC, &mut out).unwrap();
+            })
+        };
+        let start = Instant::now();
+        let seen = loop {
+            let found = waiting(&m.paths, false);
+            if !found.is_empty() || start.elapsed() > 5 * SEC {
+                break found;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        assert_eq!(seen.len(), 1, "{seen:?}");
+        let w = &seen[0];
+        assert_eq!(
+            (w.job.as_str(), w.group.as_str(), w.label.as_str()),
+            ("job-bash-2-1", job.group.as_str(), "pnpm typecheck")
+        );
+        assert_eq!((w.peak_mb, w.need_mb), (3000, 3500));
+        let snap = snapshot(&m.paths).unwrap();
+        assert_eq!(snap.waiting, seen);
+        assert_eq!(
+            snap.reserved,
+            [Reserved {
+                job: "job-bash-1-1".into(),
+                group: first.clone(),
+                label: "make".into(),
+                peak_mb: 3000,
+                current_mb: Some(1000),
+                held_mb: 2000,
+            }]
+        );
+        assert_eq!((snap.held_mb, snap.free_mb()), (2000, 2000));
+        m.end(&first);
+        waiter.join().unwrap();
+        assert_eq!(waiting(&m.paths, false), []);
+        let snap = snapshot(&m.paths).unwrap();
+        assert_eq!(snap.reserved.len(), 1);
+        assert_eq!(snap.reserved[0].label, "pnpm typecheck");
+    }
+
+    #[test]
+    fn a_record_left_by_a_killed_prefix_is_pruned() {
+        let m = Machine::new(4000);
+        let job = m.job("job-bash-1-1", 0);
+        let record = Waiting {
+            job: job.name.clone(),
+            group: job.group.clone(),
+            label: "make".into(),
+            peak_mb: 3000,
+            need_mb: 3500,
+            since_ms: 1,
+        };
+        let kept = Recorded::write(&m.paths.runtime, &record);
+        assert_eq!(waiting(&m.paths, true), [record]);
+        std::mem::forget(kept);
+        m.end(&job.group);
+        assert_eq!(waiting(&m.paths, false), []);
+        let dir = waiting_dir(&m.paths.runtime);
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
+        assert_eq!(waiting(&m.paths, true), []);
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 0);
     }
 
     #[test]
