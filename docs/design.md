@@ -17,10 +17,12 @@ of a few MB.
 ## Status
 
 `orchestrator launch` and the shell prefix exist: a session runs in a cgroup
-of its own, and each command it starts in a job group of its own. Nothing is
-queued or throttled yet. `orchestrator watch` measures the memory peak of each
-finished Bash call, learns it per repository and command, and removes empty job
-groups; `orchestrator peaks` shows what it learned. `orchestrator sessions` and
+of its own, and each command it starts in a job group of its own. `orchestrator
+watch` measures the memory peak of each finished Bash call, learns it per
+repository and command, and removes empty job groups; `orchestrator peaks`
+shows what it learned. Once a configuration exists, a Bash call learned as
+memory-hungry waits for memory before it runs (admission). Nothing is
+throttled yet. `orchestrator sessions` and
 `orchestrator watch` still attribute processes to sessions by process ancestry
 and report memory pressure and orphaned processes. Everything else here is design; the parts validated by
 throwaway prototypes are listed under "Measured".
@@ -55,7 +57,8 @@ groups and classifies them by behaviour, without any list of commands.
    "heap out of memory".
 2. **Queue**: a Bash call already measured as memory-hungry waits, before it
    runs, until free memory covers its known peak (see "Admission"). Every other
-   command starts at once. The wait counts toward the Bash call's timeout.
+   command starts at once. The wait counts toward the Bash call's timeout, so
+   it is bounded: past the longest wait, the call runs anyway.
 3. **Do it elsewhere**: when a project has a CI, whole-project checks (full test
    suite, type check, build) belong there. Whether to enforce this is a user
    policy, not part of the foundation.
@@ -94,7 +97,7 @@ One binary, `orchestrator`, with subcommands.
   its children cannot hold processes itself), then enables `+cpu +memory +pids`
   for the sub-groups. A session started with `claude` alone stays outside
   orchestration.
-- **The shell prefix**, `orchestrator-prefix` (exists, admission planned):
+- **The shell prefix**, `orchestrator-prefix` (exists):
   Claude Code calls it with the full command line as a single argument, for
   every Bash call, hook, status line refresh and MCP stdio server start. It
   creates the sub-group, moves itself in, keeps the command of a Bash call for
@@ -116,12 +119,12 @@ One binary, `orchestrator`, with subcommands.
     sweep every minute catches what inotify cannot see, such as a job that
     ended before its watch was in place;
   - planned: `memory.events` and memory pressure (PSI) per job; listening sockets every one or two seconds, attributed to their job;
-    classification, levers, admission; the token quota left by the status
-    line.
+    classification, levers; the token quota left by the status line.
 - **The coordinator** (planned): a Claude Code session started with its role
   appended to the system prompt. On its first start it examines the machine
   (memory, swap, CPU, what the systemd user manager delegates) and writes the
-  configuration: the thresholds the code then applies. It waits for the next
+  configuration (see "Configuration"): the thresholds the code then applies.
+  It waits for the next
   event with a background command that exits when one arrives, sets priorities,
   tells sessions about their delays, negotiates a slot when the limit of
   long-running servers is reached, and answers "who is working on X?".
@@ -132,7 +135,7 @@ One binary, `orchestrator`, with subcommands.
 
 Runtime data lives in `$XDG_RUNTIME_DIR/orchestrator/`: in memory, cleared at
 reboot, never versioned. Learned peaks live in `$XDG_STATE_HOME/orchestrator/`
-and survive a reboot.
+and survive a reboot, the configuration in `$XDG_CONFIG_HOME/orchestrator/`.
 
 ## Classifying by behaviour
 
@@ -170,6 +173,42 @@ measures.
 Admission gets more accurate as commands are measured, with no list to
 maintain. What it cannot foresee (a first run, a form of the command it does not
 recognise) is left to the other levers.
+
+The prefix admits a Bash call after moving into its job group and before
+replacing itself with the shell:
+
+- The call's expected peak is the largest of its commands' (see "Recognising
+  a command"), never their sum: a call has a single peak, so a filter learned
+  only beside a heavy command carries that same peak.
+- Free memory is the kernel's `MemAvailable` minus the reservations. A
+  reservation is a file in the runtime directory naming the job group and its
+  expected peak. It holds nothing once the group is empty or gone, and the
+  next check removes it. Counting and reserving happen under one file lock, so
+  calls arriving together never count on the same memory.
+- A waiting call checks again as soon as inotify reports a change in the
+  `cgroup.events` of a job holding a reservation, which is how memory mostly
+  frees up, and every second otherwise: available memory has no notification.
+- It writes one notice to its standard error when it starts waiting and one
+  when it runs; Claude reads them with the call's output. A notice names the
+  call by the head of its first heavy command that has run alone (its peak
+  was measured, not shared), else of its first heavy command, and gives the
+  expected peak, the memory needed and the memory free.
+- After the longest wait, the call runs anyway, with its reservation, and its
+  notice says memory is still short.
+
+### Configuration
+
+The thresholds live in `$XDG_CONFIG_HOME/orchestrator/config.json`, by default
+`~/.config/orchestrator/config.json`. The coordinator is meant to write it on
+its first start, adapted to the machine; until it exists, a human does.
+Without the file, or without its `admission` section, nothing waits. A file
+that cannot be read whole, an unknown field included, lets everything through
+too, and the error goes to `prefix.log` in the runtime directory.
+
+- `admission.heavy_mb`: a call whose expected peak reaches it waits for
+  memory.
+- `admission.margin_mb`: free memory kept on top of the expected peak.
+- `admission.max_wait_secs`: the longest a call waits before it runs anyway.
 
 ### Recognising a command
 
@@ -279,6 +318,21 @@ Other measurements:
   0.25 ms in a fresh process; looking a command up in a repository holding
   2,000 learned commands about 0.05 ms, finding the repository included
   (release build).
+- Admission, with a simulated session calling the release build of the
+  prefix the way Claude Code does:
+  - Outside an orchestrated session, the prefix adds about 0.7 ms to
+    `bash -c`; inside one, about 1 ms (its job group and record), with or
+    without a configuration. Recognising the call and looking its commands up
+    adds about 0.1 ms. Linking brush-parser makes the prefix 1.5 MB, from
+    0.7 MB.
+  - With memory for one call learned at 2000 MB, a second one waits for the
+    first's job to end and starts 7 to 10 ms after the first's last output.
+    With memory for two, two run together and a third waits for the first of
+    them to end.
+  - `MemAvailable` drifts by up to 350 MB within a few seconds while other
+    sessions work: the margin has to exceed that drift.
+  - In a headless Claude Code session, a Bash call recognised as heavy waited,
+    and the model quoted both notices from the call's output.
 - `CLAUDE_CODE_SHELL_PREFIX` is run as one quoted path: a prefix holding an
   argument fails with "not found". Bash calls and MCP servers are started by
   claude itself, hooks through `/bin/sh -c`.
@@ -335,7 +389,11 @@ From the Claude Code documentation:
 - **systemd-oomd**: some distributions arm it on `user@.service` (kill above 50 %
   memory pressure for 20 s on the reference machine). Throttling too hard might
   trigger it: plausible, not verified.
-- **The admission wait counts toward the Bash timeout.**
+- **The admission wait counts toward the Bash timeout**, which the prefix
+  cannot see: only the longest wait bounds it.
+- **A heavy call that leaves a process running**, such as a server started in
+  the background, keeps its reservation, net of what its group uses, until
+  that process ends.
 - **Processes Claude Code starts without the prefix** are counted with claude in
   `main/`.
 
@@ -347,6 +405,11 @@ From the Claude Code documentation:
   two of them is one command.
 - Learning: the expected peak leans low, the smallest of recent calls; does
   the admission margin cover the spread of a command's peak from run to run?
+- Admission: the configuration's values are chosen by hand until the
+  coordinator writes them. Does a 60 s longest wait leave enough of a 2 min
+  Bash timeout to the command itself?
+- Admission: waiting calls have no order; the first to check once memory
+  frees up runs. Reordering them is the coordinator's (see "Levers").
 - Long-running servers: how many before the coordinator negotiates.
 - Orphans and idle sessions holding resources: reported to the coordinator, or
   released automatically.
