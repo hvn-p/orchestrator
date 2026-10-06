@@ -136,11 +136,17 @@ struct Placed<'a> {
 /// The expected peak of `command` in the repository keyed `repository`, if
 /// learned. Reads one file and parses one line.
 pub fn lookup(dir: &Path, repository: &Path, command: &Command) -> Option<u64> {
+    entry(dir, repository, command).map(|e| e.peak_mb)
+}
+
+/// What is known of `command` in the repository keyed `repository`, as
+/// `lookup` finds it.
+pub fn entry(dir: &Path, repository: &Path, command: &Command) -> Option<Entry> {
     let id = id(repository, command);
     let text = fs::read_to_string(file(dir, repository, &id)).ok()?;
     let start = text.find(&format!("{{\"id\":\"{id}\""))?;
     let line = text.get(start..)?.lines().next()?;
-    serde_json::from_str::<Entry>(line).ok().map(|e| e.peak_mb)
+    serde_json::from_str(line).ok()
 }
 
 /// Everything learned, by repository.
