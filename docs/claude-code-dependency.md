@@ -220,11 +220,13 @@ from its own environment, so `watch` needs the value the sessions run with.
 
 ### coordinator-session
 
-A coordinator is `claude` started with these options, and Claude Code
-honours them: `--name` names the session; `--append-system-prompt-file`
-appends a file to the default system prompt, in print mode and
-interactively; `--setting-sources project` leaves out the user's settings,
-hooks, plugins and CLAUDE.md; `--settings` takes inline JSON
+A coordinator is `claude` started with these options, in print mode for a
+run `watch` starts, interactively for the setup conversation and the
+interactive coordinator, and Claude Code honours them: `--name` names the
+session; `--append-system-prompt-file` appends a file to the default system
+prompt, in print mode and interactively; `--setting-sources project` leaves
+out the user's settings, hooks, plugins and CLAUDE.md, though not the
+organization's instructions; `--settings` takes inline JSON
 (`autoMemoryEnabled`, `permissions.blockReadsOutsideWorkingDirectories`);
 `--strict-mcp-config` without `--mcp-config` starts no MCP server; `--`
 ends the options before the prompt. In print mode (`-p`), `--model` picks
@@ -248,9 +250,11 @@ left open is waited for.
 
 `--tools` takes the names of built-in tools, `SendMessage` and `ListAgents`
 among them, and leaves the others out. `--allowedTools` takes rules:
-`Bash(<command>)` matches that command exactly, and `Bash(<command> *)` that
-command with any arguments. With `--permission-mode dontAsk`, any call no
-rule allows is denied without asking; with `default`, it is asked.
+`Bash(<command>)` matches that command exactly, `Bash(<command> *)` that
+command with any arguments, and `Edit(//<path>)` every file-editing tool,
+Write included, on that one absolute path (a `Write(...)` rule is ignored,
+with a warning). With `--permission-mode dontAsk`, any call no rule allows
+is denied without asking; with `default`, it is asked.
 `--add-dir` makes a directory readable; with
 `blockReadsOutsideWorkingDirectories`, read-only commands such as `cat` are
 denied outside the working directories.
@@ -259,10 +263,10 @@ denied outside the working directories.
 - If it changes: a coordinator cannot read the state or note in its
   journal, or, worse, may run what it was not given.
 - Verified: integration test (`orchestrator machine` and the journal note
-  run; a `touch` and a `cat` outside are denied). Measured on 2.1.291: an
-  `Edit(//<path>)` rule covers every file-editing tool, and a `Write(...)`
-  rule is ignored with a warning; orchestrator uses neither. Documentation:
-  permissions, permission-modes.
+  run; a `touch` and a `cat` outside are denied). Measured on 2.1.291: in
+  the setup conversation, the `Edit(//<path>)` rule on the priorities file
+  let the Write tool create it without asking. Documentation: permissions,
+  permission-modes.
 
 ### cross-session-message
 

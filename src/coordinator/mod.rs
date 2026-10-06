@@ -4,7 +4,7 @@
 //!
 //! Its runtime state lives in `<runtime>/coordinator/`. `holder.json` names
 //! the coordinator running now by its pid and start time: `watch`'s runs,
-//! `orchestrator setup` and `orchestrator coordinator` all take it before
+//! the setup conversation and `orchestrator coordinator` all take it before
 //! starting one, and it frees itself when that process ends. `queue.json`
 //! holds the events for coordinators and where each stands (see `queue`).
 //! Both change only under the file lock `lock`. What the coordinator
@@ -78,7 +78,7 @@ impl Paths {
         self.runtime.join("role.md")
     }
 
-    /// One line per run `watch` or `setup` started.
+    /// One line per run `watch` started.
     pub fn runs(&self) -> PathBuf {
         self.runtime.join("runs.jsonl")
     }

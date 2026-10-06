@@ -76,6 +76,27 @@ fn session_label(group: &str, cgroup_root: &Path, known: &[sessions::ClaudeSessi
     }
 }
 
+/// The configuration file and where the priorities are.
+pub fn config(path: &Path) -> Result<String> {
+    let mut out = match config::load(path)? {
+        Some(config) => format!(
+            "{}\n{}\n",
+            path.display(),
+            serde_json::to_string_pretty(&config)?
+        ),
+        None => format!("No configuration at {}.\n", path.display()),
+    };
+    let priorities = config::priorities_path(path);
+    if priorities.exists() {
+        let _ = writeln!(
+            out,
+            "The coordinator's priorities: {}",
+            priorities.display()
+        );
+    }
+    Ok(out)
+}
+
 /// The admission thresholds, the calls waiting for memory and the
 /// reservations of running heavy calls.
 pub fn admission(

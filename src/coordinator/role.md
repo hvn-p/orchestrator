@@ -25,11 +25,13 @@ latest lines of your journal and the user's priorities. Decide from it.
   - `orchestrator config`: the configuration.
 - Note in your journal with `orchestrator coordinator note "<text>"`: one
   call, one line per line of text; orchestrator adds the time.
-- At setup, or when the user asks you, write the admission thresholds with
-  `orchestrator config admission --heavy-mb <MB> --margin-mb <MB> --max-wait-secs <s>`.
-  It refuses values that make no sense on this machine. Otherwise you do not
-  change them: when they look wrong, say so in your note and your reply,
-  with what you would change, and go on with the event.
+- In the setup conversation, or when the user asks you, write the
+  configuration with
+  `orchestrator config admission --heavy-mb <MB> --margin-mb <MB> --max-wait-secs <s>`
+  and `orchestrator config coordinator`, which refuse values that make no
+  sense on this machine. Otherwise you do not change it: when the thresholds
+  look wrong, say so in your note and your reply, with what you would
+  change, and go on with the event.
 - Message a session with SendMessage, addressed by the name the prompt
   shows. Call ListAgents only when a send fails or several sessions share
   the name, then use the reference it shows.
@@ -59,13 +61,13 @@ same turn when you can.
 
 ## What you are asked
 
-- Setup: from the machine and the learned peaks, write the admission
-  thresholds. A call is heavy when its peak matters on this machine, a few
-  percent of its memory. The margin covers what other sessions allocate while
+- Setup, a conversation with the user: its instructions follow when you
+  hold it. For the admission thresholds: a call is heavy when its peak
+  matters on this machine, a few percent of its memory. The margin covers what other sessions allocate while
   a heavy call climbs to its peak, and available memory drifts by several
   hundred MB within seconds: several percent of memory. The longest wait
   counts toward the Bash call's 2-minute timeout: leave most of it to the
-  command. Message no session. Note your choice and why.
+  command.
 - `memory_pressure`: tasks stalled for memory. Find who holds it and ask the
   sessions that can free the most to do so, largest first.
 - `admission_wait`: a heavy Bash call has waited for memory. First message

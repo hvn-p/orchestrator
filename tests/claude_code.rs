@@ -97,7 +97,6 @@ fn the_installed_claude_code_runs_a_coordinator() {
     }
     let report = report.join("\n");
     let used = run::RunRecord::new(
-        "events",
         0,
         0,
         run::Outcome {
@@ -152,7 +151,7 @@ impl CoordinatorRun {
             &base.join("state/orchestrator"),
             &base.join("config/orchestrator/config.json"),
         );
-        run::write_role(&paths).expect("writing the role");
+        run::write_role(&paths, &run::Mode::Batch(&[])).expect("writing the role");
         let outside = base.join("outside.txt");
         fs::write(&outside, "outside").expect("writing a file outside");
         let prompt = format!(
@@ -297,7 +296,7 @@ fn coordinator_permissions(c: &CoordinatorRun) -> Check {
     ] {
         if !denied.contains(&command) {
             return Err(format!(
-                "`{command}` was not denied; denials: {}",
+                "`{command}` was not denied, or Haiku skipped it (run again); denials: {}",
                 c.result["permission_denials"]
             ));
         }
@@ -323,7 +322,7 @@ fn print_json_result(c: &CoordinatorRun) -> Check {
         exit: Some(0),
         stopped: false,
     };
-    let record = run::RunRecord::new("events", 0, 0, outcome, c.result.to_string().as_bytes());
+    let record = run::RunRecord::new(0, 0, outcome, c.result.to_string().as_bytes());
     let mut missing = Vec::new();
     if record.reply.is_none() {
         missing.push("result");

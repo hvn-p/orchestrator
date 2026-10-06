@@ -217,7 +217,7 @@ impl Service {
     /// Queues an event `watch` wrote at `at`, if it needs judgment, and
     /// starts a coordinator for it when none runs.
     pub fn enqueue(&mut self, at: u64, event: &Event) {
-        if config::coordinator(&self.places.config).is_some() {
+        if config::waking(&self.places.config).is_some() {
             self.queue(at, event);
             self.start_if_due();
         }
@@ -237,7 +237,7 @@ impl Service {
     /// messages address it.
     // claude-code: cross-session-message
     fn check_waits(&mut self) {
-        let Some(cfg) = config::coordinator(&self.places.config) else {
+        let Some(cfg) = config::waking(&self.places.config) else {
             self.next_wait = None;
             return;
         };
@@ -281,7 +281,7 @@ impl Service {
         if self.running.is_some() || self.busy.is_some() || self.retry_at.is_some() {
             return;
         }
-        let Some(cfg) = config::coordinator(&self.places.config) else {
+        let Some(cfg) = config::waking(&self.places.config) else {
             return;
         };
         if let Err(e) = self.try_start(&cfg) {
@@ -310,7 +310,9 @@ impl Service {
         let at = now_ms() / 1000;
         let briefing = state::briefing(&self.places, &self.paths);
         let prompt = run::prompt(&run::Mode::Batch(&batch), &self.paths, at, &briefing);
-        let spawned = run::write_role(&self.paths).and_then(|()| self.spawn(cfg, &batch, &prompt));
+        let mode = run::Mode::Batch(&batch);
+        let spawned =
+            run::write_role(&self.paths, &mode).and_then(|()| self.spawn(cfg, &batch, &prompt));
         let watched = spawned.and_then(|(mut child, holder)| match pidfd(holder.pid) {
             Ok(fd) => Ok((child, holder, fd)),
             Err(e) => {
@@ -378,7 +380,7 @@ impl Service {
                 .and_then(std::process::ExitStatus::code),
             stopped: r.stop != Stop::Within,
         };
-        let record = run::RunRecord::new("events", r.at, r.events, outcome, &output);
+        let record = run::RunRecord::new(r.at, r.events, outcome, &output);
         if let Err(e) = events::append_line(&self.paths.runs(), &record) {
             eprintln!("orchestrator: {e:#}");
         }
@@ -446,7 +448,10 @@ printf '{"type":"result","is_error":false,"num_turns":1,"usage":{"input_tokens":
         if enabled {
             let c = Config {
                 admission: None,
-                coordinator: Some(Coordinator::default()),
+                coordinator: Some(Coordinator {
+                    wake: true,
+                    ..Coordinator::default()
+                }),
             };
             config::save(&config, &c).unwrap();
         }
@@ -558,7 +563,6 @@ printf '{"type":"result","is_error":false,"num_turns":1,"usage":{"input_tokens":
         let runs = runs(&s);
         assert_eq!(runs.len(), 2, "{runs:?}");
         assert_eq!(runs[0]["reply"], "done");
-        assert_eq!(runs[0]["kind"], "events");
         assert_eq!(runs[0]["events"], 1);
         assert_eq!(runs[0]["output_tokens"], 7);
         assert_eq!(runs[0]["stopped"], false);
@@ -604,6 +608,11 @@ printf '{"type":"result","is_error":false,"num_turns":1,"usage":{"input_tokens":
     fn without_consent_nothing_is_queued_nor_started() {
         let mut s = setup(false, FAKE);
         s.service.enqueue(10, &pressure(900));
+        assert!(s.service.running.is_none());
+        assert!(!s.base.join("run/coordinator/queue.json").exists());
+        // Configured, but not to wake.
+        config::set_coordinator(&s.service.places.config, |c| c.wake = false).unwrap();
+        s.service.enqueue(11, &pressure(800));
         assert!(s.service.running.is_none());
         assert!(!s.base.join("run/coordinator/queue.json").exists());
     }

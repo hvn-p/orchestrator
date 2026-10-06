@@ -7,12 +7,14 @@
 //! hooks, plugins, MCP servers nor the user's CLAUDE.md, only the project
 //! settings of its own directory, which the user may add. It starts from a
 //! briefing code gathered (see `state`); it may read more through
-//! `orchestrator` commands and note in its journal through one; at setup,
-//! write the admission thresholds; outside setup, message sessions. Runs
-//! started by `watch` and `setup` are denied anything else without asking
-//! (`dontAsk`); an interactive coordinator asks its user.
-//! Both modes prompt for permissions, like the sessions they message: Claude
-//! Code holds a message from a session that skips permission prompts.
+//! `orchestrator` commands and note in its journal through one. In the setup
+//! conversation, a session with the user at the terminal, it writes the
+//! configuration through the validated `orchestrator config` commands and
+//! the priorities; outside setup, it messages sessions. A run `watch` starts
+//! is denied anything else without asking (`dontAsk`); a coordinator with
+//! the user at the terminal asks them. Both prompt for permissions, like the
+//! sessions they message: Claude Code holds a message from a session that
+//! skips permission prompts.
 
 use super::Paths;
 use super::queue::Queued;
@@ -29,6 +31,9 @@ use std::process::{Command, Stdio};
 
 /// The role every coordinator gets.
 pub const ROLE: &str = include_str!("role.md");
+/// What a coordinator holding the setup conversation gets on top of its
+/// role.
+pub const SETUP: &str = include_str!("setup.md");
 /// The name a coordinator goes by: sessions see their messages come from it.
 pub const NAME: &str = "orchestrator-coordinator";
 /// What a coordinator may run without asking, exactly as written: reading
@@ -41,11 +46,15 @@ const ALLOWED: [&str; 6] = [
     "orchestrator config",
     "orchestrator coordinator note *",
 ];
-/// What writes the admission thresholds, allowed without asking at setup
-/// only. An interactive coordinator asks its user first; a run for events
+/// What writes the configuration, through validated commands: allowed
+/// without asking in the setup conversation, where the user agrees to each
+/// value first. An interactive coordinator asks its user; a run for events
 /// cannot, and reports thresholds that look wrong instead: one call is too
 /// little to judge them by.
-const WRITE_ADMISSION: &str = "orchestrator config admission *";
+const WRITE_CONFIG: [&str; 2] = [
+    "orchestrator config admission *",
+    "orchestrator config coordinator *",
+];
 /// What an interactive coordinator runs in the background to receive events.
 // claude-code: background-command-wake
 pub const NEXT: &str = "orchestrator coordinator next";
@@ -53,8 +62,10 @@ pub const NEXT: &str = "orchestrator coordinator next";
 /// Why a coordinator starts.
 #[derive(Debug)]
 pub enum Mode<'a> {
-    /// `orchestrator setup`: examine the machine and write the thresholds.
-    Setup { reconfigure: bool },
+    /// `orchestrator setup`, or `orchestrator coordinator` without a
+    /// configuration: a conversation with the user that ends with the
+    /// configuration written. `configured` when one exists already.
+    Setup { configured: bool },
     /// `watch`: handle a batch of events, then end.
     Batch(&'a [Queued]),
     /// `orchestrator coordinator`: stay open with the user, receiving events.
@@ -63,8 +74,8 @@ pub enum Mode<'a> {
 
 /// Writes the role where `--append-system-prompt-file` reads it, from this
 /// binary, so that a coordinator always gets the role of the orchestrator
-/// that starts it.
-pub fn write_role(paths: &Paths) -> Result<()> {
+/// that starts it; in `mode` setup, with the setup instructions.
+pub fn write_role(paths: &Paths, mode: &Mode<'_>) -> Result<()> {
     fs::create_dir_all(&paths.runtime)
         .with_context(|| format!("creating {}", paths.runtime.display()))?;
     fs::create_dir_all(&paths.home)
@@ -72,7 +83,11 @@ pub fn write_role(paths: &Paths) -> Result<()> {
     if let Some(dir) = paths.priorities.parent() {
         fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     }
-    fs::write(paths.role(), ROLE).with_context(|| format!("writing {}", paths.role().display()))
+    let role = match mode {
+        Mode::Setup { .. } => format!("{ROLE}\n{SETUP}"),
+        Mode::Batch(_) | Mode::Interactive => ROLE.to_string(),
+    };
+    fs::write(paths.role(), role).with_context(|| format!("writing {}", paths.role().display()))
 }
 
 /// The `claude` command starting a coordinator in `mode` with `prompt`, in
@@ -125,7 +140,12 @@ pub fn args(mode: &Mode<'_>, cfg: &Coordinator, paths: &Paths, prompt: &str) -> 
     let mut tools = vec!["Bash", "Read"];
     let mut allowed: Vec<String> = ALLOWED.iter().map(|c| format!("Bash({c})")).collect();
     match mode {
-        Mode::Setup { .. } => allowed.push(format!("Bash({WRITE_ADMISSION})")),
+        // The file tools write the priorities the user dictates.
+        Mode::Setup { .. } => {
+            tools.extend(["Edit", "Write"]);
+            allowed.extend(WRITE_CONFIG.iter().map(|c| format!("Bash({c})")));
+            allowed.push(format!("Edit({})", absolute_rule(&paths.priorities)));
+        }
         Mode::Batch(_) => {
             tools.extend(["SendMessage", "ListAgents"]);
             allowed.extend(["SendMessage".to_string(), "ListAgents".to_string()]);
@@ -162,8 +182,10 @@ pub fn args(mode: &Mode<'_>, cfg: &Coordinator, paths: &Paths, prompt: &str) -> 
         args.extend(["--add-dir".into(), dir.as_os_str().to_owned()]);
     }
     match mode {
-        Mode::Interactive => args.extend(["--permission-mode".into(), "default".into()]),
-        Mode::Setup { .. } | Mode::Batch(_) => {
+        Mode::Interactive | Mode::Setup { .. } => {
+            args.extend(["--permission-mode".into(), "default".into()]);
+        }
+        Mode::Batch(_) => {
             args.extend(
                 [
                     "-p",
@@ -187,19 +209,24 @@ pub fn args(mode: &Mode<'_>, cfg: &Coordinator, paths: &Paths, prompt: &str) -> 
     args
 }
 
+/// `path` as a permission rule names an absolute path.
+fn absolute_rule(path: &Path) -> String {
+    format!("/{}", path.display())
+}
+
 /// What the coordinator is asked, after its role, at `now` in seconds since
 /// the Unix epoch.
 pub fn prompt(mode: &Mode<'_>, paths: &Paths, now: u64, briefing: &Briefing) -> String {
     let mut prompt = format!("Now: {} ({now} s since the Unix epoch).\n\n", utc(now));
     match mode {
-        Mode::Setup { reconfigure } => {
-            prompt.push_str(if *reconfigure {
-                "`orchestrator setup` started you to review the admission thresholds. "
+        Mode::Setup { configured } => {
+            prompt.push_str(if *configured {
+                "The user ran `orchestrator setup` to review the configuration shown below. "
             } else {
-                "`orchestrator setup` started you: there are no admission thresholds yet. "
+                "There is no configuration yet: this is orchestrator's first setup on this machine. "
             });
             prompt.push_str(
-                "Do the setup your role describes from the state below, gathered just now, then end with a short summary of the thresholds you chose and why, for the user.\n",
+                "The user is at this terminal. Hold the setup conversation your instructions describe, from the state below, gathered just now; start it now with your first message.\n",
             );
         }
         Mode::Batch(batch) => {
@@ -269,8 +296,6 @@ pub struct Outcome {
 pub struct RunRecord {
     /// When it started, in seconds since the Unix epoch.
     pub at: u64,
-    /// `events`, for a run `watch` started, or `setup`.
-    pub kind: String,
     pub events: usize,
     pub secs: u64,
     pub turns: Option<u64>,
@@ -292,7 +317,7 @@ pub struct RunRecord {
 impl RunRecord {
     /// From what the run printed with `--output-format json`.
     // claude-code: print-json-result
-    pub fn new(kind: &str, at: u64, events: usize, outcome: Outcome, output: &[u8]) -> RunRecord {
+    pub fn new(at: u64, events: usize, outcome: Outcome, output: &[u8]) -> RunRecord {
         let result: Value = serde_json::from_slice(output).unwrap_or(Value::Null);
         let usage = &result["usage"];
         let input = [
@@ -301,7 +326,6 @@ impl RunRecord {
         ];
         RunRecord {
             at,
-            kind: kind.to_string(),
             events,
             secs: outcome.secs,
             turns: result["num_turns"].as_u64(),
@@ -322,19 +346,6 @@ impl RunRecord {
     /// The run handled its events: it ended by itself, successfully.
     pub fn handled(&self) -> bool {
         self.exit == Some(0) && !self.stopped && self.is_error != Some(true)
-    }
-
-    /// How much it took, for a human: tokens and time first.
-    pub fn summary(&self) -> String {
-        let n = |v: Option<u64>| v.map_or("?".to_string(), |v| v.to_string());
-        format!(
-            "{} turns, {} s, {} input tokens, {} read from cache, {} output tokens",
-            n(self.turns),
-            self.secs,
-            n(self.input_tokens),
-            n(self.cache_read_tokens),
-            n(self.output_tokens),
-        )
     }
 }
 
@@ -457,27 +468,51 @@ mod tests {
     }
 
     #[test]
-    fn setup_writes_thresholds_and_messages_no_one() {
-        let args = strings(&args(
-            &Mode::Setup { reconfigure: false },
-            &Coordinator::default(),
-            &paths(),
-            "p",
-        ));
-        assert_eq!(values(&args, "--tools"), ["Bash,Read"]);
+    fn setup_is_a_conversation_that_writes_through_commands() {
+        let setup = Mode::Setup { configured: false };
+        let args = strings(&args(&setup, &Coordinator::default(), &paths(), "p"));
+        assert_eq!(values(&args, "--permission-mode"), ["default"]);
+        assert!(!args.contains(&"-p".to_string()), "interactive");
+        assert!(!args.contains(&"--model".to_string()), "the user's model");
+        assert_eq!(values(&args, "--tools"), ["Bash,Read,Edit,Write"]);
         let allowed = values(&args, "--allowedTools");
-        assert!(allowed.contains(&"Bash(orchestrator config admission *)"));
+        for rule in [
+            "Bash(orchestrator config admission *)",
+            "Bash(orchestrator config coordinator *)",
+            "Edit(//home/u/.config/orchestrator/priorities.md)",
+        ] {
+            assert!(allowed.contains(&rule), "{rule} in {allowed:?}");
+        }
         assert!(
-            !allowed.iter().any(|r| r.contains("SendMessage")),
+            !allowed
+                .iter()
+                .any(|r| r.contains("SendMessage") || r.contains("config.json")),
             "{allowed:?}"
         );
-        let prompt = prompt(
-            &Mode::Setup { reconfigure: false },
-            &paths(),
-            0,
-            &briefing(),
+        let prompt = prompt(&setup, &paths(), 0, &briefing());
+        assert!(prompt.contains("first setup"), "{prompt}");
+        assert!(prompt.contains("### Machine"), "{prompt}");
+        let review = prompt_of(&Mode::Setup { configured: true });
+        assert!(review.contains("to review the configuration"), "{review}");
+    }
+
+    fn prompt_of(mode: &Mode<'_>) -> String {
+        prompt(mode, &paths(), 0, &briefing())
+    }
+
+    #[test]
+    fn setup_gets_its_instructions_on_top_of_the_role() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::new(
+            &dir.path().join("run"),
+            &dir.path().join("state"),
+            &dir.path().join("config/config.json"),
         );
-        assert!(prompt.contains("no admission thresholds yet"), "{prompt}");
+        write_role(&paths, &Mode::Setup { configured: false }).unwrap();
+        let role = fs::read_to_string(paths.role()).unwrap();
+        assert!(role.starts_with(ROLE) && role.ends_with(SETUP));
+        write_role(&paths, &Mode::Interactive).unwrap();
+        assert_eq!(fs::read_to_string(paths.role()).unwrap(), ROLE);
     }
 
     #[test]
@@ -510,9 +545,10 @@ mod tests {
 
     #[test]
     fn the_role_names_every_command_it_may_run() {
-        for command in ALLOWED.iter().chain([&WRITE_ADMISSION]) {
+        let texts = format!("{ROLE}{SETUP}");
+        for command in ALLOWED.iter().chain(&WRITE_CONFIG) {
             let shown = command.trim_end_matches(" *");
-            assert!(ROLE.contains(&format!("`{shown}")), "{shown}");
+            assert!(texts.contains(&format!("`{shown}")), "{shown}");
         }
         assert!(ROLE.contains(NAME));
     }
@@ -533,7 +569,7 @@ mod tests {
     #[test]
     fn a_run_record_reports_tokens_and_time_first() {
         let output = br#"{"type":"result","subtype":"success","is_error":false,"num_turns":4,"total_cost_usd":0.012,"usage":{"input_tokens":10,"cache_creation_input_tokens":4000,"cache_read_input_tokens":9000,"output_tokens":300},"result":"Asked alpha to stop its dev server."}"#;
-        let r = RunRecord::new("events", 5, 2, DONE, output);
+        let r = RunRecord::new(5, 2, DONE, output);
         assert_eq!(r.turns, Some(4));
         assert_eq!(
             (r.input_tokens, r.cache_read_tokens, r.output_tokens),
@@ -545,15 +581,9 @@ mod tests {
             Some("Asked alpha to stop its dev server.")
         );
         assert!(r.handled());
-        assert_eq!(
-            r.summary(),
-            "4 turns, 30 s, 4010 input tokens, 9000 read from cache, 300 output tokens"
-        );
         let line = serde_json::to_string(&r).unwrap();
         assert!(
-            line.starts_with(
-                r#"{"at":5,"kind":"events","events":2,"secs":30,"turns":4,"input_tokens":4010,"#
-            ),
+            line.starts_with(r#"{"at":5,"events":2,"secs":30,"turns":4,"input_tokens":4010,"#),
             "{line}"
         );
     }
@@ -561,7 +591,6 @@ mod tests {
     #[test]
     fn a_stopped_failed_or_erring_run_did_not_handle_its_events() {
         let killed = RunRecord::new(
-            "events",
             5,
             2,
             Outcome {
@@ -577,8 +606,8 @@ mod tests {
             exit: Some(1),
             ..DONE
         };
-        assert!(!RunRecord::new("events", 5, 2, failed, b"{}").handled());
+        assert!(!RunRecord::new(5, 2, failed, b"{}").handled());
         let erring = br#"{"is_error":true,"result":"Not logged in"}"#;
-        assert!(!RunRecord::new("events", 5, 2, DONE, erring).handled());
+        assert!(!RunRecord::new(5, 2, DONE, erring).handled());
     }
 }

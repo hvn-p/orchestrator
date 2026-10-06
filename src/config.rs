@@ -1,8 +1,9 @@
 //! The configuration: the thresholds the code applies, adapted to the machine.
-//! The coordinator writes the admission thresholds, on its first start
-//! through `orchestrator setup` or later on request; a human may write them
-//! too. Without them, nothing waits. The `coordinator` section is the user's
-//! consent to start coordinators: without it, nothing spends tokens.
+//! The coordinator writes it through the validated `orchestrator config`
+//! commands, in a setup conversation with the user; a human may write it
+//! too. Without admission thresholds, nothing waits. Without `wake` in the
+//! `coordinator` section, `watch` starts no coordinator: nothing spends
+//! tokens unless the user opens one.
 
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
@@ -40,12 +41,18 @@ pub struct Admission {
 /// The model a coordinator runs with unless the user chooses another.
 pub const DEFAULT_MODEL: &str = "claude-sonnet-5-5";
 
+/// The longest run a configuration may allow, in minutes.
+pub const MAX_MINUTES: u64 = 60;
+
 /// The coordinator: a Claude Code session `watch` starts for each batch of
-/// events that need judgment. Its presence is the consent to spend tokens.
+/// events that need judgment, once the user has agreed to it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Coordinator {
-    /// The model of the runs `watch` and `setup` start: the user's choice.
+    /// `watch` may start a coordinator by itself for events: the user's
+    /// consent to spend tokens without being asked.
+    pub wake: bool,
+    /// The model of the runs `watch` starts: the user's choice.
     pub model: String,
     /// The most one run may spend, in USD at list price as Claude Code
     /// estimates it; none by default. The estimate is not what a
@@ -61,10 +68,11 @@ pub struct Coordinator {
 }
 
 impl Default for Coordinator {
-    /// What `orchestrator setup` writes when the section is missing, the
-    /// model aside, which it asks for.
+    /// The values a new section starts from: no waking until the user says
+    /// so.
     fn default() -> Self {
         Coordinator {
+            wake: false,
             model: DEFAULT_MODEL.into(),
             max_budget_usd: None,
             max_minutes: 5,
@@ -107,11 +115,12 @@ pub fn load(path: &Path) -> Result<Option<Config>> {
         .with_context(|| format!("reading {}", path.display()))
 }
 
-/// The coordinator section, None when the file or the section is missing or
-/// the file cannot be read: without a readable consent, nothing spends tokens.
-pub fn coordinator(path: &Path) -> Option<Coordinator> {
+/// The coordinator section if `watch` may wake coordinators, None when the
+/// file or the section is missing, `wake` is off or the file cannot be read:
+/// without a readable consent, nothing spends tokens.
+pub fn waking(path: &Path) -> Option<Coordinator> {
     match load(path) {
-        Ok(config) => config.and_then(|c| c.coordinator),
+        Ok(config) => config.and_then(|c| c.coordinator).filter(|c| c.wake),
         Err(e) => {
             eprintln!("orchestrator: {e:#}; no coordinator starts");
             None
@@ -160,13 +169,61 @@ pub fn check_admission(a: &Admission, total_mb: u64) -> Result<()> {
     Ok(())
 }
 
+/// A coordinator section that makes sense, with the admission thresholds
+/// it goes with, if any.
+pub fn check_coordinator(c: &Coordinator, admission: Option<&Admission>) -> Result<()> {
+    let model_chars = c
+        .model
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || "._-[]".contains(ch));
+    ensure!(
+        !c.model.is_empty() && c.model.len() <= 100 && model_chars,
+        "model {:?} is not a model name or alias, such as {DEFAULT_MODEL}, sonnet or haiku",
+        c.model
+    );
+    ensure!(
+        (1..=MAX_MINUTES).contains(&c.max_minutes),
+        "max_minutes ({}) must be between 1 and {MAX_MINUTES}",
+        c.max_minutes
+    );
+    ensure!(
+        (1..=MAX_WAIT_SECS).contains(&c.wait_secs),
+        "wait_secs ({}) must be between 1 and {MAX_WAIT_SECS}",
+        c.wait_secs
+    );
+    if let Some(a) = admission.filter(|_| c.wake) {
+        ensure!(
+            c.wait_secs < a.max_wait_secs,
+            "wait_secs ({}) must be under admission's max_wait_secs ({}): a call waits no longer, so it would never wake the coordinator",
+            c.wait_secs,
+            a.max_wait_secs
+        );
+    }
+    Ok(())
+}
+
 /// Sets the admission section of the file at `path`, keeping the others,
-/// once the values make sense on a machine of `total_mb`. A file that exists
-/// but cannot be read is left alone.
+/// once the values make sense on a machine of `total_mb` and with the
+/// coordinator section. A file that exists but cannot be read is left alone.
 pub fn set_admission(path: &Path, admission: Admission, total_mb: u64) -> Result<Config> {
     check_admission(&admission, total_mb)?;
     let mut config = load(path)?.unwrap_or_default();
+    if let Some(c) = &config.coordinator {
+        check_coordinator(c, Some(&admission))?;
+    }
     config.admission = Some(admission);
+    save(path, &config)?;
+    Ok(config)
+}
+
+/// Changes the coordinator section of the file at `path` with `change`,
+/// starting from the defaults when there is none, once it makes sense.
+pub fn set_coordinator(path: &Path, change: impl FnOnce(&mut Coordinator)) -> Result<Config> {
+    let mut config = load(path)?.unwrap_or_default();
+    let mut c = config.coordinator.clone().unwrap_or_default();
+    change(&mut c);
+    check_coordinator(&c, config.admission.as_ref())?;
+    config.coordinator = Some(c);
     save(path, &config)?;
     Ok(config)
 }
@@ -192,7 +249,7 @@ mod tests {
     fn no_file_means_no_configuration() {
         let dir = tempfile::tempdir().unwrap();
         assert_eq!(load(&dir.path().join("config.json")).unwrap(), None);
-        assert_eq!(coordinator(&dir.path().join("config.json")), None);
+        assert_eq!(waking(&dir.path().join("config.json")), None);
     }
 
     #[test]
@@ -207,13 +264,14 @@ mod tests {
     #[test]
     fn reads_the_coordinator_section() {
         let config = load_text(
-            r#"{"coordinator": {"model": "haiku", "max_budget_usd": 0.5, "max_minutes": 3, "wait_secs": 15}}"#,
+            r#"{"coordinator": {"wake": true, "model": "haiku", "max_budget_usd": 0.5, "max_minutes": 3, "wait_secs": 15}}"#,
         )
         .unwrap()
         .unwrap();
         assert_eq!(
             config.coordinator,
             Some(Coordinator {
+                wake: true,
                 model: "haiku".into(),
                 max_budget_usd: Some(0.5),
                 max_minutes: 3,
@@ -223,7 +281,7 @@ mod tests {
         assert_eq!(config.admission, None);
         // No budget cap unless one is written.
         let config = load_text(
-            r#"{"coordinator": {"model": "claude-sonnet-5-5", "max_minutes": 5, "wait_secs": 20}}"#,
+            r#"{"coordinator": {"wake": false, "model": "claude-sonnet-5-5", "max_minutes": 5, "wait_secs": 20}}"#,
         )
         .unwrap()
         .unwrap();
@@ -250,11 +308,94 @@ mod tests {
     }
 
     #[test]
-    fn an_unreadable_file_starts_no_coordinator() {
+    fn only_a_readable_consent_wakes_coordinators() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.json");
-        fs::write(&path, r#"{"coordinator": {"model": "haiku"}}"#).unwrap();
-        assert_eq!(coordinator(&path), None);
+        fs::write(
+            &path,
+            r#"{"coordinator": {"wake": true, "model": "haiku"}}"#,
+        )
+        .unwrap();
+        assert_eq!(waking(&path), None, "unreadable");
+        set_coordinator(&path, |c| c.model = "haiku".into()).unwrap_err();
+        fs::remove_file(&path).unwrap();
+        set_coordinator(&path, |c| c.model = "haiku".into()).unwrap();
+        assert_eq!(waking(&path), None, "configured, not agreed to");
+        set_coordinator(&path, |c| c.wake = true).unwrap();
+        assert_eq!(waking(&path).map(|c| c.model), Some("haiku".into()));
+    }
+
+    #[test]
+    fn coordinator_values_must_make_sense() {
+        let ok = Coordinator {
+            wake: true,
+            ..Coordinator::default()
+        };
+        assert!(check_coordinator(&ok, Some(&ADMISSION)).is_ok());
+        for model in [
+            "claude-sonnet-5-5",
+            "sonnet",
+            "opus[1m]",
+            "claude-haiku-4.5",
+        ] {
+            let c = Coordinator {
+                model: model.into(),
+                ..ok.clone()
+            };
+            assert!(check_coordinator(&c, None).is_ok(), "{model}");
+        }
+        for model in ["", "sonnet please", "x;rm -rf /"] {
+            let c = Coordinator {
+                model: model.into(),
+                ..ok.clone()
+            };
+            assert!(check_coordinator(&c, None).is_err(), "{model:?}");
+        }
+        let minutes = |max_minutes| Coordinator {
+            max_minutes,
+            ..ok.clone()
+        };
+        assert!(check_coordinator(&minutes(0), None).is_err());
+        assert!(check_coordinator(&minutes(61), None).is_err());
+        // A call never waits longer than admission lets it.
+        let wait = |wait_secs| Coordinator {
+            wait_secs,
+            ..ok.clone()
+        };
+        assert!(check_coordinator(&wait(59), Some(&ADMISSION)).is_ok());
+        assert!(check_coordinator(&wait(60), Some(&ADMISSION)).is_err());
+        assert!(check_coordinator(&wait(60), None).is_ok());
+        let asleep = Coordinator {
+            wake: false,
+            ..wait(60)
+        };
+        assert!(check_coordinator(&asleep, Some(&ADMISSION)).is_ok());
+    }
+
+    #[test]
+    fn admission_and_coordinator_are_checked_together() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        set_coordinator(&path, |c| {
+            c.wake = true;
+            c.wait_secs = 45;
+        })
+        .unwrap();
+        let short = Admission {
+            max_wait_secs: 30,
+            ..ADMISSION
+        };
+        let refused = set_admission(&path, short, 32_000).unwrap_err();
+        assert!(
+            format!("{refused:#}").contains("wait_secs (45)"),
+            "{refused:#}"
+        );
+        set_admission(&path, ADMISSION, 32_000).unwrap();
+        set_coordinator(&path, |c| c.wait_secs = 90).unwrap_err();
+        assert_eq!(
+            load(&path).unwrap().unwrap().coordinator.unwrap().wait_secs,
+            45
+        );
     }
 
     #[test]

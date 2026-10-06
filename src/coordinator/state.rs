@@ -86,6 +86,10 @@ pub fn gather(places: &Places) -> String {
     };
     let sections = [
         (
+            "Configuration (`orchestrator config`)".to_string(),
+            report::config(&places.config),
+        ),
+        (
             "Machine (`orchestrator machine`)".to_string(),
             machine::read(&places.proc_root, &places.admission.cgroup_root)
                 .map(|m| machine::describe(&m)),
@@ -158,6 +162,7 @@ mod tests {
         fs::write(&paths.priorities, "beta matters most\n").unwrap();
         let b = briefing(&places, &paths);
         for section in [
+            "### Configuration",
             "### Machine",
             "### Sessions",
             "### Admission",
