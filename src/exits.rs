@@ -25,6 +25,7 @@ pub struct Exits {
 impl Exits {
     /// Watches `dir`, Claude Code's sessions directory, and holds the claude
     /// process of every live session in it.
+    // claude-code: session-file
     pub fn new(dir: PathBuf, proc_root: PathBuf) -> io::Result<Exits> {
         let inotify = Inotify::init()?;
         // Claude Code rewrites a session file when the session's status changes.
@@ -69,6 +70,7 @@ impl Exits {
         self.held.remove(&pid);
     }
 
+    // claude-code: session-file
     fn hold_new(&mut self) {
         let Ok(found) = sessions::read_sessions(&self.dir) else {
             return;
@@ -85,6 +87,7 @@ impl Exits {
     }
 
     /// A session file can outlive its process, whose pid may then be reused.
+    // claude-code: session-file-fields
     fn alive(&self, s: &ClaudeSession) -> bool {
         let Some(started) = procfs::start_time(&self.proc_root, s.pid) else {
             return false;

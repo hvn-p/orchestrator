@@ -24,6 +24,7 @@ pub struct Admission {
     /// Free memory kept on top of a heavy call's expected peak.
     pub margin_mb: u64,
     /// The longest a call waits; then it runs anyway.
+    // claude-code: bash-call-timeout
     pub max_wait_secs: u64,
 }
 

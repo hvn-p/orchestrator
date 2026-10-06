@@ -50,6 +50,7 @@ pub struct Attribution {
 /// named by its `CLAUDE_CODE_SESSION_ID`. That variable keeps the id the
 /// session had when the process started, and goes stale after `/clear` or a
 /// resume: such a reparented process is then reported as an orphan.
+// claude-code: session-id-variable
 pub fn attribute(procs: &[ProcInfo], sessions: &[ClaudeSession]) -> Attribution {
     let by_pid: HashMap<u32, &ProcInfo> = procs.iter().map(|p| (p.pid, p)).collect();
     let live: Vec<&ClaudeSession> = sessions.iter().filter(|s| is_alive(s, &by_pid)).collect();
@@ -95,6 +96,7 @@ pub fn attribute(procs: &[ProcInfo], sessions: &[ClaudeSession]) -> Attribution 
     }
 }
 
+// claude-code: session-file-fields
 fn is_alive(s: &ClaudeSession, by_pid: &HashMap<u32, &ProcInfo>) -> bool {
     match (by_pid.get(&s.pid), s.proc_start.as_deref()) {
         (None, _) => false,
@@ -103,6 +105,7 @@ fn is_alive(s: &ClaudeSession, by_pid: &HashMap<u32, &ProcInfo>) -> bool {
     }
 }
 
+// claude-code: session-file
 fn owning_session<'a>(
     p: &ProcInfo,
     by_pid: &HashMap<u32, &ProcInfo>,

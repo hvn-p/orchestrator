@@ -3,6 +3,7 @@
 
 use std::process::ExitCode;
 
+// claude-code: shell-prefix-argument
 fn main() -> ExitCode {
     let mut args = std::env::args_os().skip(1);
     let (Some(command), None) = (args.next(), args.next()) else {

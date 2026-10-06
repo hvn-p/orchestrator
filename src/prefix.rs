@@ -24,6 +24,7 @@ pub struct JobRecord {
     pub cwd: String,
 }
 
+// claude-code: shell-prefix-coverage
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
     /// A Bash tool call, or a `!` command typed in Claude Code.
@@ -36,6 +37,7 @@ impl Kind {
     /// A Bash call sources the session's shell snapshot and records its
     /// working directory afterwards; hooks, the status line and MCP servers do
     /// neither.
+    // claude-code: bash-call-signature
     pub fn of(command: &str) -> Kind {
         if command.contains("/shell-snapshots/snapshot-") || command.contains("pwd -P >|") {
             Kind::Bash
@@ -54,6 +56,7 @@ impl Kind {
 
 /// Places this process, admits a Bash call, then replaces this process with
 /// `bash -c <command>`. Only returns when bash cannot be started.
+// claude-code: shell-prefix-argument
 pub fn run(command: &OsStr) -> anyhow::Error {
     let root = Path::new(cgroup::ROOT);
     match place(root, command) {
@@ -71,6 +74,7 @@ pub fn run(command: &OsStr) -> anyhow::Error {
 
 /// Moves this process into a job leaf of its own. Returns the leaf of a Bash
 /// call, which admission may hold back.
+// claude-code: bash-call-cwd
 fn place(root: &Path, command: &OsStr) -> Result<Option<admission::Job>> {
     let own = fs::read_to_string("/proc/self/cgroup").context("reading own cgroup")?;
     let Some(session) = cgroup::own_path(&own).and_then(cgroup::session_of) else {
@@ -105,6 +109,8 @@ fn place(root: &Path, command: &OsStr) -> Result<Option<admission::Job>> {
 /// without a configuration, and for a call none of whose commands is known
 /// to be heavy: the configuration is read first, so that without one nothing
 /// is parsed.
+// claude-code: bash-call-cwd
+// claude-code: bash-call-output
 fn admit(root: &Path, job: &admission::Job, command: &OsStr) -> Result<()> {
     let Some(cfg) = config::load(&config::default_path()?)?.and_then(|c| c.admission) else {
         return Ok(());
@@ -165,6 +171,7 @@ fn write_record(dir: &Path, job: &str, record: &JobRecord) -> Result<()> {
 /// Nothing goes to the terminal: the prefix's stderr is the command's, and a
 /// hook or the status line must not show orchestrator's troubles. Only
 /// admission's notices go there.
+// claude-code: bash-call-output
 fn log_failure(e: &anyhow::Error) {
     let Ok(dir) = runtime::default_dir() else {
         return;

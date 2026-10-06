@@ -40,6 +40,7 @@ pub struct Command {
 /// The command Claude wrote, from the invocation Claude Code hands the shell
 /// prefix: the arguments of the invocation's last top-level `eval`, unquoted
 /// and joined with spaces, as `eval` joins them.
+// claude-code: bash-call-eval
 pub fn written(invocation: &str) -> Option<String> {
     let program = parse(invocation)?;
     let eval = top_level(&program)
@@ -66,6 +67,7 @@ pub fn commands(script: &str, cwd: &Path, home: Option<&Path>) -> Option<Vec<Com
     Some(walk.found)
 }
 
+// claude-code: bash-call-eval
 fn options() -> ParserOptions {
     // The invocation turns extglob off before its eval.
     ParserOptions {
