@@ -2,14 +2,15 @@
 //! pressure (a PSI trigger), the end of a Claude session's process (a pidfd
 //! per session, found through inotify on the sessions directory), or a change
 //! in the job groups of orchestrated sessions (inotify). Slow sweeps of jobs
-//! and orphans catch what these signals cannot show.
+//! and orphans catch what these signals cannot show. Each measured Bash call
+//! teaches its peak to the learned peaks.
 
 use crate::attribution::{self, Attribution};
 use crate::events::{self, Event};
 use crate::exits::Exits;
 use crate::jobs::{self, Tracker};
 use crate::pressure::Trigger;
-use crate::{cgroup, memory, prefix, procfs, runtime, sessions};
+use crate::{cgroup, memory, peaks, prefix, procfs, runtime, sessions};
 use anyhow::{Context, Result};
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use rustix::io::Errno;
@@ -37,6 +38,8 @@ pub struct Config {
     pub proc_root: PathBuf,
     pub sessions_dir: PathBuf,
     pub runtime_dir: PathBuf,
+    /// Where learned peaks are kept, across reboots.
+    pub state_dir: PathBuf,
     /// Between two orphan scans when no session ends.
     pub orphan_interval: Duration,
     pub thresholds: Thresholds,
@@ -117,6 +120,7 @@ struct JobPaths {
     slice: PathBuf,
     records: PathBuf,
     measurements: PathBuf,
+    peaks: PathBuf,
 }
 
 /// The kernel's signals, each optional: a source that cannot be set up is
@@ -149,6 +153,7 @@ pub fn run(cfg: &Config) -> Result<()> {
         slice,
         records: prefix::records_root(&cfg.runtime_dir),
         measurements: cfg.runtime_dir.join("measurements.jsonl"),
+        peaks: peaks::dir(&cfg.state_dir),
     });
     if job_paths.is_none() {
         eprintln!(
@@ -197,7 +202,7 @@ pub fn run(cfg: &Config) -> Result<()> {
                 Signal::JobsChanged => {
                     if let (Some(tracker), Some(p)) = (src.tracker.as_mut(), job_paths.as_ref()) {
                         match tracker.read_ready() {
-                            Ok(measured) => keep(&p.measurements, &measured),
+                            Ok(measured) => keep(p, &measured),
                             Err(e) => {
                                 eprintln!(
                                     "orchestrator: job tracking stopped, sweeping instead: {e}"
@@ -245,7 +250,7 @@ fn sources(cfg: &Config, job_paths: Option<&JobPaths>) -> Sources {
                 "job ends",
                 Tracker::new(p.slice.clone(), p.records.clone(), remove_group),
             )?;
-            keep(&p.measurements, &measured);
+            keep(p, &measured);
             Some(tracker)
         }),
     }
@@ -319,7 +324,7 @@ fn scan_orphans(cfg: &Config, events_path: &Path, watcher: &mut Watcher) -> Resu
 fn sweep_jobs(p: &JobPaths) -> Result<()> {
     let measured = jobs::collect(&p.slice, &p.records, runtime::now_ms(), remove_group)
         .with_context(|| format!("sweeping jobs in {}", p.slice.display()))?;
-    keep(&p.measurements, &measured);
+    keep(p, &measured);
     Ok(())
 }
 
@@ -327,11 +332,16 @@ fn remove_group(dir: &Path) -> std::io::Result<()> {
     std::fs::remove_dir(dir)
 }
 
-/// A measurement that cannot be written is reported, never fatal.
-fn keep(path: &Path, measured: &[jobs::Measurement]) {
+/// Writes each measurement down and learns from it. A failure is reported,
+/// never fatal.
+fn keep(p: &JobPaths, measured: &[jobs::Measurement]) {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
     for m in measured {
-        if let Err(e) = events::append_line(path, m) {
+        if let Err(e) = events::append_line(&p.measurements, m) {
             eprintln!("orchestrator: {e:#}");
+        }
+        if let Err(e) = peaks::learn(&p.peaks, m, home.as_deref()) {
+            eprintln!("orchestrator: learning a peak: {e:#}");
         }
     }
 }
