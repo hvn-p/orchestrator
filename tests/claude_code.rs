@@ -105,7 +105,7 @@ impl Session {
         fs::write(&probe, probe_script(&out, &sessions)).expect("writing the probe");
         let settings = base.join("settings.json");
         let mcp = base.join("mcp.json");
-        write_json(&settings, &hook_settings(&out));
+        write_json(&settings, &session_settings(&out));
         write_json(&mcp, &mcp_config(&out));
 
         let prompt = format!(
@@ -441,9 +441,11 @@ fn recorder(out: &Path, who: &str) -> String {
     )
 }
 
-/// A shell-form hook before each Bash call.
-fn hook_settings(out: &Path) -> Value {
+/// A shell-form hook before each Bash call. Without auto memory, the session
+/// leaves nothing under `~/.claude/projects/`.
+fn session_settings(out: &Path) -> Value {
     serde_json::json!({
+        "autoMemoryEnabled": false,
         "hooks": {
             "PreToolUse": [{
                 "matcher": "Bash",
