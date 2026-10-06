@@ -36,9 +36,10 @@ see [docs/design.md](docs/design.md).
 
 ## Requirements
 
-- Linux with cgroup v2 and a systemd user manager that delegates to user
-  scopes (`launch`). `sessions` and `watch` only read `/proc` and Claude Code's
-  session files (`~/.claude/sessions/`).
+- Linux with cgroup v2, a systemd user manager that delegates to user scopes,
+  a user D-Bus, and `busctl`, which ships with systemd (`launch`). `sessions`
+  and `watch` only read `/proc` and Claude Code's session files
+  (`~/.claude/sessions/`).
 - A Rust toolchain, Rust 1.88 or later.
 
 ## Build
@@ -56,8 +57,10 @@ This installs two binaries side by side: `orchestrator` and
 orchestrator launch -- claude
 ```
 
-Arguments after `--` go to `claude` unchanged. When the session's cgroup cannot
-be set up, the session still starts, unorchestrated, with a warning.
+Arguments after `--` go to `claude` unchanged. `launch` replaces itself with
+`claude`, keeping its pid and environment, and prints nothing. When the systemd
+user manager does not give the session its cgroup within 2 s, or the cgroup
+cannot be set up, the session still starts, unorchestrated, with a warning.
 
 ```sh
 orchestrator sessions

@@ -79,6 +79,8 @@ groups and classifies them by behaviour, without any list of commands.
 
 - **Never block work by failing**: outside an orchestrated session, without a
   configuration, or on any cgroup error, the prefix runs the command unchanged.
+  When `launch` cannot get the session its scope, the session starts
+  unorchestrated.
 - **Commands typed outside Claude Code never wait**: they run outside any
   orchestrated session. A `!` command typed inside Claude Code goes through the
   prefix like any other Bash call.
@@ -104,11 +106,19 @@ One binary, `orchestrator`, with subcommands.
   and `orchestrator-prefix`, on the `PATH` and the service under the systemd
   user manager. `cargo install` covers the binaries today.
 - **`orchestrator launch -- claude …`** (exists; the short command is planned),
-  exposed as a short command available from any directory: starts the session
-  in a delegated systemd user scope in `orchestrator.slice`, moves claude into the `main/` leaf (a group that hands controllers to
-  its children cannot hold processes itself), then enables `+cpu +memory +pids`
-  for the sub-groups. A session started with `claude` alone stays outside
-  orchestration.
+  exposed as a short command available from any directory: asks the systemd
+  user manager, over the user bus with `busctl` (shipped with systemd), for a
+  delegated scope in `orchestrator.slice` holding its own process
+  (`orchestrator-<pid>-<ms since the epoch>.scope`, collected once its last
+  process ends), and waits until `/proc/self/cgroup` shows it there: 2 s at
+  most for both. It then moves itself into the `main/` leaf (a group that
+  hands controllers to its children cannot hold processes itself), enables
+  `+cpu +memory +pids` for the sub-groups, sets `CLAUDE_CODE_SHELL_PREFIX` and
+  replaces itself with claude, keeping its pid and environment. On any failure
+  before that (no `busctl`, no user bus, no answer, a refused scope, a setup
+  error), it runs claude unchanged after one warning; otherwise it prints
+  nothing, unless it replaces another `CLAUDE_CODE_SHELL_PREFIX`. A session
+  started with `claude` alone stays outside orchestration.
 - **The shell prefix**, `orchestrator-prefix` (exists):
   Claude Code calls it with the full command line as a single argument, for
   every Bash call, hook, status line refresh and MCP stdio server start. It
@@ -467,6 +477,22 @@ Other measurements:
   Each coordinator turn re-reads about 72,000 tokens of base context. A
   background command ran for 36 min without being cut, which makes it the
   preferred way to wait.
+- `orchestrator launch` (release build, systemd 259, a loaded machine): the
+  user manager answers `StartTransientUnit` through `busctl` in about 6 ms
+  and moves the process into the scope about 10 ms later. The command starts
+  about 26 ms after `launch` does (median, 30 ms when `launch` went through
+  `systemd-run`), well within the 3 s Claude Code allows a `processWrapper`
+  launcher. Each of 240 launches, 40 of them at once, landed in the `main/`
+  leaf of a scope of its own, and every scope was collected when its command
+  ended. A launch started from inside a session, or by its own command,
+  moves into a new scope too.
+- When `launch` cannot get its scope, the command runs unorchestrated after
+  one warning, with its exit code. Without `busctl` or a user bus, or when the
+  manager refuses the scope, that costs 12 to 22 ms; a bus that never answers,
+  or a scope that never receives the process, costs the 2 s bound.
+  `busctl` cannot talk to the manager's own socket
+  (`$XDG_RUNTIME_DIR/systemd/private`, which `systemd-run` uses): it opens
+  with the bus's `Hello`, which the manager rejects.
 - The status line input carries `rate_limits.five_hour` and
   `rate_limits.seven_day` (used percentage, reset time). The documentation lists
   this for some subscription types only; it was present on the reference
@@ -588,6 +614,9 @@ October 2026, with scratch directories and sessions:
   `systemd-run --user`, services activated over D-Bus, an `xdg-open` handed to an
   already running browser. A shared service counts for the session that started
   it.
+- **A scope granted after the 2 s bound**: the session has already started
+  unorchestrated; systemd still moves it into the scope, where it runs without
+  `main/` nor the prefix.
 - **Freezing frees no RAM** by itself; with little swap it only stops growth.
 - **systemd-oomd**: some distributions arm it on `user@.service` (kill above 50 %
   memory pressure for 20 s on the reference machine). Throttling too hard might
@@ -642,8 +671,9 @@ October 2026, with scratch directories and sessions:
   `processWrapper` setting starts every process Claude Code starts itself
   through a launcher, and `orchestrator launch` can be that launcher (see
   "Measured"); sessions started from a terminal would need a `claude` script
-  earlier on `PATH`. `orchestrator launch` must then print nothing before it
-  replaces itself, which `enter` does not guarantee today.
+  earlier on `PATH`. A launcher must print nothing before it replaces itself:
+  `orchestrator launch` prints only its fallback warning, or that it replaces
+  another `CLAUDE_CODE_SHELL_PREFIX`.
 - Coordinator: a spending policy across runs, from the quota the status line
   reports rather than dollars; whether orphans wake it; whether a run should
   message only sessions orchestrated by `orchestrator launch`.

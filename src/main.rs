@@ -45,9 +45,6 @@ enum Command {
     Coordinator(CoordinatorArgs),
     /// Start a command, normally `claude`, as an orchestrated session.
     Launch(Launched),
-    /// Set up a new session scope, then run its command. Started by `launch`.
-    #[command(hide = true)]
-    Enter(Launched),
 }
 
 #[derive(Args)]
@@ -236,12 +233,7 @@ fn main() -> Result<()> {
                 journal::note(&paths.journal(), &text.join(" "), now_secs())
             }
         },
-        Command::Launch(l) => {
-            let e = launch::launch(&l.command);
-            eprintln!("orchestrator: {e:#}; the session runs unorchestrated");
-            Err(launch::run_unchanged(&l.command))
-        }
-        Command::Enter(l) => Err(launch::enter(&l.command)),
+        Command::Launch(l) => Err(launch::launch(&l.command)),
     }
 }
 
