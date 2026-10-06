@@ -5,8 +5,10 @@
 //! `orchestrator-prefix`, the shell prefix Claude Code runs every command
 //! through.
 
+pub mod admission;
 pub mod attribution;
 pub mod cgroup;
+pub mod config;
 pub mod events;
 pub mod exits;
 pub mod jobs;
