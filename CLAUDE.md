@@ -10,5 +10,11 @@ been measured and the open questions: start there.
   `cargo test` all pass.
 - Code, comments and docs are in English; the repository is public, so nothing
   specific to one person's machine, accounts or setup goes in.
+- What orchestrator relies on in Claude Code is listed in
+  `docs/claude-code-dependency.md`. Code relying on a contract carries a
+  `// claude-code: <id>` line; a pull request changing such a file must update
+  that document, or carry the label `claude-code-dependency-unchanged` (CI
+  guard). `cargo test --test claude_code -- --ignored` checks the installed
+  Claude Code against it, by hand only.
 
 Runtime data lives in `$XDG_RUNTIME_DIR/orchestrator/`, never in this repository.

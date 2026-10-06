@@ -119,6 +119,30 @@ runs. Remove the file, or its `admission` section, to turn admission off. A
 file that cannot be read, an unknown field included, also turns it off, and
 the error goes to `$XDG_RUNTIME_DIR/orchestrator/prefix.log`.
 
+## Claude Code dependency
+
+orchestrator relies on Claude Code only through the contracts listed in
+[docs/claude-code-dependency.md](docs/claude-code-dependency.md), with the
+Claude Code version they were last verified on. To check them against the
+installed Claude Code:
+
+```sh
+cargo test --test claude_code -- --ignored --nocapture
+```
+
+This starts a real headless session through `orchestrator launch`, so it
+needs a signed-in `claude`, a systemd user manager with cgroup v2, and spends
+about a cent of tokens. It never runs in CI.
+
+## Continuous integration
+
+Every pull request and every push to `main` runs `cargo fmt --check`,
+`cargo clippy --all-targets -- -D warnings`, `cargo test`, and a build with
+Rust 1.88. A pull request that changes code relying on Claude Code must also
+update `docs/claude-code-dependency.md`, unless it carries the label
+`claude-code-dependency-unchanged`; `scripts/claude-code-guard.sh <base>
+<head>` runs that check locally.
+
 ## License
 
 GPL-3.0-or-later. See [LICENSE](LICENSE).

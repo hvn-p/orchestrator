@@ -25,7 +25,9 @@ memory-hungry waits for memory before it runs (admission). Nothing is
 throttled yet. `orchestrator sessions` and
 `orchestrator watch` still attribute processes to sessions by process ancestry
 and report memory pressure and orphaned processes. Everything else here is design; the parts validated by
-throwaway prototypes are listed under "Measured".
+throwaway prototypes are listed under "Measured". What orchestrator relies on
+in Claude Code is listed in [claude-code-dependency.md](claude-code-dependency.md),
+with the version it was last verified on.
 
 ## One process group per session
 
@@ -83,6 +85,12 @@ groups and classifies them by behaviour, without any list of commands.
   model.
 - **Hooks, the status line and MCP servers never queue**: they get their own
   group, to be measured, and start immediately.
+- **Claude Code is today's only host, behind a listed boundary**: everything
+  orchestrator relies on in it is a contract of
+  [claude-code-dependency.md](claude-code-dependency.md), and the code
+  relying on one carries its marker. Nothing else of Claude Code is relied
+  on. A merge guard keeps the list current, and a manual integration test
+  checks it against a new Claude Code version.
 
 ## Components
 
@@ -380,7 +388,11 @@ From the Claude Code documentation:
   stdio servers, but not PowerShell hooks nor exec-form hooks. For a Bash call
   the argument holds the whole invocation, environment setup included.
 - A Bash call times out after 2 min by default and 10 min at most, tunable with
-  `BASH_DEFAULT_TIMEOUT_MS` and `BASH_MAX_TIMEOUT_MS`.
+  `BASH_DEFAULT_TIMEOUT_MS` and `BASH_MAX_TIMEOUT_MS`. A foreground call that
+  reaches its timeout is moved to the background, not stopped, unless it
+  starts with `sleep`.
+- `claude agents --json` is the supported way to read session state from
+  outside Claude Code; the files of `~/.claude/sessions/` are not documented.
 - Bash permission rules are matched after splitting compound commands and
   stripping a fixed list of wrappers and known-safe environment assignments.
   The same program invoked in another form (`/usr/bin/curl`, `sh -c '…'`) is
@@ -419,6 +431,9 @@ From the Claude Code documentation:
 - Admission: the configuration's values are chosen by hand until the
   coordinator writes them. Does a 60 s longest wait leave enough of a 2 min
   Bash timeout to the command itself?
+- Claude Code's sessions: keep reading the undocumented session files, or
+  move to `claude agents --json`, which starts a process per read and gives no
+  process start time to tell a reused pid apart.
 - Admission: waiting calls have no order; the first to check once memory
   frees up runs. Reordering them is the coordinator's (see "Levers").
 - Long-running servers: how many before the coordinator negotiates.
