@@ -9,7 +9,7 @@
 use crate::{admission, cgroup, config, peaks, runtime, state};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::os::unix::process::CommandExt;
@@ -172,6 +172,22 @@ fn write_record(dir: &Path, job: &str, record: &JobRecord) -> Result<()> {
 /// hook or the status line must not show orchestrator's troubles. Only
 /// admission's notices go there.
 // claude-code: bash-call-output
+/// Runs what Claude Code passed when it is not the one command line the
+/// prefix expects: as a command, unplaced and unadmitted, and logged. A
+/// change on Claude Code's side then costs orchestration, never the command.
+/// Returns None when there is nothing to run, else only when the command
+/// cannot be started.
+// claude-code: shell-prefix-argument
+pub fn run_unexpected(args: &[OsString]) -> Option<anyhow::Error> {
+    log_failure(&anyhow::anyhow!(
+        "expected one argument, got {}: running them unorchestrated",
+        args.len()
+    ));
+    let (program, rest) = args.split_first()?;
+    let err = Command::new(program).args(rest).exec();
+    Some(anyhow::Error::new(err).context("running the command"))
+}
+
 fn log_failure(e: &anyhow::Error) {
     let Ok(dir) = runtime::default_dir() else {
         return;

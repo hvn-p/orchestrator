@@ -25,7 +25,7 @@ Last verified: Claude Code 2.1.291, 2026-10-06.
   `orchestrator launch` and checks every contract it can see from outside.
   It is manual: it needs a signed-in `claude`, a systemd user manager with
   cgroup v2, and spends about a cent of tokens. Never in CI.
-- **A new Claude Code version**: the project skill `check-claude-code` reads
+- **A new Claude Code version**: the project skill `claude-code-compatibility` reads
   the changelog since the version above, runs the integration test, then
   updates the line above or drafts an issue.
 
@@ -64,9 +64,10 @@ with `bash -c`, which assumes Claude Code's shell is bash, its default when
 `$SHELL` is bash; `CLAUDE_CODE_SHELL` can make it zsh.
 
 - Code: `src/bin/orchestrator-prefix.rs` (`main`), `src/prefix.rs` (`run`).
-- If it changes: with more than one argument, the prefix exits with a usage
-  error and every command of the session fails. With a command no longer
-  meant for a shell, commands break the same way.
+- If it changes: with more than one argument, the prefix runs them as a
+  command, unplaced and unadmitted, and logs it to `prefix.log`; with none,
+  it exits successfully. Orchestration is lost, never the command. With a
+  single argument no longer meant for a shell, commands break.
 - Verified: integration test (the probe, a hook of several commands and an
   MCP server with arguments all run through the prefix and complete).
   Documentation: env-vars, `CLAUDE_CODE_SHELL_PREFIX`.
