@@ -54,8 +54,9 @@ fi
 cat <<EOF
 These changed files rely on Claude Code (they hold a claude-code marker):
 $(sed 's/^/  /' <<<"$relying")
-Update $doc to match: a contract added, changed or gone, or where it lives in
-the code. When every contract stays as it is, add the label
-claude-code-dependency-unchanged to the pull request instead.
+Update $doc to match: a contract added,
+changed or gone, or where it lives in the code. When every contract stays as
+it is, add the label claude-code-dependency-unchanged to the pull request
+instead.
 EOF
 exit 1
