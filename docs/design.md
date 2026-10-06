@@ -19,7 +19,8 @@ of a few MB.
 `orchestrator launch` and the shell prefix exist: a session runs in a cgroup
 of its own, and each command it starts in a job group of its own. Nothing is
 queued or throttled yet. `orchestrator watch` measures the memory peak of each
-finished Bash call and removes empty job groups. `orchestrator sessions` and
+finished Bash call, learns it per repository and command, and removes empty job
+groups; `orchestrator peaks` shows what it learned. `orchestrator sessions` and
 `orchestrator watch` still attribute processes to sessions by process ancestry
 and report memory pressure and orphaned processes. Everything else here is design; the parts validated by
 throwaway prototypes are listed under "Measured".
@@ -110,7 +111,8 @@ One binary, `orchestrator`, with subcommands.
     scan every five minutes catches orphans no session end announces. Each
     finished job's peak (`memory.peak`), read as soon as
     inotify reports its `cgroup.events` unpopulated, kept with the command of a
-    Bash call in `measurements.jsonl`, then the job's empty group removed. A
+    Bash call in `measurements.jsonl` and learned per repository and command
+    (see "Recognising a command"), then the job's empty group removed. A
     sweep every minute catches what inotify cannot see, such as a job that
     ended before its watch was in place;
   - planned: `memory.events` and memory pressure (PSI) per job; listening sockets every one or two seconds, attributed to their job;
@@ -125,9 +127,12 @@ One binary, `orchestrator`, with subcommands.
   long-running servers is reached, and answers "who is working on X?".
 - **`orchestrator sessions`** (exists): memory per session and orphaned
   processes, for a human.
+- **`orchestrator peaks`** (exists): the learned peaks, per repository, for a
+  human: each command's expected peak, its head and its latest calls.
 
 Runtime data lives in `$XDG_RUNTIME_DIR/orchestrator/`: in memory, cleared at
-reboot, never versioned.
+reboot, never versioned. Learned peaks live in `$XDG_STATE_HOME/orchestrator/`
+and survive a reboot.
 
 ## Classifying by behaviour
 
@@ -168,23 +173,51 @@ recognise) is left to the other levers.
 
 ### Recognising a command
 
+The command Claude wrote reaches the prefix as the argument of an `eval` near
+the end of the invocation. Both the invocation and that argument are parsed as
+shell, with brush-parser.
+
 Claude writes the same command in many forms. Admission recognises it the way
 Claude Code matches its Bash permission rules. The call is split into simple
 commands at `&&`, `||`, `;`, `|`, `|&`, `&` and newlines. What does not change
-the work is then removed: the wrappers `timeout`, `time`, `nice`, `nohup` and
-`stdbuf`, leading environment assignments, redirections, and `cd`, whose target
-still decides the repository. So `cd app && timeout 300 pnpm exec vitest run X
-2>&1 | grep FAIL` yields `pnpm exec vitest run X` and `grep FAIL`.
+the work is then removed: the wrappers `timeout`, `time`, `nice`, `nohup`,
+`stdbuf`, `command` and `builtin` with their options, leading environment
+assignments, redirections, and `cd`, whose target still decides the
+repository. So `cd app && timeout 300 pnpm exec vitest run X 2>&1 | grep FAIL`
+yields `pnpm exec vitest run X` and `grep FAIL`.
 
-Each remaining command is learned word for word. Unlike a permission rule, no
-wildcard widens the match: `vitest run` (the whole suite) and
-`vitest run one.test.ts` stay distinct, since they do not weigh the same. A call
-holds several commands but has a single peak: the command that carries it is
-the one found in heavy calls and never in light ones.
+- The bodies of brace groups, subshells, loops and conditionals are commands
+  of the call. A `cd` inside a subshell, a pipeline or a background command
+  stays there. A function definition runs nothing.
+- A command substitution (`$(…)`) stays part of the word that holds it.
+- A here-document or here-string is the command's input: like the script of
+  `python3 -c`, it decides the work, so it stays with the command.
+- After a `cd` whose target only running the call would tell (`cd "$dir"`,
+  `cd -`), or one into a directory that does not exist (it failed, so what
+  follows did not run), the commands are not learned.
 
-Where Claude Code asks when in doubt, admission lets the command start.
+Each remaining command is learned word for word, unquoted. Unlike a permission
+rule, no wildcard widens the match: `vitest run` (the whole suite) and
+`vitest run one.test.ts` stay distinct, since they do not weigh the same. The
+repository is the git common directory, shared by all worktrees, found by
+walking up from the command's directory without starting git; outside a
+repository, the directory itself.
 
-Peaks are kept in `$XDG_STATE_HOME/orchestrator/` so that they survive a reboot.
+A call holds several commands but has a single peak: the command that carries
+it is the one found in heavy calls and never in light ones. A call's peak
+bounds each of its commands, and measures exactly a command that ran alone. A
+command's expected peak is therefore the smallest peak among its last five
+calls, walking back from the latest and stopping at the latest call it ran
+alone in.
+
+Where Claude Code asks when in doubt, admission lets the command start: a call
+that cannot be parsed teaches nothing, and an unknown command starts at once.
+
+Peaks are kept in `$XDG_STATE_HOME/orchestrator/peaks/` so that they survive a
+reboot. A command is stored under a SHA-256 of its repository and words, never
+as text, so no credential typed in a command lands on disk; only its head is
+kept, for display. A repository keeps its 2,000 most recently seen commands in
+sixteen files, chosen by the hash, so that a lookup reads one small file.
 
 ## Measured
 
@@ -237,6 +270,15 @@ Other measurements:
 - Claude Code runs a Bash call as one shell script: it sources the session's
   shell snapshot, then runs the command Claude wrote inside `eval '…'`, from
   which the command can be extracted.
+- The command Claude wrote reaches `eval` quoted in more than one way (single
+  quotes, or bare when it is one word), followed by `< /dev/null` unless it
+  reads its own input; Claude Code may add other setup lines before it, on
+  several lines. Claude Code keeps a `cd` within the project for the next
+  Bash call.
+- Parsing a real invocation and its command with brush-parser takes about
+  0.25 ms in a fresh process; looking a command up in a repository holding
+  2,000 learned commands about 0.05 ms, finding the repository included
+  (release build).
 - `CLAUDE_CODE_SHELL_PREFIX` is run as one quoted path: a prefix holding an
   argument fails with "not found". Bash calls and MCP servers are started by
   claude itself, hooks through `/bin/sh -c`.
@@ -301,7 +343,10 @@ From the Claude Code documentation:
 
 - Maximum hook timeout: two readings of the documentation disagree (30 s for
   `PreToolUse`, 600 s by default for command hooks). To retest.
-- Admission: which shell parser the prefix uses.
+- Learning: the packages of a monorepo share one key, so `pnpm test` run in
+  two of them is one command.
+- Learning: the expected peak leans low, the smallest of recent calls; does
+  the admission margin cover the spread of a command's peak from run to run?
 - Long-running servers: how many before the coordinator negotiates.
 - Orphans and idle sessions holding resources: reported to the coordinator, or
   released automatically.
@@ -336,6 +381,10 @@ From the Claude Code documentation:
   threshold, so it has to be polled, and low available memory alone does not
   slow anything down. A PSI trigger reports the stall itself; admission, not an
   event, keeps a memory-hungry command from starting when memory is short.
+- **Other shell parsers**: tree-sitter-bash needs a C compiler, ran at half
+  the speed and leaves unquoting to the caller; yash-syntax parses POSIX shell
+  only (it rejects `[[ ]]`) through an asynchronous API; conch-parser has had
+  no release since 2019; a parser of our own is a shell grammar to maintain.
 - **Recognising commands by name**: a hook only sees the command typed, not the
   `tsc` processes that `pnpm typecheck` starts; command shims first in `PATH`
   are bypassed by `node_modules/.bin`. Tool-specific knobs

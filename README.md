@@ -19,8 +19,9 @@ Early. What exists:
 - `orchestrator watch` runs as a service that sleeps until the kernel reports
   something, and appends one JSON line per event (`memory_pressure`,
   `orphans`) to an events file. It also measures the
-  memory peak of each finished Bash call of an orchestrated session, then
-  removes the call's empty group.
+  memory peak of each finished Bash call of an orchestrated session, learns it
+  per repository and command, then removes the call's empty group.
+- `orchestrator peaks` prints the peaks learned so far.
 
 Everything else is design (admission, throttling, the coordinator): see
 [docs/design.md](docs/design.md).
@@ -30,7 +31,7 @@ Everything else is design (admission, throttling, the coordinator): see
 - Linux with cgroup v2 and a systemd user manager that delegates to user
   scopes (`launch`). `sessions` and `watch` only read `/proc` and Claude Code's
   session files (`~/.claude/sessions/`).
-- A Rust toolchain supporting edition 2024 (Rust 1.85 or later).
+- A Rust toolchain, Rust 1.88 or later.
 
 ## Build
 
@@ -67,7 +68,17 @@ rest. Events go to
 `$XDG_RUNTIME_DIR/orchestrator/events.jsonl` unless `--runtime-dir` says
 otherwise. As soon as a Bash call of an orchestrated session ends, it appends
 the call's peak, with its command, to `measurements.jsonl` in the same
-directory. `--help` lists every option.
+directory, and learns the peak of each command of the call in the repository
+it ran in. `--help` lists every option.
+
+```sh
+orchestrator peaks
+```
+
+Learned peaks live in `$XDG_STATE_HOME/orchestrator/peaks/` (by default
+`~/.local/state/orchestrator/peaks/`) unless `--state-dir` says otherwise, for
+`watch` as for `peaks`. They hold no command line: a command is stored under a
+hash, with only its program and first plain words for display.
 
 ## License
 
