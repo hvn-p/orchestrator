@@ -230,3 +230,5 @@ mod tests {
         assert_eq!(back, record);
     }
 }
+
+// Scratch change to exercise the merge guard; never merged.
