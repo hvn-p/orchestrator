@@ -3,15 +3,17 @@
 //! measured Bash call; the store lives under the state directory and survives
 //! a reboot.
 //!
-//! A command's id is a SHA-256 of its repository and the recognised command:
-//! no credential typed in a command lands on disk. Only the head of the
-//! command (`procfs::command_head`) is kept next to it, for display. Each
-//! repository has a directory, named by a hash of its key, of up to sixteen
-//! files: a command lives in the one named by the first hex digit of its id,
-//! so a lookup reads a sixteenth of the repository. A file starts with a line
-//! naming the repository, then holds one JSON line per command, its id first:
-//! a lookup finds the command's line by its id and parses that line alone.
-//! Only `watch` writes; each write replaces a file whole, through a rename.
+//! A command's id is a SHA-256 of its repository and the recognised command.
+//! Next to it, a label keeps the recognised command, shortened, for display.
+//! That text is a command Claude wrote, which Claude Code already keeps in its
+//! transcripts, taken before the shell expands it: a command that fetches a
+//! credential holds the call, not the value. Each repository has a directory,
+//! named by a hash of its key, of up to sixteen files: a command lives in the
+//! one named by the first hex digit of its id, so a lookup reads a sixteenth
+//! of the repository. A file starts with a line naming the repository, then
+//! holds one JSON line per command, its id first: a lookup finds the
+//! command's line by its id and parses that line alone. Only `watch` writes;
+//! each write replaces a file whole, through a rename.
 //!
 //! A call holds several commands but has a single peak. That peak bounds each
 //! of its commands, and measures exactly a command that ran alone. A command's
@@ -40,6 +42,8 @@ const RECENT: usize = 5;
 /// Commands kept per file, the most recently seen, so that a lookup stays
 /// cheap: up to 2000 per repository.
 const MAX_PER_FILE: usize = 125;
+/// Longest label kept, in characters.
+pub const LABEL_MAX: usize = 60;
 
 /// The first line of a repository's file.
 #[derive(Debug, Serialize, Deserialize)]
@@ -52,7 +56,11 @@ struct Header {
 pub struct Entry {
     /// Stays the first field: a lookup finds a command's line by its start.
     pub id: String,
-    pub head: String,
+    /// The command as `label` shows it. An entry stored before labels holds
+    /// the command's head (`procfs::command_head`) until the command is seen
+    /// again.
+    #[serde(alias = "head")]
+    pub label: String,
     /// The expected peak: see `expected`.
     pub peak_mb: u64,
     /// When the command last ran, in seconds since the Unix epoch.
@@ -202,11 +210,12 @@ fn update(path: &Path, seen: &[&Placed], call: Call, at: u64) -> Result<()> {
     for p in seen {
         let entry = by_id.entry(p.id.clone()).or_insert_with(|| Entry {
             id: p.id.clone(),
-            head: head(p.command),
+            label: String::new(),
             peak_mb: 0,
             last_seen: 0,
             recent: Vec::new(),
         });
+        entry.label = label(p.command);
         entry.recent.push(call);
         let excess = entry.recent.len().saturating_sub(RECENT);
         entry.recent.drain(..excess);
@@ -307,9 +316,19 @@ fn hex(bytes: &[u8]) -> String {
     s
 }
 
-/// What `orchestrator peaks` shows of a command: never its full words.
-fn head(command: &Command) -> String {
-    procfs::command_head(command.words.join("\0").as_bytes())
+/// What `orchestrator peaks` shows of a command: its words on one line, a
+/// mark rather than its input, at most `LABEL_MAX` characters.
+fn label(command: &Command) -> String {
+    let mut label = command
+        .words
+        .iter()
+        .flat_map(|w| w.split_whitespace())
+        .collect::<Vec<_>>()
+        .join(" ");
+    if command.input.as_deref().is_some_and(|i| !i.is_empty()) {
+        label.push_str(" <<…");
+    }
+    procfs::truncate(&label, LABEL_MAX)
 }
 
 #[cfg(test)]
@@ -411,7 +430,7 @@ mod tests {
         let python = learned[0]
             .commands
             .iter()
-            .find(|e| e.head == "python3")
+            .find(|e| e.label == "python3 -c b = bytearray(300 << 20)")
             .unwrap();
         assert_eq!(python.recent, [Call(310, true), Call(305, false)]);
         assert_eq!(python.last_seen, 1001);
@@ -469,19 +488,70 @@ mod tests {
         assert_eq!(list(&s.peaks).unwrap().len(), 2);
     }
 
+    fn labels(s: &Store) -> Vec<String> {
+        let mut labels: Vec<String> = list(&s.peaks)
+            .unwrap()
+            .into_iter()
+            .flat_map(|l| l.commands)
+            .map(|e| e.label)
+            .collect();
+        labels.sort();
+        labels
+    }
+
     #[test]
-    fn no_command_text_lands_on_disk() {
+    fn labels_show_the_command_as_recognised() {
         let s = store();
-        let script = format!("curl -H 'Authorization: Bearer {SECRET}' https://api.example.com/x");
-        learn_all(&s, &[(&script, 12)]);
-        let learned = list(&s.peaks).unwrap();
-        assert_eq!(learned[0].commands[0].head, "curl");
-        for repo_dir in paths(&s.peaks).unwrap() {
-            for f in paths(&repo_dir).unwrap() {
-                let text = fs::read_to_string(f).unwrap();
-                assert!(!text.contains(SECRET) && !text.contains("Bearer"));
-            }
-        }
+        learn_all(
+            &s,
+            &[
+                (
+                    "cd web && NODE_ENV=test timeout 300 pnpm exec vitest run 2>&1 | tail -1",
+                    900,
+                ),
+                (&format!("python3 - <<'PY'\nprint('{SECRET}')\nPY"), 20),
+                (
+                    "python3 -c 'import sys\nfor line in sys.stdin:\n    print(line.upper())' < data.txt",
+                    30,
+                ),
+                (
+                    r#"curl -H "Authorization: Bearer $(cat ~/.token)" https://x"#,
+                    10,
+                ),
+            ],
+        );
+        assert_eq!(
+            labels(&s),
+            [
+                // A credential fetched by the command shows as the call.
+                "curl -H Authorization: Bearer $(cat ~/.token) https://x",
+                "pnpm exec vitest run",
+                "python3 - <<…",
+                "python3 -c import sys for line in sys.stdin: print(line.upp…",
+                "tail -1",
+            ]
+        );
+    }
+
+    #[test]
+    fn an_entry_stored_with_a_head_shows_it_until_seen_again() {
+        let s = store();
+        let make = command("make test");
+        let id = id(&s.key, &make);
+        let path = file(&s.peaks, &s.key, &id);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            &path,
+            format!(
+                "{{\"repository\":\"{}\"}}\n{{\"id\":\"{id}\",\"head\":\"make\",\"peak_mb\":40,\"last_seen\":1,\"recent\":[[40,true]]}}\n",
+                s.key.display()
+            ),
+        )
+        .unwrap();
+        assert_eq!(lookup(&s.peaks, &s.key, &make), Some(40));
+        assert_eq!(labels(&s), ["make"]);
+        learn_all(&s, &[("make test", 50)]);
+        assert_eq!(labels(&s), ["make test"]);
     }
 
     #[test]
@@ -546,7 +616,7 @@ mod tests {
     fn evicts_the_least_recently_seen() {
         let entry = |id: &str, last_seen| Entry {
             id: id.into(),
-            head: String::new(),
+            label: String::new(),
             peak_mb: 1,
             last_seen,
             recent: vec![Call(1, true)],

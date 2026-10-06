@@ -121,8 +121,8 @@ fn state_dir(arg: StateDir) -> Result<PathBuf> {
     }
 }
 
-/// Heaviest first. A command shows as its head, never its full words; its
-/// id's start tells apart two commands with the same head.
+/// Heaviest first. A command shows as its label; its id's start tells apart
+/// two commands with the same label.
 fn print_peaks(state: &Path) -> Result<()> {
     let learned = peaks::list(&peaks::dir(state))?;
     if learned.is_empty() {
@@ -131,10 +131,14 @@ fn print_peaks(state: &Path) -> Result<()> {
     for repo in learned {
         let mut commands = repo.commands;
         commands.sort_by(|a, b| b.peak_mb.cmp(&a.peak_mb).then_with(|| a.id.cmp(&b.id)));
+        let width = commands
+            .iter()
+            .map(|c| c.label.chars().count().min(peaks::LABEL_MAX))
+            .fold("COMMAND".len(), usize::max);
         println!("{}", repo.repository);
         println!(
-            "  {:>7}  {:<8}  {:<32}  LATEST CALLS, MB (* ALONE)",
-            "PEAK MB", "ID", "COMMAND"
+            "  {:>7}  {:<8}  {:<width$}  LATEST CALLS, MB (* ALONE)",
+            "PEAK MB", "ID", "COMMAND",
         );
         for c in commands {
             let calls: Vec<String> = c
@@ -144,10 +148,10 @@ fn print_peaks(state: &Path) -> Result<()> {
                 .map(|peaks::Call(mb, alone)| format!("{mb}{}", if *alone { "*" } else { "" }))
                 .collect();
             println!(
-                "  {:>7}  {:<8}  {:<32}  {}",
+                "  {:>7}  {:<8}  {:<width$}  {}",
                 c.peak_mb,
                 c.id.get(..8).unwrap_or(&c.id),
-                procfs::truncate(&c.head, 32),
+                procfs::truncate(&c.label, peaks::LABEL_MAX),
                 calls.join(" "),
             );
         }

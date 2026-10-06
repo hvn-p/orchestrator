@@ -128,7 +128,7 @@ One binary, `orchestrator`, with subcommands.
 - **`orchestrator sessions`** (exists): memory per session and orphaned
   processes, for a human.
 - **`orchestrator peaks`** (exists): the learned peaks, per repository, for a
-  human: each command's expected peak, its head and its latest calls.
+  human: each command's expected peak, its label and its latest calls.
 
 Runtime data lives in `$XDG_RUNTIME_DIR/orchestrator/`: in memory, cleared at
 reboot, never versioned. Learned peaks live in `$XDG_STATE_HOME/orchestrator/`
@@ -214,10 +214,21 @@ Where Claude Code asks when in doubt, admission lets the command start: a call
 that cannot be parsed teaches nothing, and an unknown command starts at once.
 
 Peaks are kept in `$XDG_STATE_HOME/orchestrator/peaks/` so that they survive a
-reboot. A command is stored under a SHA-256 of its repository and words, never
-as text, so no credential typed in a command lands on disk; only its head is
-kept, for display. A repository keeps its 2,000 most recently seen commands in
-sixteen files, chosen by the hash, so that a lookup reads one small file.
+reboot. A command is stored under a SHA-256 of its repository, words and
+input, with a label for display: its words as recognised, joined by spaces,
+a here-document marked rather than included, cut to 60 characters. A
+repository keeps its 2,000 most recently seen commands in sixteen files,
+chosen by the hash, so that a lookup reads one small file.
+
+The label puts command text on disk, and that is deliberate. The store only
+ever holds commands Claude wrote: text that already went through the model,
+and that Claude Code already keeps in clear in its transcripts under
+`~/.claude/projects/`. A command that fetches a secret
+(`"$(az keyvault secret show …)"`, `"$TOKEN"`) holds the call, not the value,
+since the prefix records the text before the shell expands it. Command lines
+read from `/proc` are another matter: any process may carry one, an MCP
+server started with a connection string for instance, and it never went
+through the model. Those stay out of events (see Principles).
 
 ## Measured
 
