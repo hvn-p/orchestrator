@@ -83,7 +83,7 @@ mod tests {
     use super::*;
 
     const SESSION: &str =
-        "/user.slice/user-1000.slice/user@1000.service/orchestrator.slice/run-p9-i9.scope";
+        "/user.slice/user-1000.slice/user@1000.service/orchestrator.slice/orchestrator-9-9.scope";
 
     #[test]
     fn reads_the_v2_line() {
