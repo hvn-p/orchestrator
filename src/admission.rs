@@ -709,7 +709,9 @@ mod tests {
         assert!(lock(&path, Duration::from_millis(50)).is_err());
         assert!(start.elapsed() >= Duration::from_millis(50));
         drop(held);
-        assert!(lock(&path, Duration::ZERO).is_ok());
+        // A process another test starts at this instant holds a copy of the
+        // descriptor until it execs, and the lock with it: allow for that.
+        assert!(lock(&path, Duration::from_secs(1)).is_ok());
     }
 
     fn typecheck(peak_mb: u64) -> Heavy {
