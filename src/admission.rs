@@ -144,7 +144,7 @@ pub fn known(invocation: &str, cwd: &Path, home: Option<&Path>, peaks_dir: &Path
         };
         if let Some(entry) = peaks::entry(peaks_dir, &key, c) {
             known.push(Known {
-                head: entry.head,
+                head: entry.label,
                 peak_mb: entry.peak_mb,
                 alone: entry.recent.iter().any(|call| call.1),
             });
@@ -454,7 +454,6 @@ mod tests {
         max_wait_secs: 30,
     };
     const SESSION: &str = "/u/orchestrator.slice/s.scope";
-    const SECRET: &str = "s3cr3t-T0KEN";
     const SEC: Duration = Duration::from_secs(1);
 
     fn k(head: &str, peak_mb: u64, alone: bool) -> Known {
@@ -852,7 +851,7 @@ mod tests {
         let look = |script: &str| known(&invocation(script), &s.repo, None, &s.peaks);
         assert_eq!(
             look("timeout 300 pnpm typecheck 2>&1 | tail -1; git status"),
-            [k("pnpm typecheck", 3000, true), k("tail", 4, false)]
+            [k("pnpm typecheck", 3000, true), k("tail -1", 4, false)]
         );
         // `pnpm lint` only ever ran beside `tail -1`, which a light call
         // showed is light: the lint carries 1200 MB.
@@ -869,19 +868,24 @@ mod tests {
         let s = store(&[("pnpm build 2>&1 | tail -1", 2000)]);
         let look = |script: &str| known(&invocation(script), &s.repo, None, &s.peaks);
         let call = look("pnpm build | tail -1");
-        assert_eq!(call, [k("pnpm build", 2000, false), k("tail", 2000, false)]);
+        assert_eq!(
+            call,
+            [k("pnpm build", 2000, false), k("tail -1", 2000, false)]
+        );
         assert_eq!(heavy(&call, &CFG), Some(h("pnpm build", 2000)));
     }
 
     #[test]
-    fn notices_show_the_head_never_the_command_line() {
-        let s = store(&[(
-            &format!("curl -H 'Authorization: Bearer {SECRET}' https://x.example/a"),
-            1500,
-        )]);
-        let script =
-            format!("curl -H 'Authorization: Bearer {SECRET}' https://x.example/a | tail -1");
-        let call = known(&invocation(&script), &s.repo, None, &s.peaks);
+    fn notices_name_the_call_by_its_label() {
+        let s = store(&[
+            (
+                "python3 -c 'b = bytearray(1500 << 20)' 2>&1 | tail -1",
+                1500,
+            ),
+            ("cat build.log | tail -1", 4),
+        ]);
+        let script = "timeout 60 python3 -c 'b = bytearray(1500 << 20)' | tail -1";
+        let call = known(&invocation(script), &s.repo, None, &s.peaks);
         let call = heavy(&call, &CFG).unwrap();
         let check = Check {
             step: Step::Wait(SEC),
@@ -895,11 +899,7 @@ mod tests {
             running_notice(&call, SEC, Some((10, 2000))),
         ];
         for n in notices {
-            assert!(n.contains("`curl`"), "{n}");
-            assert!(
-                !n.contains(SECRET) && !n.contains("Bearer") && !n.contains("example"),
-                "{n}"
-            );
+            assert!(n.contains("`python3 -c b = bytearray(1500 << 20)`"), "{n}");
         }
     }
 }

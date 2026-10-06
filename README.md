@@ -80,8 +80,10 @@ orchestrator peaks
 
 Learned peaks live in `$XDG_STATE_HOME/orchestrator/peaks/` (by default
 `~/.local/state/orchestrator/peaks/`) unless `--state-dir` says otherwise, for
-`watch` as for `peaks`. They hold no command line: a command is stored under a
-hash, with only its program and first plain words for display.
+`watch` as for `peaks`. A command is stored under a hash, with a label for
+display: the command as recognised, cut to 60 characters. Only commands Claude
+wrote land there; see "Recognising a command" in
+[docs/design.md](docs/design.md).
 
 ## Configuration
 
