@@ -169,3 +169,5 @@ description a line `Guide: unchanged, <reason>`; `scripts/guide-guard.sh
 ## License
 
 GPL-3.0-or-later. See [LICENSE](LICENSE).
+
+Scratch line for a guard test.
