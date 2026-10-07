@@ -164,8 +164,9 @@ impl CoordinatorRun {
         .expect("writing a CLAUDE.md above the coordinator's directory");
         let prompt = format!(
             "This is an automated compatibility test of orchestrator, not an event: message no \
-             one. Do these steps in order, one tool call each, and go on after a denial. 1) Run \
-             `orchestrator machine` with the Bash tool. 2) Run `orchestrator coordinator note \
+             one. Do these steps in order, one tool call each, and go on after a denial; make \
+             every call, even one you expect to be denied. 1) Run `orchestrator machine` with \
+             the Bash tool. 2) Run `orchestrator coordinator note \
              checked` with the Bash tool. 3) Run `touch {}` with the Bash tool. 4) Run `cat {}` \
              with the Bash tool. 5) Call ListAgents once. Then reply with exactly four lines: \
              the first line `orchestrator machine` printed, the first line of the ListAgents \
@@ -303,16 +304,23 @@ fn coordinator_permissions(c: &CoordinatorRun) -> Check {
         return Err(format!("{} was created", other.display()));
     }
     let denied = c.denied("Bash", "command");
-    for command in [
-        format!("touch {}", other.display()),
-        format!("cat {}", c.outside.display()),
-    ] {
-        if !denied.contains(&command) {
-            return Err(format!(
-                "`{command}` was not denied, or Haiku skipped it (run again); denials: {}",
-                c.result["permission_denials"]
-            ));
-        }
+    let touch = format!("touch {}", other.display());
+    if !denied.contains(&touch) {
+        return Err(format!(
+            "`{touch}` was not denied, or Haiku skipped it (run again); denials: {}",
+            c.result["permission_denials"]
+        ));
+    }
+    // Asked to `cat` it, Haiku sometimes reads it with Read instead: either
+    // call must be denied.
+    let outside = c.outside.display().to_string();
+    let read = denied.contains(&format!("cat {outside}"))
+        || c.denied("Read", "file_path").contains(&outside);
+    if !read {
+        return Err(format!(
+            "reading {outside} was not denied, or Haiku skipped it (run again); denials: {}",
+            c.result["permission_denials"]
+        ));
     }
     Ok(())
 }
