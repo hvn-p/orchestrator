@@ -53,10 +53,17 @@ describes the `main` branch of <https://github.com/hvn-p/orchestrator>.
    servers never wait. Admission reads the peaks already learned, so it works
    while `watch` is stopped, and it counts the heavy calls of all the user's
    orchestrated sessions together.
-5. A failure skips only the step that failed, never the command: without a
-   scope the command runs outside any job group, unmeasured; without a
-   configuration, when the call cannot be parsed, or on an admission error, it
-   runs at once in its job group and is still measured.
+5. The command always runs. The prefix places a Bash call in its job group,
+   writes its job record, then admits it, each step needing the ones before;
+   `watch` measures and learns it from the group and the record. What a
+   failure loses:
+   - no scope, or no job group: not measured, not learned, never admitted;
+   - no job record: neither admitted nor measured, so not learned;
+   - no configuration: not admitted, still measured and learned;
+   - a call that cannot be parsed: neither admitted nor learned, still
+     measured;
+   - an admission error: the call runs at once, unreserved, still measured
+     and learned.
 
 ## How to answer
 
@@ -65,7 +72,9 @@ describes the `main` branch of <https://github.com/hvn-p/orchestrator>.
   (`cat /proc/self/cgroup` run as a Bash call), the files, `--help`.
 - When `orchestrator --help` lists a subcommand this guide does not know, or
   lacks one it describes, the installed build differs from this guide: trust
-  the binary's `--help` and say so.
+  the binary's `--help` and say so. `claude plugin update
+  orchestrator@orchestrator` fetches the latest guide (applied after a
+  restart of Claude Code).
 - Command lines can hold credentials. Events and `peaks` show only command
   heads or text Claude wrote; `orchestrator sessions` shows the start of real
   command lines, and `/proc/<pid>/cmdline` or `environ` all of them. Quote
@@ -83,8 +92,8 @@ Read the one the question needs:
 - [reference/configuration.md](reference/configuration.md): `config.json` and
   its fields, choosing values, the environment variables that matter.
 - [reference/events.md](reference/events.md): `events.jsonl`,
-  `measurements.jsonl`, admission notices, and the messages `launch`, the
-  prefix and `watch` print.
+  `measurements.jsonl`, admission notices, and the messages each command and
+  the prefix print.
 - [reference/files.md](reference/files.md): every file and directory
   orchestrator reads or writes, who writes it, how long it lives.
 - [reference/troubleshooting.md](reference/troubleshooting.md): from a symptom

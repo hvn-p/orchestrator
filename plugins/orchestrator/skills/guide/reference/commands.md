@@ -13,14 +13,15 @@ Requirements:
   unprivileged process set the pressure trigger `watch` uses, and
   `/proc/pressure/memory` present.
 - For `launch`: a systemd user manager that delegates to user scopes, and
-  `busctl`, which ships with systemd. `sessions` and `watch` only read `/proc`
-  and Claude Code's session files.
-- A Rust toolchain, Rust 1.88 or later.
+  `busctl`, which ships with systemd. `sessions` and `watch` need neither
+  `busctl` nor a scope.
+- A Rust toolchain, Rust 1.88 or later for the dependency versions the
+  repository locks.
 
 From a clone of <https://github.com/hvn-p/orchestrator>:
 
 ```sh
-cargo install --path .
+cargo install --locked --path .
 ```
 
 This installs two binaries side by side in Cargo's bin directory
@@ -84,9 +85,11 @@ because `launch` set `CLAUDE_CODE_SHELL_PREFIX`.
   directory) for `watch`, then goes through admission (see
   configuration.md).
 - It then replaces itself with `bash -c '<command line>'`. The command runs in
-  bash whatever shell Claude Code picked: Claude Code uses `CLAUDE_CODE_SHELL`
-  when it names a bash or zsh binary, else `$SHELL` when it is bash or zsh,
-  else the first zsh, then bash, it finds. When that is zsh, commands still
+  bash whatever shell Claude Code picked. Claude Code's documentation
+  (environment variables, `CLAUDE_CODE_SHELL`) says it uses the bash or zsh
+  binary `CLAUDE_CODE_SHELL` names when that works, else `$SHELL` when it
+  points to bash or zsh, else the first working zsh, then bash, found on the
+  `PATH` and in standard install locations. When that is zsh, commands still
   run in bash under orchestrator.
 - Outside an orchestrated session, or on any error, it runs the command
   unchanged. Its own failures go to `prefix.log` in the runtime directory,
@@ -155,17 +158,22 @@ events.
   manager from any shell, in the foreground, with the shell's environment.
 - `systemd-run --user --unit=orchestrator-watch orchestrator watch` runs it
   in the background, as a service of the user manager. A service starts with
-  the manager's environment, not the shell's: a `CLAUDE_CONFIG_DIR` the
-  sessions use has to be passed with `--setenv=CLAUDE_CONFIG_DIR`. Its
-  messages go to the user journal (`journalctl --user -u
+  the manager's environment, not the shell's (`systemctl --user
+  show-environment` prints it). When the sessions run with a
+  `CLAUDE_CONFIG_DIR`, `XDG_STATE_HOME` or `XDG_RUNTIME_DIR` other than the
+  manager's, pass each one, as in `--setenv=CLAUDE_CONFIG_DIR` (a name alone
+  takes the shell's value). Otherwise `watch` reads another sessions
+  directory, or works in other directories than the prefix, with no
+  message. Its messages go to the user journal (`journalctl --user -u
   orchestrator-watch`); `systemctl --user stop orchestrator-watch` stops it.
 
 Facts that matter when starting it:
 
 - The prefix always uses the default runtime and state directories, read
   from the session's environment. A `watch` given other `--runtime-dir` or
-  `--state-dir` values does not find the prefix's job records, and learns
-  peaks admission never reads.
+  `--state-dir` values, or started with another `XDG_RUNTIME_DIR` or
+  `XDG_STATE_HOME`, does not find the prefix's job records, or learns peaks
+  admission never reads.
 - `CLAUDE_CONFIG_DIR` must be the one the sessions run with, or
   `--sessions-dir` must point at their sessions directory. When that
   directory does not exist yet as `watch` starts, session ends are found only
@@ -205,8 +213,11 @@ ORPHANS (session gone)
 
 or `No orphaned process.` The command line shown is the start (70 characters)
 of the process's real command line, which can hold credentials. The session
-name is the one Claude Code records in its session file. It exits with
-`Error: …` and status 1 when `<proc root>/meminfo` cannot be read.
+name is the one Claude Code records in its session file. With a wrong or
+missing sessions directory, it shows no session, and the processes of live
+sessions as orphans. It exits with `Error: …` and status 1 when it cannot
+read the available memory, the processes or the sessions directory, or
+resolve the default sessions directory; see events.md.
 
 ## orchestrator peaks
 
@@ -217,7 +228,8 @@ orchestrator peaks [--state-dir <dir>]
 Prints what `watch` has learned, per repository, heaviest command first, or
 `No peak learned yet.` `--state-dir` defaults to
 `$XDG_STATE_HOME/orchestrator`, else `~/.local/state/orchestrator`, as for
-`watch`.
+`watch`. It exits with `Error: …` and status 1 when it cannot resolve that
+default or read the peaks; see events.md.
 
 ```
 /home/u/project/.git

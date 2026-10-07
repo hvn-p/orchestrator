@@ -60,10 +60,14 @@ is folded into its topmost orphaned process.
 
 Written when `watch` starts, five seconds after a session's claude process
 exits, and by the scan every `--orphan-interval-secs`, for each group this run
-of `watch` has not reported yet. A restarted `watch` reports again the groups
-still alive. orchestrator does not stop them. A process detached with `nohup`
-or `setsid` from a session that has since run `/clear` or been resumed keeps
-the old id: it is reported as an orphan though its session lives.
+of `watch` has not reported yet. A group is known by its topmost process (pid
+and start time): when that process exits and others of the group live on,
+they are reported again under their new topmost process. A restarted `watch`
+reports again the groups still alive. orchestrator does not stop them. A
+process detached with `nohup` or `setsid` from a session that has since run
+`/clear` or been resumed keeps the old id: it is reported as an orphan though
+its session lives. So are the processes of every live session when `watch`
+reads a wrong or missing sessions directory.
 
 ## measurements.jsonl
 
@@ -76,7 +80,7 @@ the session's scope, `job` the call's job group, `peak_mb` the group's
 `memory.peak` (children included), `command` the whole invocation Claude Code
 handed the prefix, and `cwd` the directory it ran in. Nothing reads this file;
 admission reads the learned peaks. It holds the full text of the commands
-Claude wrote, and lives until reboot.
+Claude wrote, and lives as long as the runtime directory (files.md).
 
 ## Admission notices
 
@@ -136,7 +140,7 @@ directory exists. The command ran anyway; the line says which step it lost:
   nor admitted.
 - `creating …/jobs/…: …` or `writing …/jobs/…/job-bash-….json: …`: the job
   record could not be written; the call ran in its job group, neither
-  admitted nor learned.
+  admitted nor measured, so not learned.
 - `…/admission.lock stayed locked for 1s`, or another admission error
   (`opening …`, `locking …`, `creating …/reservations`, `reading …`,
   `writing …/reservations/…`, `no MemAvailable line in …`,
@@ -162,9 +166,11 @@ exit status 127.
   orphans are found only by the periodic scan. Most often the sessions
   directory did not exist when `watch` started; a restart of `watch` once a
   session has run sets the signal up.
-- `orchestrator: no kernel signal for job ends, sweeps only: <error>`, or
-  `orchestrator: job tracking stopped, sweeping instead: <error>`: jobs are
-  swept every 2 seconds instead.
+- `orchestrator: no kernel signal for job ends, sweeps only: <error>`: jobs
+  are found by sweeps only, the first one a minute after `watch` started,
+  then every 2 seconds.
+- `orchestrator: job tracking stopped, sweeping instead: <error>`: the same,
+  from the next sweep on, which comes within a minute.
 - `orchestrator: the memory pressure trigger broke; no more pressure events`:
   a restart of `watch` sets it up again.
 - `orchestrator: skipping <file>: <error>`: a Claude Code session file could
@@ -174,7 +180,20 @@ exit status 127.
   `orchestrator: <error>`: an error `watch` outlives; it keeps running.
 
 `watch` stops at start, printing `Error: …` (with its cause under
-`Caused by:` when there is one) and exiting with status 1, when its runtime directory cannot be created,
-`<proc root>/meminfo` cannot be read, or a default directory cannot be
-resolved (`neither CLAUDE_CONFIG_DIR nor HOME is set`,
+`Caused by:` when there is one) and exiting with status 1, when its runtime
+directory cannot be created, `<proc root>/meminfo` cannot be read or holds no
+`MemAvailable` line (`no MemAvailable line in …`), or a default directory
+cannot be resolved (`neither CLAUDE_CONFIG_DIR nor HOME is set`,
 `neither XDG_STATE_HOME nor HOME is set`).
+
+### sessions and peaks, on their standard error
+
+Both print `Error: …` (with its cause under `Caused by:` when there is one)
+and exit with status 1 on an error:
+
+- `sessions`: `reading <proc root>/meminfo`, `no MemAvailable line in …`,
+  `neither CLAUDE_CONFIG_DIR nor HOME is set` (without `--sessions-dir`),
+  `reading <proc root>`, or `reading <sessions dir>` (a missing sessions
+  directory is no error: it shows no session).
+- `peaks`: `neither XDG_STATE_HOME nor HOME is set` (without `--state-dir`),
+  or `reading …` for a peaks directory or file it cannot read.

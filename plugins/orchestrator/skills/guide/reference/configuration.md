@@ -31,7 +31,8 @@ For example, for a machine with about 30 GB of RAM:
 - A file that cannot be read whole (invalid JSON, a missing or unknown field,
   a misspelt section) turns admission off, and each Bash call logs the error
   to `prefix.log` in the runtime directory. A typo never makes calls wait.
-- Removing the file, or its `admission` section, turns admission off.
+- Removing the file, or its `admission` section, turns admission off, with
+  nothing logged.
 - MB here, as everywhere in orchestrator, means 1024 × 1024 bytes.
 
 ## Choosing values
@@ -85,15 +86,22 @@ anything:
 - What remains is kept word for word, quotes removed and variables as
   written: `vitest run` and `vitest run one.test.ts` are two commands.
 - After a `cd` whose target only running the call would tell (`cd "$dir"`,
-  `cd -`), or into a directory that does not exist, the commands are not
-  learned and never make a call wait. A call that cannot be parsed teaches
-  nothing and never waits.
+  `cd -`), the commands are never learned and never make a call wait. A call
+  that cannot be parsed teaches nothing and never waits.
+- A command whose directory does not exist once the call has ended is not
+  learned: the `cd` into it failed, so the command did not run. The check
+  comes after the call, so `mkdir -p b && cd b && make` is learned. Admission
+  never checks that a directory exists.
 
 ### Learning
 
 - `watch` learns per repository (the git common directory of the directory
   the command runs in, all worktrees together; outside a repository, the
-  directory) and per command.
+  directory) and per command. A command's id is its repository, its words and
+  its input: within a repository, the directory does not matter, so
+  `pnpm test` run in two packages of one repository is one command with one
+  expected peak. Admission looks a command up the same way, in the repository
+  holding the directory it runs in.
 - Each command of a measured call gets the call's peak, marked "alone" when
   it was the call's only command; a command that is not learned (see above)
   still counts, so the others are not alone. The latest five calls are kept.
@@ -143,11 +151,11 @@ anything:
 | :- | :- | :- |
 | `XDG_CONFIG_HOME` | the prefix | Where `config.json` is (absolute paths only). |
 | `XDG_STATE_HOME` | the prefix, `watch`, `peaks` | Where learned peaks are (absolute paths only). |
-| `XDG_RUNTIME_DIR` | the prefix, `watch` | The runtime directory, else `/run/user/<uid>`. |
-| `HOME` | all | The fallback for the above; resolves `cd` and `cd ~` when recognising commands. |
+| `XDG_RUNTIME_DIR` | the prefix, `watch` | The runtime directory, else `/run/user/<uid>`, the uid read from `/proc/self/status`. |
+| `HOME` | the prefix, `watch`, `sessions`, `peaks` | The fallback for `XDG_CONFIG_HOME`, `XDG_STATE_HOME` and `CLAUDE_CONFIG_DIR`; resolves `cd` and `cd ~` when recognising commands. `launch` does not read it. |
 | `CLAUDE_CONFIG_DIR` | `watch`, `sessions` | Claude Code's configuration directory, holding `sessions/`. |
 | `CLAUDE_CODE_SHELL_PREFIX` | Claude Code | Set by `launch` to the prefix's path. |
-| `CLAUDE_CODE_SHELL` | Claude Code | The shell Claude Code builds its commands for (bash or zsh). The prefix runs them with bash whatever it is. |
+| `CLAUDE_CODE_SHELL` | Claude Code | The shell Claude Code uses to run Bash tool commands, a bash or zsh binary. The prefix runs them with bash whatever it is. |
 | `CLAUDE_CODE_SESSION_ID` | `watch`, `sessions` | Set by Claude Code in every command it starts; attributes a process reparented away from claude, and marks orphans. |
 | `BASH_DEFAULT_TIMEOUT_MS`, `BASH_MAX_TIMEOUT_MS` | Claude Code | The Bash timeout the admission wait counts toward. |
 | `CLAUDE_CODE_TOOL_MEMORY_LIMIT` | Claude Code | On Linux, a size such as `4G` caps the memory of all of a session's Bash, PowerShell and Monitor commands together, through a memory cgroup of Claude Code's own: past it, the kernel kills a command, and nothing in its result names the cap. `CLAUDE_CODE_TOOL_MEMORY_CGROUP_EXCLUDE` lists the other kinds of processes Claude Code exempts from that cap. orchestrator never kills a command. |

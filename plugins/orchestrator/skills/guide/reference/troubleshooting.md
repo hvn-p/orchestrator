@@ -25,6 +25,9 @@ echo "$CLAUDE_CODE_SHELL_PREFIX"
   `launch` gave up after 2 s and started the session unorchestrated, then
   systemd moved it into the scope anyway. A session launched again gets its
   `main/` leaf and the prefix.
+- After `orchestrator: setting up <scope>: …; the session runs
+  unorchestrated`, the session stays in the scope itself or in its `main/`
+  leaf, without the prefix: its calls run there too, unorchestrated.
 - The scope is there but the call runs in `main/`: the call did not go
   through the prefix, or the prefix could not create its job group. Check the
   variable (something may have replaced it in the session's environment), and
@@ -45,8 +48,10 @@ Not orchestrated:
   `main/`.
 - Background sessions: those of `claude --bg` and of agent view, Claude
   Code's screen to dispatch and watch background sessions (`claude agents`).
-  Claude Code's background service runs them, started in the cgroup of
-  whatever started it; they do not go through `orchestrator launch`.
+  Claude Code's background service starts them, not `orchestrator launch`.
+  Whether their commands are orchestrated depends on where that service
+  itself was started. A session started with `orchestrator launch -- claude`
+  is orchestrated.
 - What runs outside the session's cgroup even when the session started it:
   Docker containers, units started with `systemd-run --user`, services
   activated over D-Bus.
@@ -63,8 +68,9 @@ Not measured:
   systemd manager (`no systemd user manager above this process`; see
   commands.md, "Starting watch"). systemd removes a session's job groups when
   it ends, so a missed call stays missed.
-- `watch` runs with `--runtime-dir` or `--state-dir` other than the defaults
-  the prefix uses.
+- `watch` runs with another runtime directory than the prefix's default
+  (`--runtime-dir`, or another `XDG_RUNTIME_DIR`): it never finds the job
+  records.
 - The session is not orchestrated (above), or the call is not a Bash call:
   hooks, the status line and MCP servers are never measured.
 - The job group has no `memory.peak`: Linux older than 5.19, or no `memory`
@@ -80,22 +86,31 @@ Measured, not learned:
 
 - The call could not be parsed as shell.
 - The command ran after a `cd` whose target only running tells
-  (`cd "$dir"`, `cd -`), or into a directory that does not exist.
+  (`cd "$dir"`, `cd -`), or its directory did not exist when the call ended
+  (the `cd` into it failed).
+- `watch` runs with another state directory than the prefix's default
+  (`--state-dir`, or another `XDG_STATE_HOME`): it learns there, where
+  admission never reads. `orchestrator peaks --state-dir <dir>` shows it.
 - It was learned under another repository: peaks are per repository (its git
   common directory) and per exact command (configuration.md, "Recognising a
   command").
 
 ## Nothing waits
 
-- No `config.json`, no `admission` section, or a file that cannot be read:
-  `prefix.log` then holds `reading …/config.json: …` for each Bash call. The
-  prefix looks for the file from the environment Claude Code was started with
-  (`XDG_CONFIG_HOME`, else `HOME`), which may differ from a terminal's.
+- No `config.json`, or no `admission` section: admission is off, and nothing
+  is logged. The prefix looks for the file from the environment Claude Code
+  was started with (`XDG_CONFIG_HOME`, else `HOME`), which may differ from a
+  terminal's.
+- A `config.json` that cannot be read: `prefix.log` holds
+  `reading …/config.json: …` for each Bash call.
 - No command of the call has an expected peak at or above `heavy_mb`
   (`orchestrator peaks`). The expected peak is the smallest of the latest
   calls back to the latest one the command ran alone in (configuration.md,
   "Learning"): a heavy call shared with other commands does not raise it
   above its latest run alone, nor above a lighter call since.
+- The command follows a `cd` whose target only running tells (`cd "$dir"`,
+  `cd -`): it is never looked up.
+- The call cannot be parsed as shell: none of its commands is looked up.
 - `max_wait_secs` is 0: heavy calls reserve memory but never wait.
 - Memory was free: a heavy call that finds enough starts at once, silently.
 - The command is not a Bash call of an orchestrated session.
@@ -108,9 +123,11 @@ Measured, not learned:
 - The waiting notice says "net of … already running": other heavy calls hold
   reservations until their job groups empty, including a server one of them
   left running in the background.
-- The command got lighter: its expected peak follows its latest five calls.
-  Removing its repository's directory under `<state>/peaks/` (files.md)
-  forgets it at once.
+- A light command seen only beside heavy ones carries their peak: a filter
+  such as `tail -1`, used only after a build, is as heavy as the build. Its
+  first lighter call, once measured, lowers it (configuration.md,
+  "Learning"). Removing its repository's directory under `<state>/peaks/`
+  (files.md) forgets every command of that repository at once.
 - The call reached its Bash timeout: the wait counts toward it
   (configuration.md, "Choosing values").
 
@@ -118,8 +135,8 @@ Measured, not learned:
 
 The prefix runs every command with `bash -c`, even when Claude Code uses zsh
 (through `CLAUDE_CODE_SHELL`, or a zsh `$SHELL`). zsh syntax then fails in an
-orchestrated session. Claude Code builds its commands for bash when
-`CLAUDE_CODE_SHELL` names a bash binary.
+orchestrated session. Claude Code uses bash when `CLAUDE_CODE_SHELL` names a
+working bash binary (commands.md, "orchestrator-prefix").
 
 ## No memory_pressure event
 
@@ -137,7 +154,9 @@ orchestrated session. Claude Code builds its commands for bash when
 - `watch` or `sessions` reads another sessions directory than the sessions
   write: `CLAUDE_CONFIG_DIR` differs, or pass `--sessions-dir`. A `watch`
   started as a service with `systemd-run --user` does not get the shell's
-  `CLAUDE_CONFIG_DIR` (commands.md, "Starting watch").
+  `CLAUDE_CONFIG_DIR` (commands.md, "Starting watch"). With a wrong or
+  missing sessions directory, the processes of live sessions also show up as
+  orphans, in `sessions` and in `orphans` events.
 - The sessions directory did not exist when `watch` started
   (`no kernel signal for session ends`): orphans then come only from the
   periodic scan, until `watch` restarts.
@@ -148,9 +167,12 @@ orchestrated session. Claude Code builds its commands for bash when
 
 ## The same orphans reported again
 
-`watch` remembers which orphan groups it reported only while it runs. A
-restarted `watch` reports every orphan group still alive, in the scan it
-makes as it starts.
+- `watch` remembers which orphan groups it reported only while it runs. A
+  restarted `watch` reports every orphan group still alive, in the scan it
+  makes as it starts.
+- A group is known by its topmost process, its pid and start time. When that
+  process exits and others of the group live on, they are reported again,
+  under their new topmost process.
 
 ## Hooks fail through the prefix
 
@@ -172,9 +194,10 @@ with that version. From a clone of the repository,
 cargo test --test claude_code -- --ignored --nocapture
 ```
 
-starts a real headless session through `orchestrator launch` and reports each
-contract as `ok` or `BROKEN`. It needs a signed-in `claude` and a systemd user
-manager with cgroup v2, and spends about a cent of tokens.
+starts a real headless session of the installed Claude Code through the
+clone's own build of `orchestrator launch`, not an installed `orchestrator`,
+and reports each contract as `ok` or `BROKEN`. It needs a signed-in `claude`
+and a systemd user manager with cgroup v2, and spends about a cent of tokens.
 
 ## Turning orchestrator off
 
