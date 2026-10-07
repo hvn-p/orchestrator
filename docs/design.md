@@ -162,6 +162,11 @@ One binary, `orchestrator`, with subcommands.
   processes, for a human.
 - **`orchestrator peaks`** (exists): the learned peaks, per repository, for a
   human: each command's expected peak, its label and its latest calls.
+- **The guide** (exists): a Claude Code plugin in `plugins/orchestrator/`,
+  this repository being its marketplace, whose skill answers a user's
+  questions about orchestrator in any session. It describes the code it ships
+  with: a merge guard makes every pull request update it or state why it
+  needs no update.
 
 Runtime data lives in `$XDG_RUNTIME_DIR/orchestrator/`: in memory, cleared at
 reboot, never versioned. Learned peaks live in `$XDG_STATE_HOME/orchestrator/`

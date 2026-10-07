@@ -122,6 +122,23 @@ runs. Remove the file, or its `admission` section, to turn admission off. A
 file that cannot be read, an unknown field included, also turns it off, and
 the error goes to `$XDG_RUNTIME_DIR/orchestrator/prefix.log`.
 
+## Guide for Claude Code
+
+This repository is also a Claude Code plugin marketplace. Its plugin adds a
+guide skill: in any session, Claude answers questions about installing,
+launching, configuring and diagnosing orchestrator from its reference, rather
+than from memory.
+
+```sh
+claude plugin marketplace add hvn-p/orchestrator
+claude plugin install orchestrator@orchestrator
+```
+
+Claude loads the skill when a question is about orchestrator, and
+`/orchestrator:guide` opens it directly. Auto-update is off for this
+marketplace unless turned on in `/plugin`; `claude plugin update
+orchestrator@orchestrator` fetches the latest guide.
+
 ## Claude Code dependency
 
 orchestrator relies on Claude Code only through the contracts listed in
@@ -144,7 +161,10 @@ Every pull request and every push to `main` runs `cargo fmt --check`,
 Rust 1.88. A pull request that changes code relying on Claude Code must also
 update `docs/claude-code-dependency.md`, unless it carries the label
 `claude-code-dependency-unchanged`; `scripts/claude-code-guard.sh <base>
-<head>` runs that check locally.
+<head>` runs that check locally. A pull request that changes anything outside
+the guide, `plugins/orchestrator/`, must update the guide too, or hold in its
+description a line `Guide: unchanged, <reason>`; `scripts/guide-guard.sh
+<base> <head> <description file>` runs that check locally.
 
 ## License
 

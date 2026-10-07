@@ -16,5 +16,8 @@ been measured and the open questions: start there.
   that document, or carry the label `claude-code-dependency-unchanged` (CI
   guard). `cargo test --test claude_code -- --ignored` checks the installed
   Claude Code against it, by hand only.
+- `plugins/orchestrator/` is the guide, a Claude Code plugin describing the
+  code it ships with. Every pull request updates it, or its description holds
+  a line `Guide: unchanged, <reason>` (CI guard).
 
 Runtime data lives in `$XDG_RUNTIME_DIR/orchestrator/`, never in this repository.
