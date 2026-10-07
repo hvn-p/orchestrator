@@ -21,9 +21,14 @@ echo "$CLAUDE_CODE_SHELL_PREFIX"
   unorchestrated` (reasons in events.md). Common ones: `busctl` missing, no
   user bus in that login, cgroup v1, or `orchestrator-prefix` not next to
   `orchestrator`.
+- The cgroup ends in `orchestrator-<pid>-<ms>.scope` with nothing after it:
+  `launch` gave up after 2 s and started the session unorchestrated, then
+  systemd moved it into the scope anyway. A session launched again gets its
+  `main/` leaf and the prefix.
 - The scope is there but the call runs in `main/`: the call did not go
-  through the prefix. Check the variable: something replaced it in the
-  session's environment.
+  through the prefix, or the prefix could not create its job group. Check the
+  variable (something may have replaced it in the session's environment), and
+  `prefix.log` for `creating job-bash-…`.
 - A Bash call lands in `job-other-*`: the prefix no longer recognises Claude
   Code's Bash invocation, which points at a Claude Code change (see
   "After a Claude Code update").
@@ -38,9 +43,10 @@ Not orchestrated:
 - Exec-form hooks (`args` set), PowerShell hooks and helpers Claude Code
   starts itself: they bypass the prefix and are counted with claude in
   `main/`.
-- Background sessions (`claude --bg`, agent view): Claude Code's background
-  service hosts them in the cgroup of whatever started it, so they are not
-  orchestrated.
+- Background sessions: those of `claude --bg` and of agent view, Claude
+  Code's screen to dispatch and watch background sessions (`claude agents`).
+  Claude Code's background service runs them, started in the cgroup of
+  whatever started it; they do not go through `orchestrator launch`.
 - What runs outside the session's cgroup even when the session started it:
   Docker containers, units started with `systemd-run --user`, services
   activated over D-Bus.
@@ -54,11 +60,19 @@ means it was measured but not learned.
 Not measured:
 
 - `watch` was not running when the call ended, or ran outside the user's
-  systemd manager (`no systemd user manager above this process`). systemd
-  removes a session's job groups when it ends, so a missed call stays missed.
+  systemd manager (`no systemd user manager above this process`; see
+  commands.md, "Starting watch"). systemd removes a session's job groups when
+  it ends, so a missed call stays missed.
 - `watch` runs with `--runtime-dir` or `--state-dir` other than the defaults
   the prefix uses.
-- The session is not orchestrated (above).
+- The session is not orchestrated (above), or the call is not a Bash call:
+  hooks, the status line and MCP servers are never measured.
+- The job group has no `memory.peak`: Linux older than 5.19, or no `memory`
+  controller in the session's scope. Run
+  `ls /sys/fs/cgroup$(sed -n 's/^0:://p' /proc/self/cgroup)` as a Bash call:
+  the listing must hold `memory.peak`.
+- The prefix could not write the job record: `prefix.log` holds
+  `writing …/jobs/…`.
 - The call has not ended: it is measured once its job group is empty, so a
   server it started in the background holds it open.
 
@@ -74,11 +88,15 @@ Measured, not learned:
 ## Nothing waits
 
 - No `config.json`, no `admission` section, or a file that cannot be read:
-  `prefix.log` then holds `reading …/config.json: …` for each Bash call.
-- No command of the call has a learned peak at or above `heavy_mb`
+  `prefix.log` then holds `reading …/config.json: …` for each Bash call. The
+  prefix looks for the file from the environment Claude Code was started with
+  (`XDG_CONFIG_HOME`, else `HOME`), which may differ from a terminal's.
+- No command of the call has an expected peak at or above `heavy_mb`
   (`orchestrator peaks`). The expected peak is the smallest of the latest
-  calls down to the latest the command ran alone in, so one high run does
-  not make a command heavy.
+  calls back to the latest one the command ran alone in (configuration.md,
+  "Learning"): a heavy call shared with other commands does not raise it
+  above its latest run alone, nor above a lighter call since.
+- `max_wait_secs` is 0: heavy calls reserve memory but never wait.
 - Memory was free: a heavy call that finds enough starts at once, silently.
 - The command is not a Bash call of an orchestrated session.
 - An error let it through: see `prefix.log`.
@@ -96,21 +114,43 @@ Measured, not learned:
 - The call reached its Bash timeout: the wait counts toward it
   (configuration.md, "Choosing values").
 
+## A command behaves as in bash, not zsh
+
+The prefix runs every command with `bash -c`, even when Claude Code uses zsh
+(through `CLAUDE_CODE_SHELL`, or a zsh `$SHELL`). zsh syntax then fails in an
+orchestrated session. Claude Code builds its commands for bash when
+`CLAUDE_CODE_SHELL` names a bash binary.
+
 ## No memory_pressure event
 
 - `watch` is not running, or writes to another runtime directory.
 - The trigger could not be set up (`no kernel signal for memory pressure`
-  when `watch` started): no pressure event will come.
+  when `watch` started), for instance on Linux older than 6.4: no pressure
+  event will come.
+- The trigger broke (`the memory pressure trigger broke`): no pressure event
+  until `watch` restarts.
 - No task stalled on memory for `--stall-ms` within 2 s, or an event fired
   less than `--cooldown-secs` ago.
 
 ## Sessions or orphans not seen
 
 - `watch` or `sessions` reads another sessions directory than the sessions
-  write: `CLAUDE_CONFIG_DIR` differs, or pass `--sessions-dir`.
+  write: `CLAUDE_CONFIG_DIR` differs, or pass `--sessions-dir`. A `watch`
+  started as a service with `systemd-run --user` does not get the shell's
+  `CLAUDE_CONFIG_DIR` (commands.md, "Starting watch").
+- The sessions directory did not exist when `watch` started
+  (`no kernel signal for session ends`): orphans then come only from the
+  periodic scan, until `watch` restarts.
 - A process started outside Claude Code carries no
   `CLAUDE_CODE_SESSION_ID`, so it is never an orphan.
-- An orphan group is reported once, for as long as it lives.
+- An orphan group is reported once per run of `watch`, for as long as it
+  lives.
+
+## The same orphans reported again
+
+`watch` remembers which orphan groups it reported only while it runs. A
+restarted `watch` reports every orphan group still alive, in the scan it
+makes as it starts.
 
 ## Hooks fail through the prefix
 
@@ -122,11 +162,11 @@ special to `sh` breaks every hook. Install where the path is plain.
 
 orchestrator relies on Claude Code through the contracts of
 [docs/claude-code-dependency.md](https://github.com/hvn-p/orchestrator/blob/main/docs/claude-code-dependency.md),
-which names the version last verified. A broken contract costs orchestration,
-not the command: commands no longer in job groups, Bash calls in
-`job-other-*`, no admission notice reaching Claude, nothing learned, sessions
-or orphans not seen. Compare `claude --version` with that version. From a
-clone of the repository,
+whose "Last verified" line names the version they were checked on. A broken
+contract costs orchestration, not the command: commands no longer in job
+groups, Bash calls in `job-other-*`, no admission notice reaching Claude,
+nothing learned, sessions or orphans not seen. Compare `claude --version`
+with that version. From a clone of the repository,
 
 ```sh
 cargo test --test claude_code -- --ignored --nocapture
@@ -134,9 +174,7 @@ cargo test --test claude_code -- --ignored --nocapture
 
 starts a real headless session through `orchestrator launch` and reports each
 contract as `ok` or `BROKEN`. It needs a signed-in `claude` and a systemd user
-manager with cgroup v2, and spends about a cent of tokens. In a clone, the
-project skill `claude-code-compatibility` runs it and reads Claude Code's
-changelog against each contract.
+manager with cgroup v2, and spends about a cent of tokens.
 
 ## Turning orchestrator off
 

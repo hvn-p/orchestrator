@@ -42,18 +42,21 @@ describes the `main` branch of <https://github.com/hvn-p/orchestrator>.
 2. Claude Code runs every Bash call, `!` command, shell-form hook, status line
    refresh and stdio MCP server start through the prefix. The prefix moves the
    command into a job group of its own (`job-bash-*` for Bash calls and `!`
-   commands, `job-other-*` for the rest), then runs it with `bash -c`. Output,
-   exit code and signals stay the command's.
+   commands, `job-other-*` for the rest), then runs it with `bash -c`, whatever
+   shell Claude Code uses. Output, exit code and signals stay the command's.
 3. `orchestrator watch` measures the memory peak of each finished Bash call,
    learns it per repository and command, and appends events for memory
    pressure and orphaned processes.
 4. With a configuration, a Bash call whose commands were learned as heavy
    waits until free memory covers its expected peak plus a margin, for a
    bounded time, and says so in its output. Hooks, the status line and MCP
-   servers never wait.
-5. Any failure (no scope, no configuration, a cgroup error, an unparsable
-   command) leaves the command running at once, unorchestrated. orchestrator
-   costs orchestration, never the command.
+   servers never wait. Admission reads the peaks already learned, so it works
+   while `watch` is stopped, and it counts the heavy calls of all the user's
+   orchestrated sessions together.
+5. A failure skips only the step that failed, never the command: without a
+   scope the command runs outside any job group, unmeasured; without a
+   configuration, when the call cannot be parsed, or on an admission error, it
+   runs at once in its job group and is still measured.
 
 ## How to answer
 
@@ -80,18 +83,16 @@ Read the one the question needs:
 - [reference/configuration.md](reference/configuration.md): `config.json` and
   its fields, choosing values, the environment variables that matter.
 - [reference/events.md](reference/events.md): `events.jsonl`,
-  `measurements.jsonl`, admission notices, and the messages `launch` and
-  `watch` print.
+  `measurements.jsonl`, admission notices, and the messages `launch`, the
+  prefix and `watch` print.
 - [reference/files.md](reference/files.md): every file and directory
   orchestrator reads or writes, who writes it, how long it lives.
 - [reference/troubleshooting.md](reference/troubleshooting.md): from a symptom
   to its checks and causes.
 
-Beyond these:
-
-- Claude Code compatibility: orchestrator relies on Claude Code only through
-  the contracts listed in
-  [docs/claude-code-dependency.md](https://github.com/hvn-p/orchestrator/blob/main/docs/claude-code-dependency.md),
-  with the Claude Code version they were last verified on. Read the version
-  there, never from memory.
-In a clone of the repository, that file is under `docs/`.
+Claude Code compatibility: orchestrator relies on Claude Code only through the
+contracts listed in
+[docs/claude-code-dependency.md](https://github.com/hvn-p/orchestrator/blob/main/docs/claude-code-dependency.md)
+(under `docs/` in a clone of the repository), whose "Last verified" line names
+the Claude Code version they were checked on. Read the version there, never
+from memory.

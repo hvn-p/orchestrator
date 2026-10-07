@@ -8,15 +8,18 @@ up.
 
 `$XDG_RUNTIME_DIR/orchestrator/events.jsonl` (or `watch --runtime-dir`), one
 JSON object per line, appended by `watch`. The file is opened per event, so a
-reader may truncate it between two. Events are inputs for scheduling, never
-orders to stop work. They are for a human or a tool that reads the file.
+reader may truncate it between two. Nothing in orchestrator reads it or acts
+on an event: events are for a human, or a tool of the user's own that reads
+the file.
 
 A process is never named by its full command line, which can hold
-credentials: an event gives its pid, its `comm` and the head of its command
-line. The head is the program and at most two plain words after it, a path
-reduced to its last component, stopping at the first option, URL, or word
-that could carry data (holding `=`, `:` or quotes, or longer than 32
-characters).
+credentials: an event gives its pid, its `comm` (the kernel's name for the
+process, at most 15 characters) and the head of its command line. The head is
+the program and at most two words after it, each reduced to its last path
+component. It stops at the first option, and at a word that is a URL, holds a
+character other than letters, digits and `._@+-` (such as `=`, `:` or
+quotes), or is longer than 32 characters. It is empty when the program name
+itself fails that test.
 
 ### memory_pressure
 
@@ -55,11 +58,12 @@ is folded into its topmost orphaned process.
 | `session_id` | The session it came from, from its `CLAUDE_CODE_SESSION_ID`. |
 | `rss_mb`, `processes` | The group's resident memory and number of processes. |
 
-Written five seconds after a session's claude process exits, and by the scan
-every `--orphan-interval-secs`; each group once, for as long as it lives.
-orchestrator does not stop them. A process detached with `nohup` or `setsid`
-from a session that has since run `/clear` or been resumed keeps the old id:
-it is reported as an orphan though its session lives.
+Written when `watch` starts, five seconds after a session's claude process
+exits, and by the scan every `--orphan-interval-secs`, for each group this run
+of `watch` has not reported yet. A restarted `watch` reports again the groups
+still alive. orchestrator does not stop them. A process detached with `nohup`
+or `setsid` from a session that has since run `/clear` or been resumed keeps
+the old id: it is reported as an orphan though its session lives.
 
 ## measurements.jsonl
 
@@ -77,8 +81,8 @@ Claude wrote, and lives until reboot.
 ## Admission notices
 
 A Bash call held back writes two lines to its standard error, which Claude
-Code returns to Claude with the call's output. A call that starts at once
-writes nothing.
+Code returns with the call's output. A call that starts at once writes
+nothing.
 
 ```
 orchestrator: waiting for memory before running `pnpm typecheck`. This call is expected to peak at 2210 MB; with the 2048 MB margin it needs 4258 MB free, and 3100 MB are free, net of 1800 MB kept for 1 heavy command already running. It starts as soon as memory frees up, after 60 s at most.
@@ -86,7 +90,8 @@ orchestrator: running `pnpm typecheck` after waiting 12.4 s for memory.
 ```
 
 - The command is named by its label (see `orchestrator peaks`): the call's
-  first heavy command that has run alone, else its first heavy command.
+  first heavy command that has run alone, else its first heavy command, or
+  `this command` when it has no label.
 - "net of … already running" appears only when running heavy calls hold
   reservations.
 - When the call waited `max_wait_secs` and memory is still short, the second
@@ -106,41 +111,70 @@ unchanged. There is nothing to retry.
 - `orchestrator: replacing CLAUDE_CODE_SHELL_PREFIX=<value>`: a shell prefix
   was already set; this session uses orchestrator's instead.
 - `orchestrator: <reason>; the session runs unorchestrated`: the session
-  started, outside orchestration. Reasons include
-  `<dir>/orchestrator-prefix not found`,
-  `asking the systemd user manager for orchestrator-….scope: running busctl: …`,
-  `… busctl got no answer within 2s`,
-  `… busctl failed (exit status: 1): <busctl's reason>`,
-  `waiting for <job> to move this process into <unit>: still elsewhere after 2s`,
-  `setting up <scope>: …`.
+  started, outside orchestration. The reasons:
+  - `<dir>/orchestrator-prefix not found`, or `locating orchestrator: …`;
+  - `asking the systemd user manager for orchestrator-….scope: ` followed by
+    `running busctl: …`, `busctl got no answer within 2s`,
+    `busctl failed (exit status: 1): <busctl's reason>`, or
+    `unexpected reply from busctl: "<reply>"`;
+  - `waiting for <job> to move this process into <unit>: ` followed by
+    `still elsewhere after 2s` or `reading own cgroup: …`;
+  - `setting up <scope>: …`.
+- `Error: running <command>`, then `Caused by:` and the reason: the command
+  itself could not be started. `launch` exits with status 1.
 
 ### The prefix, in prefix.log
 
 `$XDG_RUNTIME_DIR/orchestrator/prefix.log`, one line per failure:
-`<ms since the epoch> <error>`. The command ran anyway. Typical lines: a
-configuration that cannot be read (`reading …/config.json: …`), a job group
-that cannot be created (`creating job-bash-…: …`), a stuck admission lock
-(`…/admission.lock stayed locked for 1s`), or Claude Code passing several
-arguments (`expected one argument, got <n>: running them unorchestrated`).
+`<ms since the epoch> <error>`. Lines are written only once the runtime
+directory exists. The command ran anyway; the line says which step it lost:
+
+- `reading …/config.json: …`, `neither XDG_CONFIG_HOME nor HOME is set`, or
+  `neither XDG_STATE_HOME nor HOME is set`: no admission.
+- `reading own cgroup: …`, or `creating job-bash-…: …` (or `job-other-…`):
+  the command ran where Claude Code started it, in `main/`, neither measured
+  nor admitted.
+- `creating …/jobs/…: …` or `writing …/jobs/…/job-bash-….json: …`: the job
+  record could not be written; the call ran in its job group, neither
+  admitted nor learned.
+- `…/admission.lock stayed locked for 1s`, or another admission error
+  (`opening …`, `locking …`, `creating …/reservations`, `reading …`,
+  `writing …/reservations/…`, `no MemAvailable line in …`,
+  `reading the working directory`): the call ran at once, unreserved.
+- `expected one argument, got <n>: running them unorchestrated`: Claude Code
+  passed other than one argument; the command ran unplaced and unadmitted.
+
+On its standard error, the prefix writes only admission notices and, when it
+cannot start bash (or, in the last case above, the command),
+`orchestrator-prefix: running bash: <error>` (or `running the command`), with
+exit status 127.
 
 ### watch, on its standard error
 
 - `orchestrator: no systemd user manager above this process; jobs are not collected`:
-  nothing is measured nor learned; events still are.
+  nothing is measured nor learned; events still are. See commands.md,
+  "Starting watch".
 - `orchestrator: no kernel signal for memory pressure, sweeps only: <error>`:
   no `memory_pressure` event at all (there is no sweep for pressure). The
-  kernel must expose `/proc/pressure/memory` and accept the trigger.
+  kernel must expose `/proc/pressure/memory` and, before Linux 6.4, refuses
+  the trigger to an unprivileged process.
 - `orchestrator: no kernel signal for session ends, sweeps only: <error>`:
-  orphans are found only by the periodic scan.
+  orphans are found only by the periodic scan. Most often the sessions
+  directory did not exist when `watch` started; a restart of `watch` once a
+  session has run sets the signal up.
 - `orchestrator: no kernel signal for job ends, sweeps only: <error>`, or
   `orchestrator: job tracking stopped, sweeping instead: <error>`: jobs are
   swept every 2 seconds instead.
-- `orchestrator: the memory pressure trigger broke; no more pressure events`.
+- `orchestrator: the memory pressure trigger broke; no more pressure events`:
+  a restart of `watch` sets it up again.
 - `orchestrator: skipping <file>: <error>`: a Claude Code session file could
   not be parsed, maybe while being rewritten; the next read tries again.
   `sessions` prints it too.
-- `orchestrator: learning a peak: <error>`, `orchestrator: <error>`: an error
-  `watch` outlives; it keeps running.
+- `orchestrator: learning a peak: <error>`, `orchestrator: waiting: <error>`,
+  `orchestrator: <error>`: an error `watch` outlives; it keeps running.
 
-`watch` exits at start when its runtime directory cannot be created or
-`<proc root>/meminfo` cannot be read.
+`watch` stops at start, printing `Error: …` (with its cause under
+`Caused by:` when there is one) and exiting with status 1, when its runtime directory cannot be created,
+`<proc root>/meminfo` cannot be read, or a default directory cannot be
+resolved (`neither CLAUDE_CONFIG_DIR nor HOME is set`,
+`neither XDG_STATE_HOME nor HOME is set`).
