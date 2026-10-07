@@ -247,6 +247,11 @@ One binary, `orchestrator`, with subcommands.
   configuration, and a validated write of its admission thresholds. With
   `orchestrator sessions --heads`, they are how the coordinator reads the
   state.
+- **The guide** (exists): a Claude Code plugin in `plugins/orchestrator/`,
+  this repository being its marketplace, whose skill answers a user's
+  questions about orchestrator in any session. It describes the code it ships
+  with: a merge guard makes every pull request update it or state why it
+  needs no update.
 
 Runtime data lives in `$XDG_RUNTIME_DIR/orchestrator/`: in memory, cleared at
 reboot, never versioned. Learned peaks live in `$XDG_STATE_HOME/orchestrator/`

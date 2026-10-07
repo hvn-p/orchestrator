@@ -18,7 +18,7 @@ const PROC: &str = "/proc";
 #[derive(Parser)]
 #[command(
     version,
-    about = "Schedule the work of the parallel Claude Code sessions of this machine"
+    about = "Keep the parallel Claude Code sessions of this machine within its memory"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -27,7 +27,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Watch memory pressure, session ends and job ends, and append the events that drive scheduling.
+    /// Watch memory pressure, session ends and job ends, append events, and learn the memory peak of each Bash call.
     Watch(WatchArgs),
     /// Print memory per Claude session and the orphaned processes.
     Sessions(SessionsArgs),
@@ -56,10 +56,10 @@ struct Launched {
 
 #[derive(Args)]
 struct Sources {
-    /// Where to read processes and meminfo from.
+    /// The proc file system to read: processes and meminfo, and for `watch` also pressure/memory and its own cgroup.
     #[arg(long, default_value = PROC)]
     proc_root: PathBuf,
-    /// Claude Code's sessions directory [default: ~/.claude/sessions].
+    /// Claude Code's sessions directory [default: `$CLAUDE_CONFIG_DIR/sessions`, else `~/.claude/sessions`].
     #[arg(long)]
     sessions_dir: Option<PathBuf>,
 }
@@ -75,7 +75,7 @@ struct SessionsArgs {
 
 #[derive(Args)]
 struct StateDir {
-    /// Where learned peaks are kept [default: `$XDG_STATE_HOME/orchestrator`].
+    /// Where learned peaks are kept [default: `$XDG_STATE_HOME/orchestrator`, else `~/.local/state/orchestrator`].
     #[arg(long)]
     state_dir: Option<PathBuf>,
 }
@@ -84,18 +84,19 @@ struct StateDir {
 struct WatchArgs {
     #[command(flatten)]
     sources: Sources,
-    #[command(flatten)]
-    state: StateDir,
-    /// Where the events file is written [default: `$XDG_RUNTIME_DIR/orchestrator`].
+    /// Where learned peaks are kept [default: `$XDG_STATE_HOME/orchestrator`, else `~/.local/state/orchestrator`]. The prefix always reads the default: with another directory, admission never sees what `watch` learns.
+    #[arg(long)]
+    state_dir: Option<PathBuf>,
+    /// Where events and measurements are written and job records read [default: `$XDG_RUNTIME_DIR/orchestrator`, else `/run/user/<uid>/orchestrator`]. The prefix always writes its job records to the default: with another directory, no Bash call is measured.
     #[arg(long)]
     runtime_dir: Option<PathBuf>,
     /// Memory stall, within a 2 s window, that makes a pressure event, in ms.
     #[arg(long, default_value_t = 200, value_parser = clap::value_parser!(u64).range(1..=2000))]
     stall_ms: u64,
-    /// Minimum seconds between two memory events.
+    /// Minimum seconds between two memory pressure events.
     #[arg(long, default_value_t = 60)]
     cooldown_secs: u64,
-    /// Seconds between two orphan scans when no session ends.
+    /// Seconds between two orphan scans when no session ends; 0 counts as 1.
     #[arg(long, default_value_t = 300)]
     orphan_interval_secs: u64,
 }
@@ -174,7 +175,7 @@ fn main() -> Result<()> {
                 Some(dir) => dir,
                 None => runtime::default_dir()?,
             },
-            state_dir: state_dir(args.state)?,
+            state_dir: state_dir(args.state_dir)?,
             config_path: config::default_path()?,
             orphan_interval: Duration::from_secs(args.orphan_interval_secs.max(1)),
             thresholds: watch::Thresholds {
@@ -191,7 +192,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         Command::Peaks(dir) => {
-            print!("{}", report::peaks(&state_dir(dir)?, None, None)?);
+            print!("{}", report::peaks(&state_dir(dir.state_dir)?, None, None)?);
             Ok(())
         }
         Command::Admission => {
@@ -248,8 +249,8 @@ fn default_sessions_dir() -> Result<PathBuf> {
     sessions::default_dir().context("neither CLAUDE_CONFIG_DIR nor HOME is set")
 }
 
-fn state_dir(arg: StateDir) -> Result<PathBuf> {
-    match arg.state_dir {
+fn state_dir(arg: Option<PathBuf>) -> Result<PathBuf> {
+    match arg {
         Some(dir) => Ok(dir),
         None => state::default_dir(),
     }
