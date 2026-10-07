@@ -118,8 +118,13 @@ enum ConfigCommand {
 #[derive(Args)]
 #[group(required = true, multiple = true)]
 struct CoordinatorConfigArgs {
-    /// Whether `watch` may start a coordinator by itself for events (yes or no).
-    #[arg(long, value_parser = clap::builder::BoolishValueParser::new())]
+    /// Whether `watch` may start a coordinator by itself for events: yes or no (also y/n, true/false, t/f, on/off, 1/0).
+    #[arg(
+        long,
+        value_name = "yes|no",
+        hide_possible_values = true,
+        value_parser = clap::builder::BoolishValueParser::new()
+    )]
     wake: Option<bool>,
     /// The model of the runs `watch` starts.
     #[arg(long)]

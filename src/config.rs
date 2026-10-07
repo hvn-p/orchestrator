@@ -122,11 +122,20 @@ pub fn load(path: &Path) -> Result<Option<Config>> {
 }
 
 /// The coordinator section if `watch` may wake coordinators, None when the
-/// file or the section is missing, `wake` is off or the file cannot be read:
-/// without a readable consent, nothing spends tokens.
+/// file or the section is missing, `wake` is off, or the file cannot be read
+/// or holds a section that makes no sense, which only a hand-written file
+/// can: without a readable consent, nothing spends tokens, and a run that
+/// could only fail does not start.
 pub fn waking(path: &Path) -> Option<Coordinator> {
-    match load(path) {
-        Ok(config) => config.and_then(|c| c.coordinator).filter(|c| c.wake),
+    let section = load(path).and_then(|config| {
+        let section = config.and_then(|c| c.coordinator).filter(|c| c.wake);
+        if let Some(c) = &section {
+            check_coordinator(c, None)?;
+        }
+        Ok(section)
+    });
+    match section {
+        Ok(section) => section,
         Err(e) => {
             eprintln!("orchestrator: {e:#}; no coordinator starts");
             None
@@ -189,6 +198,13 @@ pub fn check_coordinator(c: &Coordinator, admission: Option<&Admission>) -> Resu
     );
     if let Some(tag) = &c.language {
         crate::language::check(tag)?;
+    }
+    if let Some(usd) = c.max_budget_usd {
+        // Claude Code refuses anything else, and the run with it.
+        ensure!(
+            usd.is_finite() && usd > 0.0,
+            "max_budget_usd ({usd}) must be above 0"
+        );
     }
     ensure!(
         (1..=MAX_MINUTES).contains(&c.max_minutes),
@@ -333,6 +349,13 @@ mod tests {
         assert_eq!(waking(&path), None, "configured, not agreed to");
         set_coordinator(&path, |c| c.wake = true).unwrap();
         assert_eq!(waking(&path).map(|c| c.model), Some("haiku".into()));
+        // A hand-written section that would only make runs fail.
+        fs::write(
+            &path,
+            r#"{"coordinator": {"wake": true, "model": "haiku", "max_minutes": 5, "wait_secs": 20, "max_budget_usd": 0}}"#,
+        )
+        .unwrap();
+        assert_eq!(waking(&path), None);
     }
 
     #[test]
@@ -361,6 +384,13 @@ mod tests {
             };
             assert!(check_coordinator(&c, None).is_err(), "{model:?}");
         }
+        let budget = |usd| Coordinator {
+            max_budget_usd: Some(usd),
+            ..ok.clone()
+        };
+        assert!(check_coordinator(&budget(0.5), None).is_ok());
+        assert!(check_coordinator(&budget(0.0), None).is_err());
+        assert!(check_coordinator(&budget(-1.0), None).is_err());
         let speaking = |tag: &str| Coordinator {
             language: Some(tag.into()),
             ..ok.clone()
