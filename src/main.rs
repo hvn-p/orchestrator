@@ -23,7 +23,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Watch memory pressure, session ends and job ends, and append the events that drive scheduling.
+    /// Watch memory pressure, session ends and job ends, append events, and learn the memory peak of each Bash call.
     Watch(WatchArgs),
     /// Print memory per Claude session and the orphaned processes.
     Sessions(Sources),
@@ -42,17 +42,17 @@ struct Launched {
 
 #[derive(Args)]
 struct Sources {
-    /// Where to read processes and meminfo from.
+    /// The proc file system to read: processes and meminfo, and for `watch` also pressure/memory and its own cgroup.
     #[arg(long, default_value = "/proc")]
     proc_root: PathBuf,
-    /// Claude Code's sessions directory [default: ~/.claude/sessions].
+    /// Claude Code's sessions directory [default: `$CLAUDE_CONFIG_DIR/sessions`, else `~/.claude/sessions`].
     #[arg(long)]
     sessions_dir: Option<PathBuf>,
 }
 
 #[derive(Args)]
 struct StateDir {
-    /// Where learned peaks are kept [default: `$XDG_STATE_HOME/orchestrator`].
+    /// Where learned peaks are kept [default: `$XDG_STATE_HOME/orchestrator`, else `~/.local/state/orchestrator`].
     #[arg(long)]
     state_dir: Option<PathBuf>,
 }
@@ -63,7 +63,7 @@ struct WatchArgs {
     sources: Sources,
     #[command(flatten)]
     state: StateDir,
-    /// Where the events file is written [default: `$XDG_RUNTIME_DIR/orchestrator`].
+    /// Where events and measurements are written and job records read [default: `$XDG_RUNTIME_DIR/orchestrator`, else `/run/user/<uid>/orchestrator`].
     #[arg(long)]
     runtime_dir: Option<PathBuf>,
     /// Memory stall, within a 2 s window, that makes a pressure event, in ms.
@@ -72,7 +72,7 @@ struct WatchArgs {
     /// Minimum seconds between two memory events.
     #[arg(long, default_value_t = 60)]
     cooldown_secs: u64,
-    /// Seconds between two orphan scans when no session ends.
+    /// Seconds between two orphan scans when no session ends; 0 counts as 1.
     #[arg(long, default_value_t = 300)]
     orphan_interval_secs: u64,
 }
