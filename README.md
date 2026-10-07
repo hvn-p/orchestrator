@@ -33,14 +33,13 @@ Everything else is design (throttling, the coordinator): see
 
 - Linux with cgroup v2, a systemd user manager that delegates to user scopes,
   a user D-Bus, and `busctl`, which ships with systemd (`launch`). `sessions`
-  and `watch` only read `/proc` and Claude Code's session files
-  (`~/.claude/sessions/`).
+  and `watch` need neither `busctl` nor a scope.
 - A Rust toolchain, Rust 1.88 or later.
 
 ## Build
 
 ```sh
-cargo install --path .
+cargo install --locked --path .
 ```
 
 This installs two binaries side by side: `orchestrator` and
