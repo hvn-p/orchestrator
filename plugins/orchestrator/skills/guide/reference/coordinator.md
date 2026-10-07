@@ -27,9 +27,15 @@ session.
 - Its role, then, for setup, the setup instructions, then the user's
   instructions for coordinators (below), all through its system prompt.
 - None of the user's Claude Code settings, hooks, plugins or CLAUDE.md, no
-  MCP server, no auto memory. Claude Code's project settings in
-  `<state>/coordinator/.claude/`, its working directory, do apply, and so do
-  settings and instructions an organization manages for the account.
+  MCP server, no auto memory.
+- No `CLAUDE.md`, `CLAUDE.local.md`, `.claude/rules/` or `AGENTS.md` from its
+  working directory or any directory above it, the home directory's
+  `.claude/CLAUDE.md` included, which Claude Code would otherwise load as a
+  project's instructions.
+- Claude Code's project settings from its working directory,
+  `<state>/coordinator/.claude/settings.json`, do apply (not
+  `settings.local.json`), and so do the settings and instructions an
+  organization manages for the account.
 - It may read files only in its own directory and the configuration's
   (`<config>`); setup and the interactive coordinator also in the
   directories holding files the instructions import.
@@ -70,13 +76,13 @@ starts no run: events wait in the queue.
 ## The setup conversation
 
 `orchestrator setup` opens it, and so does `orchestrator coordinator` when
-`config.json` does not exist. Claude Code shows its workspace trust dialog
-the first time a coordinator opens in `<state>/coordinator`. A `config.json`
-that cannot be read stops both before anything starts (`Error: reading
-<path>`): fix or remove the file by hand first.
+`config.json` does not exist. The first time a coordinator opens in
+`<state>/coordinator` at the terminal, Claude Code asks whether to trust that
+folder; its preselected answer, `No, exit`, ends the coordinator.
 
-- It starts in the system's language (Language, below) and offers to switch
-  in its first message.
+- It writes in the configured `language`. With none set, it starts in the
+  system's language (Language, below) and offers to switch in its first
+  message.
 - It says what orchestrator does and what it will set up, looks at the
   machine from what it was given, then asks one subject at a time, in plain
   words: whether `watch` may wake a coordinator by itself, the model of those
@@ -91,6 +97,14 @@ that cannot be read stops both before anything starts (`Error: reading
   to create `<config>/CLAUDE.md` when it is missing.
 - It notes what it set up in its journal, then says what it wrote and how to
   change it later. It messages no session. `/exit` leaves it.
+
+Setup cannot repair `config.json`; the user fixes it by hand:
+
+- A file that cannot be read stops `setup` and `coordinator` before anything
+  starts, with `Error: reading <path>`.
+- A hand-written mistake in the `coordinator` section, such as a
+  `max_budget_usd` at 0, lets setup start, but every config command it would
+  write through refuses the file until the section is fixed.
 
 ## Event runs
 
@@ -109,6 +123,9 @@ coordinator is running, and again when a run ends with events pending.
 - While `wake` is off, nothing is queued and no `admission_wait` is written;
   events pending from before stay pending. Once `wake` is on again, they go
   with the next queued event.
+- While `config.json` cannot be read, or its `coordinator` section holds a
+  hand-written mistake, the same: no run starts and nothing is queued, and
+  `watch` prints `orchestrator: <why>; no coordinator starts`.
 - A call already waiting when `wake` turns on is reported only once another
   call starts or stops waiting, or `watch` restarts.
 - `watch` remembers which waiting calls it reported only while it runs: a
@@ -116,16 +133,23 @@ coordinator is running, and again when a run ends with events pending.
 
 ### The queue
 
-`<runtime>/coordinator/queue.json` lists the events, each under a key,
-`memory_pressure` or `admission_wait <job>`, with a status:
+`<runtime>/coordinator/queue.json` is a JSON array of the events, oldest
+first, each an object with:
 
-- **pending**: waiting for a coordinator. A new event merges into a pending
-  one of the same key, which keeps its place: `count` says how many merged,
-  `first_at` when the first came, and the content is the latest's. A
-  `memory_pressure` arriving while another is in progress is queued
-  separately.
-- **in progress**: taken by a run or by the interactive coordinator.
-- **done**: handled. An `admission_wait` whose call no longer waits when a
+- `key`: `memory_pressure`, or `admission_wait <job>`;
+- `count`: how many events merged into it;
+- `first_at`: when the first of them came, in seconds since the epoch;
+- `event`: the latest of them, as `events.jsonl` holds it;
+- `status`: `pending`, `in_progress` or `done`;
+- `failures`: how many failed runs took it.
+
+The statuses:
+
+- `pending`: waiting for a coordinator. A new event merges into a pending
+  one of the same key, which keeps its place. A `memory_pressure` arriving
+  while another is in progress is queued separately.
+- `in_progress`: taken by a run or by the interactive coordinator.
+- `done`: handled. An `admission_wait` whose call no longer waits when a
   coordinator would take it is done without being handled.
 
 What changes a status:
@@ -171,22 +195,30 @@ Delivery is Claude Code's:
   interactive session shows a dialog, which drops the message when left
   unanswered past `dialogExpiry`, 5 minutes by default; a `-p` session drops
   it after the same delay.
-- A session whose `crossSessionInbound` setting is `hold` keeps it
-  undelivered, and `refuse` drops it. A `--bare` session has no inbox at all.
+- A session's `crossSessionInbound` setting overrides both: `accept`
+  delivers, whatever its mode; `hold` keeps the message undelivered; `refuse`
+  drops it. A `--bare` session has no inbox at all.
 
 ### Bounds
 
 - **Time**: past `max_minutes`, `watch` sends the run's process group
   SIGTERM, then SIGKILL 10 s later (`orchestrator: the coordinator ran past
   its time limit; stopping it`). The run counts as failed.
-- **Spending**: no cap, unless the section holds `max_budget_usd`, which
-  Claude Code checks against its own estimate at API list price; a
-  subscription counts tokens against its quota instead.
+- **Spending**: no cap, unless the section holds `max_budget_usd`, written
+  by hand and above 0, which Claude Code checks against its own estimate at
+  API list price; a subscription counts tokens against its quota instead.
+  A run can spend more than the amount before Claude Code stops it. A run
+  stopped there exits with status 1, `is_error` true and no
+  `reply` (`last-run.json` says `Reached maximum budget`): it counts as
+  failed, like any other.
 
 A run runs in its own process group. `watch` stopped with Ctrl-C leaves it
-running with no time limit; the next `watch` waits for it as for any other
-coordinator, then gives back the events it held. Stopping a `watch` started
-as a systemd unit (`systemctl --user stop`) ends the run with it.
+running with no time limit. Its output still goes to `last-run.json` and
+`last-run.err`, but no line goes to `runs.jsonl`, which only the `watch` that
+started a run writes. The next `watch` waits for it as for any other
+coordinator, then gives back the events it held, with no failure counted:
+the next coordinator handles them again. Stopping a `watch` started as a
+systemd unit (`systemctl --user stop`) ends the run with it.
 
 ### When a run cannot start
 
@@ -236,8 +268,9 @@ for the user at the terminal, whether or not `wake` is on.
 - `coordinator next` does not check who holds the coordinator: run by hand,
   it marks every event in progress done and takes the pending ones.
 - While it is open, `watch` starts no run. When it closes, the events it
-  took but did not handle are pending again and `watch` takes over. Claude
-  Code asks to confirm leaving, because a background task runs.
+  took but did not handle are pending again and `watch` takes over. Leaving
+  while `coordinator next` runs, Claude Code shows `Background work is
+  running` and offers `Exit and stop tasks` or `Stay`.
 - It may read the state, note, and message sessions, which may answer it
   while it is open. Told a priority or a lasting instruction, it proposes the
   change and the file of the instructions it belongs in, and writes it once

@@ -81,8 +81,9 @@ outside 1 to 60, `wait_secs` outside 1 to 600, a malformed `language`,
 `max_budget_usd` at 0 or below), which only a hand-written file can hold,
 starts no run: `watch` prints `orchestrator: <why>; no coordinator starts`.
 `config admission` and `config coordinator` check the whole section on each
-write, so they refuse to write until it is fixed. How coordinators work:
-coordinator.md.
+write, so they refuse to write until it is fixed by hand; the setup
+conversation, which writes through them, cannot fix it either. How
+coordinators work: coordinator.md.
 
 ## The coordinators' instructions
 
@@ -208,7 +209,7 @@ anything:
 | `XDG_CONFIG_HOME` | the prefix, `watch`, `config`, `setup`, `coordinator`, `admission` | Where `config.json` and the coordinators' `CLAUDE.md` are (absolute paths only). |
 | `XDG_STATE_HOME` | the prefix, `watch`, `peaks`, `admission`, `setup`, `coordinator`, coordinators | Where learned peaks and the coordinator's journal are (absolute paths only). |
 | `XDG_RUNTIME_DIR` | the prefix, `watch`, `admission`, `setup`, `coordinator`, coordinators | The runtime directory, else `/run/user/<uid>`, the uid read from `/proc/self/status`. |
-| `HOME` | the prefix, `watch`, `sessions`, `peaks`, coordinators | The fallback for `XDG_CONFIG_HOME`, `XDG_STATE_HOME` and `CLAUDE_CONFIG_DIR`; resolves `cd` and `cd ~` when recognising commands, and `~/` in the coordinators' imports. `launch` does not read it. |
+| `HOME` | the prefix, `watch`, `sessions`, `peaks`, `admission`, `config`, `setup`, `coordinator`, coordinators | The fallback for `XDG_CONFIG_HOME`, `XDG_STATE_HOME` and `CLAUDE_CONFIG_DIR`; resolves `cd` and `cd ~` when recognising commands, and `~/` in the coordinators' imports, which `setup`, `coordinator` and `watch` resolve. `launch` does not read it. |
 | `LC_ALL`, `LC_MESSAGES`, `LANG` | `setup`, `coordinator` | The first set gives the language a coordinator starts in when none is configured. |
 | `PATH` | `watch`, `setup`, `coordinator` | Where `claude` is found to start a coordinator. A coordinator's own `orchestrator` commands are those of the binary that started it, put first on its `PATH`. |
 | `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD` | Claude Code | Removed from a coordinator's environment, so Claude Code does not load the coordinators' `CLAUDE.md` itself. |

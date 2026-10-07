@@ -176,7 +176,9 @@ past `max_minutes`, a guard against a stuck run. Without it, nothing spends
 tokens unless you open a coordinator. `language`, a tag such as `fr`, `en` or
 `pt-BR` (two or three lowercase letters, then subtags joined by `-`), is the
 language every coordinator writes in: replies, journal notes and messages to
-sessions; English when unset. What orchestrator itself prints, admission's
+sessions. When it is unset, the runs `watch` starts write in English, and
+setup and the interactive coordinator in the system's language, from the
+locale. What orchestrator itself prints, admission's
 notices included, stays in English. Nothing caps a run's spending unless
 you add `"max_budget_usd"`, above 0, which Claude Code checks against its
 estimate at API list price, not against a subscription's quota.

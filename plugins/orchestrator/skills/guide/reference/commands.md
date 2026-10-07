@@ -146,8 +146,8 @@ something:
 | :- | :- | :- |
 | `--proc-root <dir>` | `/proc` | The proc file system to read: processes, `meminfo`, `pressure/memory`, and `watch`'s own cgroup (`self/cgroup`), which decides whether jobs are collected |
 | `--sessions-dir <dir>` | `$CLAUDE_CONFIG_DIR/sessions`, else `~/.claude/sessions` | Claude Code's sessions directory |
-| `--state-dir <dir>` | `$XDG_STATE_HOME/orchestrator`, else `~/.local/state/orchestrator` | Where learned peaks are kept |
-| `--runtime-dir <dir>` | `$XDG_RUNTIME_DIR/orchestrator`, else `/run/user/<uid>/orchestrator` | Where events and measurements are written and job records read |
+| `--state-dir <dir>` | `$XDG_STATE_HOME/orchestrator`, else `~/.local/state/orchestrator` | Where learned peaks are kept, and the coordinator's working directory and journal for the runs it starts |
+| `--runtime-dir <dir>` | `$XDG_RUNTIME_DIR/orchestrator`, else `/run/user/<uid>/orchestrator` | Where events and measurements are written and job records read, and the coordinator's queue, holder, role and runs |
 | `--stall-ms <ms>` | 200 (1 to 2000) | Memory stall within 2 s that makes a pressure event |
 | `--cooldown-secs <s>` | 60 | Minimum time between two memory pressure events |
 | `--orphan-interval-secs <s>` | 300 (0 counts as 1) | Time between two orphan scans when no session ends |
@@ -182,7 +182,10 @@ Facts that matter when starting it:
   from the session's environment. A `watch` given other `--runtime-dir` or
   `--state-dir` values, or started with another `XDG_RUNTIME_DIR` or
   `XDG_STATE_HOME`, does not find the prefix's job records, or learns peaks
-  admission never reads.
+  admission never reads. `setup`, `coordinator` and `coordinator note`, a
+  run's own notes included, also keep to the default directories: they do
+  not see that `watch`'s queue and holder, and a run's notes go to the
+  default journal, not the one its next runs are briefed with.
 - `CLAUDE_CONFIG_DIR` must be the one the sessions run with, or
   `--sessions-dir` must point at their sessions directory. When that
   directory does not exist yet as `watch` starts, session ends are found only
@@ -397,8 +400,8 @@ orchestrator coordinator note <text>…
   coordinator already running.
 - `next`: what the interactive coordinator runs in the background. It marks
   every event in progress done, which closes the batch it gave last time,
-  waits until events are pending, takes them (in progress), prints them, one
-  JSON object per line under `## Events`, then the state under
+  waits until events are pending, takes them (`in_progress`), prints them,
+  one JSON object per line under `## Events`, then the state under
   `## State now`, and ends. It does not check which coordinator holds: run
   by hand, it closes the events a run is handling and takes events meant for
   the coordinator that holds.

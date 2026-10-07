@@ -188,8 +188,9 @@ the queued events and their status; `runs.jsonl` the runs (coordinator.md).
   prints `orchestrator: <error>; no coordinator starts`.
 - `watch` is not running, or reads another `config.json` (its
   `XDG_CONFIG_HOME` or `HOME` differs from the sessions').
-- A coordinator holds: the setup conversation or an interactive coordinator
-  is open, and events wait for it (`holder.json` names its pid).
+- A coordinator holds, and events wait for it (`holder.json` names its pid):
+  the setup conversation or an interactive coordinator is open, or a run
+  left by a `watch` stopped with Ctrl-C still runs.
 - A run just failed: the next one waits 60 s (`the coordinator run failed`).
 - `claude` is not on `watch`'s `PATH`: `orchestrator: starting the
   coordinator: starting claude: …`. A `watch` started as a service has the
@@ -212,7 +213,8 @@ run printed.
   Claude Code's message, such as `Not logged in · Please run /login`.
 - A model the account cannot use: `model` is checked only for its form.
 - `stopped: true`: it reached `max_minutes` and `watch` stopped it.
-- A `max_budget_usd` reached.
+- A `max_budget_usd` reached: exit 1, `is_error` true, no `reply`, and
+  `last-run.json` says `Reached maximum budget`.
 - After a failure its events are pending again and the next run waits 60 s;
   an event three failed runs took is closed.
 
@@ -225,7 +227,8 @@ Code's (coordinator.md, "Messages to sessions").
   where bypass is available): Claude Code holds the message for its user to
   approve. An interactive session shows a dialog that drops the message when
   left unanswered past `dialogExpiry`, 5 minutes by default; a `-p` session
-  drops it after the same delay.
+  drops it after the same delay. A `crossSessionInbound` set to `accept` in
+  the session's settings delivers it whatever the mode.
 - The session's `crossSessionInbound` setting is `hold`, which keeps the
   message undelivered, or `refuse`, which drops it.
 - The session was started with `--bare`: it has no inbox.
@@ -260,29 +263,41 @@ Code's (coordinator.md, "Messages to sessions").
   from the real file of a symlink.
 - Any word starting with `@` in prose is read as an import, and shows as a
   missing file.
-  `<runtime>/coordinator/role.md` holds the role and the instructions the
+- `<runtime>/coordinator/role.md` holds the role and the instructions the
   latest coordinator was given.
-- A run cannot do what its tools do not allow (coordinator.md, "What a run
-  may do, and not"), whatever the instructions say.
+- A run cannot do what its tools do not allow (coordinator.md, "What each
+  kind may do"), whatever the instructions say.
 
 ## The interactive coordinator gets no events
 
-- `watch` is not running, or reads another `config.json`: only `watch`
-  queues events.
+- `watch` is not running, or works with other directories (another
+  `config.json`, or another runtime directory through `--runtime-dir` or
+  `XDG_RUNTIME_DIR`): only `watch` queues events, in its runtime directory.
 - `watch` queues events only with `"wake": true`: with it off, nothing
   reaches the interactive coordinator either.
 - It must keep `orchestrator coordinator next` running in the background
   (Claude Code shows a shell still running); ask it to start it again.
 - `setup` and `coordinator` print `orchestrator: a coordinator is running
-  (pid <pid>); waiting for it to end` while another holds: an event run ends
-  within `max_minutes`.
+  (pid <pid>); waiting for it to end` while another holds. An event run ends
+  within `max_minutes` while the `watch` that started it runs; one left by a
+  `watch` stopped with Ctrl-C has no limit; a setup conversation or another
+  interactive coordinator holds until it is closed.
 
-## setup, coordinator or config stops at once
+## setup, coordinator or config stops at once, or refuses every value
 
-`Error: reading <path>`, then `Caused by:` and the reason: `config.json`
-exists but cannot be read (permissions, not a file). `setup`, `coordinator`
-and every `config` command stop there and leave it alone, so the setup
-conversation cannot repair it: fix or remove it by hand.
+The setup conversation cannot repair `config.json` in either case: fix or
+remove it by hand (configuration.md).
+
+- `Error: reading <path>`, then `Caused by:` and the reason: `config.json`
+  exists but cannot be read whole, whether the file itself (permissions, a
+  directory) or its content (invalid JSON, a missing or unknown field, a
+  misspelt section; the cause names it, as in missing field `model`).
+  `setup`, `coordinator` and every `config` command stop there and leave it
+  alone.
+- Every `config` command, and so setup, refuses with the same `Error: <why>`
+  whatever value it is given: a hand-written value in the `coordinator`
+  section makes no sense, such as `max_budget_usd (0) must be above 0`.
+  `max_budget_usd` has no option; only an edit by hand fixes it.
 
 ## Hooks fail through the prefix
 

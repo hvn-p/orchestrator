@@ -22,7 +22,7 @@ writes nothing into a repository it works in.
 | `<runtime>/reservations/<job>.json` | the prefix | the prefix | A running heavy call's job group and expected peak. Removed by the next admission check once the group is empty or gone. |
 | `<runtime>/admission.lock` | the prefix | the prefix | The lock counting and reserving happen under. |
 | `<runtime>/waiting/<job>.json` | the prefix | `watch`, `admission`, coordinators | A heavy call waiting for memory: its job group, label, expected peak, the memory it needs, and since when. Removed when it runs. One left by a killed prefix is skipped by readers, and removed by `watch` while the coordinator wakes. |
-| `<state>/coordinator/` | orchestrator | coordinators | The coordinators' working directory. Claude Code's project settings in its `.claude/` apply to every coordinator. |
+| `<state>/coordinator/` | orchestrator | coordinators | The coordinators' working directory. Claude Code's project settings in its `.claude/settings.json` apply to every coordinator; `.claude/settings.local.json` does not. |
 | `<state>/coordinator/journal.md` | `orchestrator coordinator note` | every coordinator | The coordinators' journal, one dated line per line of a note's text, the latest 200 kept. Kept across reboots. |
 | `<runtime>/coordinator/holder.json` | `watch`, `setup`, `coordinator` | the same | The process running a coordinator, pid and start time. Stale once that process has ended. |
 | `<runtime>/coordinator/queue.json` | `watch`, `setup`, `coordinator`, `coordinator next` | the same | The queued events and their status; the 20 latest done kept. See coordinator.md. |
@@ -31,6 +31,11 @@ writes nothing into a repository it works in.
 | `<runtime>/coordinator/runs.jsonl` | `watch` | a human | One line per coordinator run. See coordinator.md. Grows until `<runtime>` is removed. |
 | `<runtime>/coordinator/last-run.json`, `last-run.err` | `watch` | a human | What the latest run printed on its standard output and error. |
 | `<runtime>/prefix.log` | the prefix | a human | One line per failure the prefix let pass, once the runtime directory exists (`watch` creates it, as does an orchestrated Bash call writing its job record). See events.md. Grows until `<runtime>` is removed. |
+
+`watch --runtime-dir` and `--state-dir` move the `<runtime>/coordinator/`
+and `<state>/coordinator/` files of the runs it starts, the journal its runs
+are briefed with included. `setup`, `coordinator` and `coordinator note`, a
+run's own notes included, always use the default directories.
 
 Forgetting learned peaks: remove `<state>/peaks/` or one repository's
 directory under it. Admission then knows nothing of those commands, and
