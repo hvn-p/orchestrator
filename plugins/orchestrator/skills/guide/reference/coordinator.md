@@ -270,7 +270,9 @@ for the user at the terminal, whether or not `wake` is on.
 - While it is open, `watch` starts no run. When it closes, the events it
   took but did not handle are pending again and `watch` takes over. Leaving
   while `coordinator next` runs, Claude Code shows `Background work is
-  running` and offers `Exit and stop tasks` or `Stay`.
+  running` and offers `Exit and stop tasks` or `Stay`. Leaving stops the
+  coordinator, `coordinator next` included: Claude Code's agent view is
+  turned off in every coordinator, so none can be moved to the background.
 - It may read the state, note, and message sessions, which may answer it
   while it is open. Told a priority or a lasting instruction, it proposes the
   change and the file of the instructions it belongs in, and writes it once

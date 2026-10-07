@@ -233,7 +233,11 @@ instructions; `--settings` takes inline JSON (`autoMemoryEnabled`,
 whose `/**` leaves out every `CLAUDE.md`, `.claude/rules/` file and
 `AGENTS.md` that Claude Code would load from the working directory and the
 directories above it, the home directory's `.claude/CLAUDE.md` included,
-but not an organization's managed CLAUDE.md);
+but not an organization's managed CLAUDE.md, and `disableAgentView`, which
+turns off `/background`, `--bg` and moving the session to the background on
+leaving for that session only, without stopping a running supervisor or
+its background sessions, and leaves background Bash commands and messages
+working);
 `--strict-mcp-config` without `--mcp-config` starts no MCP server; the
 CLAUDE.md of a directory given with `--add-dir` is not loaded unless
 `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD` is set, which orchestrator
@@ -260,8 +264,15 @@ left open is waited for.
   with its working directory under the home directory, `~/.claude/CLAUDE.md`
   as a project file; with it, none of them. The integration test's marker
   check fails without it and passes with it. `CLAUDE.local.md` and
-  `.claude/settings.local.json` were not loaded either way.
-  Documentation: cli-reference, memory.
+  `.claude/settings.local.json` were not loaded either way. Measured on
+  2.1.292 with `disableAgentView`, in a scratch interactive coordinator: its
+  background `coordinator next` ran, and its end on a queued event woke the
+  session; `SendMessage` reached a scratch `-p` peer; `/exit` offered only
+  `Exit and stop tasks` and `Stay`; a supervisor started beforehand kept its
+  pid and its background session throughout. `Move to background and exit`
+  never showed on this machine, with or without the setting, so its removal
+  rests on the documentation. Documentation: cli-reference, memory,
+  agent-view ("Turn off agent view"), settings-reference.
 
 ### coordinator-permissions
 
@@ -280,7 +291,8 @@ denied outside the working directories.
 - If it changes: a coordinator cannot read the state or note in its
   journal, or, worse, may run what it was not given.
 - Verified: integration test (`orchestrator machine` and the journal note
-  run; a `touch` and a `cat` outside are denied). Measured on 2.1.291: in
+  run; a `touch` and a read outside, by `cat` or by Read, are denied).
+  Measured on 2.1.291: in
   the setup conversation, the `Edit(//<path>)` rule on a file let the Write
   tool create it without asking; in `default` mode, an edit in an
   `--add-dir` directory asked first. Documentation: permissions,
@@ -334,5 +346,7 @@ output.
 - If it changes: an interactive coordinator no longer wakes for events; they
   wait in the queue until it closes and `watch` takes them.
 - Verified: measured on 2.1.291 with a background session (claude --bg),
-  woken 3.5 to 6 s after its command ended. Documentation: tools-reference,
-  "Time limit for background commands". The integration test cannot see it.
+  woken 3.5 to 6 s after its command ended; on 2.1.292 in a scratch
+  interactive coordinator with `disableAgentView`. Documentation:
+  tools-reference, "Time limit for background commands". The integration
+  test cannot see it.

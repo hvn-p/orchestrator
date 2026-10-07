@@ -222,9 +222,9 @@ One binary, `orchestrator`, with subcommands.
     sessions. It loads none of the user's settings, hooks, plugins, MCP
     servers or CLAUDE.md, nor a CLAUDE.md, rules or AGENTS.md from its
     directory or those above it, only the project settings of its own
-    directory. A
-    run started by `watch` is denied anything else without asking
-    (`dontAsk`). The setup conversation writes the configuration and the
+    directory, and its agent view is off, so it cannot be moved to the
+    background. A run started by `watch` is denied anything else without
+    asking (`dontAsk`). The setup conversation writes the configuration and the
     instructions file without a permission prompt, the user having agreed
     in the conversation; an interactive coordinator asks its user for them. Both
     prompt for anything else, like the sessions they message. A run for
@@ -579,6 +579,13 @@ October 2026, with scratch directories and sessions:
   working directory, `~/.claude/CLAUDE.md` included when the working
   directory is under the home directory, as the default state directory is.
   `claudeMdExcludes: ["/**"]` in `--settings` leaves them all out.
+- `disableAgentView` in a coordinator's `--settings` keeps it from being
+  moved to the background, where it would outlive the process holding the
+  coordinator. In a scratch interactive coordinator with it, the background
+  `coordinator next` still woke the session, `SendMessage` still reached a
+  peer, and a running supervisor kept its pid and its background session.
+  `Move to background and exit` never showed on this machine, with or
+  without it.
 - `--tools` takes `SendMessage` and `ListAgents`. In `dontAsk` mode, a
   `Bash(<command>)` rule ran exactly that command and nothing else; an
   `Edit(//<path>)` rule allowed writing that file only, while a
