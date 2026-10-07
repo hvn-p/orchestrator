@@ -1,0 +1,12 @@
+{
+  "name": "orchestrator",
+  "description": "A guide to orchestrator for Claude Code: installing it, launching sessions through it, configuration, events, learned peaks, admission and troubleshooting",
+  "author": {
+    "name": "hvn-p",
+    "url": "https://github.com/hvn-p"
+  },
+  "homepage": "https://github.com/hvn-p/orchestrator",
+  "repository": "https://github.com/hvn-p/orchestrator",
+  "license": "GPL-3.0-or-later",
+  "keywords": ["orchestrator", "memory", "cgroups", "linux", "parallel sessions"]
+}

@@ -1,0 +1,14 @@
+{
+  "name": "orchestrator",
+  "description": "Claude Code plugins for orchestrator, which keeps parallel Claude Code sessions within the memory of one Linux machine",
+  "owner": {
+    "name": "hvn-p",
+    "url": "https://github.com/hvn-p"
+  },
+  "plugins": [
+    {
+      "name": "orchestrator",
+      "source": "./plugins/orchestrator"
+    }
+  ]
+}

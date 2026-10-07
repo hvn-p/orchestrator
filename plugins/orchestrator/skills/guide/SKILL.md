@@ -1,0 +1,102 @@
+---
+name: guide
+description: >-
+  Use when the user asks about orchestrator, the tool that keeps the Claude
+  Code sessions running in parallel on one Linux machine within its memory:
+  installing it; starting a session through `orchestrator launch`; running
+  `orchestrator watch`; writing its `config.json`; what a line of
+  `events.jsonl` or `measurements.jsonl`, or an admission notice
+  ("orchestrator: waiting for memory before running …"), means; what
+  `orchestrator peaks` or `orchestrator sessions` shows; why a session or a
+  command is not orchestrated, nothing waits or nothing is learned; whether
+  orchestrator works with the installed Claude Code. Also on "how do I set up
+  orchestrator", "why is this Bash call waiting for memory", "orchestrator
+  learns no peak", "what does this memory_pressure event mean", "comment
+  installer orchestrator", "pourquoi cette commande attend de la mémoire", "ma
+  session n'est pas orchestrée", "que veut dire cet événement". Answers from
+  orchestrator's reference, checked against the machine.
+---
+
+# orchestrator guide
+
+orchestrator keeps the Claude Code sessions running in parallel on one Linux
+machine within its memory. It never refuses work: it delays it. This guide
+describes the `main` branch of <https://github.com/hvn-p/orchestrator>.
+
+## What exists, what does not
+
+- **Exists**: `orchestrator launch`, the shell prefix `orchestrator-prefix`,
+  `orchestrator watch` (memory pressure and orphan events, the memory peak of
+  every Bash call, learned per repository and command), admission (a Bash
+  call learned as memory-hungry waits for memory before it runs),
+  `orchestrator sessions` and `orchestrator peaks`.
+- **Planned, design only**: throttling (CPU or memory limits), pausing,
+  reordering, the coordinator (a Claude Code session that reads the events
+  and writes the configuration), a one-step installation with a systemd
+  service, a short launch command. Never present these as available.
+
+## How it works
+
+1. `orchestrator launch -- claude …` puts the session in a cgroup of its own
+   (a delegated systemd user scope in `orchestrator.slice`), claude in its
+   `main/` leaf, and sets `CLAUDE_CODE_SHELL_PREFIX` to `orchestrator-prefix`.
+   A session started with `claude` alone is not orchestrated.
+2. Claude Code runs every Bash call, `!` command, shell-form hook, status line
+   refresh and stdio MCP server start through the prefix. The prefix moves the
+   command into a job group of its own (`job-bash-*` for Bash calls and `!`
+   commands, `job-other-*` for the rest), then runs it with `bash -c`. Output,
+   exit code and signals stay the command's.
+3. `orchestrator watch` measures the memory peak of each finished Bash call,
+   learns it per repository and command, and appends events for memory
+   pressure and orphaned processes.
+4. With a configuration, a Bash call whose commands were learned as heavy
+   waits until free memory covers its expected peak plus a margin, for a
+   bounded time, and says so in its output. Hooks, the status line and MCP
+   servers never wait.
+5. Any failure (no scope, no configuration, a cgroup error, an unparsable
+   command) leaves the command running at once, unorchestrated. orchestrator
+   costs orchestration, never the command.
+
+## How to answer
+
+- Answer from the references below and from the machine, not from memory.
+  Observe before diagnosing: the cgroup of a Bash call
+  (`cat /proc/self/cgroup` run as a Bash call), the files, `--help`.
+- When `orchestrator --help` lists a subcommand this guide does not know, or
+  lacks one it describes, the installed build differs from this guide: trust
+  the binary's `--help` and say so.
+- Command lines can hold credentials. Events and `peaks` show only command
+  heads or text Claude wrote; `orchestrator sessions` shows the start of real
+  command lines, and `/proc/<pid>/cmdline` or `environ` all of them. Quote
+  those only as far as the question needs.
+- `config.json` changes what every orchestrated session's next Bash call does:
+  show the values and ask before writing it. Same for Claude Code settings.
+
+## References
+
+Read the one the question needs:
+
+- [reference/commands.md](reference/commands.md): installing, then each
+  command (`launch`, the prefix, `watch`, `sessions`, `peaks`): options,
+  behaviour, output.
+- [reference/configuration.md](reference/configuration.md): `config.json` and
+  its fields, choosing values, the environment variables that matter.
+- [reference/events.md](reference/events.md): `events.jsonl`,
+  `measurements.jsonl`, admission notices, and the messages `launch` and
+  `watch` print.
+- [reference/files.md](reference/files.md): every file and directory
+  orchestrator reads or writes, who writes it, how long it lives.
+- [reference/troubleshooting.md](reference/troubleshooting.md): from a symptom
+  to its checks and causes.
+
+Beyond these:
+
+- Claude Code compatibility: orchestrator relies on Claude Code only through
+  the contracts listed in
+  [docs/claude-code-dependency.md](https://github.com/hvn-p/orchestrator/blob/main/docs/claude-code-dependency.md),
+  with the Claude Code version they were last verified on. Read the version
+  there, never from memory.
+- Design, measurements, known gaps and open questions:
+  [docs/design.md](https://github.com/hvn-p/orchestrator/blob/main/docs/design.md).
+
+In a clone of the repository, both files are under `docs/`.
