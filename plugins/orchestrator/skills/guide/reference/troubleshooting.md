@@ -174,6 +174,92 @@ working bash binary (commands.md, "orchestrator-prefix").
   process exits and others of the group live on, they are reported again,
   under their new topmost process.
 
+## No coordinator run starts
+
+`orchestrator config` shows the section; `<runtime>/coordinator/queue.json`
+the queued events and their status; `runs.jsonl` the runs (coordinator.md).
+
+- No `coordinator` section, or `"wake": false`: `watch` starts no run and
+  queues nothing, by design.
+- `config.json` cannot be read: `watch` prints `orchestrator: <error>; no
+  coordinator starts`.
+- `watch` is not running, or reads another `config.json` (its
+  `XDG_CONFIG_HOME` or `HOME` differs from the sessions').
+- A coordinator holds: the setup conversation or an interactive coordinator
+  is open, and events wait for it (`holder.json` names its pid).
+- A run just failed: the next one waits 60 s (`the coordinator run failed`).
+- `claude` is not on `watch`'s `PATH`: `orchestrator: starting the
+  coordinator: starting claude: …`. A `watch` started as a service has the
+  user manager's `PATH` (commands.md, "Starting watch").
+- No event needed one: `orphans` events never start a run. An
+  `admission_wait` is written only for a call held back `wait_secs`; a call
+  that started earlier, or a `wait_secs` at or above `max_wait_secs`, makes
+  none. An `admission_wait` whose call already ran when a coordinator would
+  take it is closed without a run.
+
+## A coordinator run fails
+
+`runs.jsonl` gives `exit`, `stopped`, `is_error` and `reply`;
+`<runtime>/coordinator/last-run.err` and `last-run.json` hold what the latest
+run printed.
+
+- Not signed in: Claude Code prints the failure as the run's result, in
+  `reply`.
+- A model the account cannot use: `model` is checked only for its form.
+- `stopped: true`: it reached `max_minutes` and `watch` stopped it.
+- A `max_budget_usd` reached.
+- After a failure its events are pending again and the next run waits 60 s;
+  an event three failed runs took is closed.
+
+## A session did not get the coordinator's message
+
+The run's `reply` and the journal say whom it messaged.
+
+- The session runs in `bypassPermissions` mode: Claude Code holds the
+  message for its user to approve, and a `-p` session drops it unanswered
+  after five minutes by default.
+- The session refuses messages from other sessions (Claude Code's
+  `crossSessionInbound` setting at `refuse`).
+- The session ended, or several live sessions share its name.
+- A session reads a message between two tool calls: a long Bash call delays
+  it.
+- The journal shows the same request less than 15 minutes earlier: the role
+  tells the coordinator not to ask again.
+
+## The coordinator writes in another language
+
+- `language` in the `coordinator` section decides. Unset, event runs write
+  in English, setup and the interactive coordinator in the language of
+  `LC_ALL`, `LC_MESSAGES` or `LANG`, the first set.
+- `orchestrator config coordinator --language <tag>` changes it, as does
+  telling setup or the interactive coordinator.
+- orchestrator's own output, admission notices included, is always in
+  English.
+
+## The coordinator ignores an instruction
+
+- The file must be `<config>/CLAUDE.md`: `orchestrator config` names it when
+  it exists.
+- It is read when a coordinator starts: an open interactive coordinator keeps
+  the version it started with.
+- An import missing, too large, written inside backticks or a fenced block,
+  or with an unescaped space, is not included; the first two leave a line
+  saying so. A relative import resolves from the real file of a symlink.
+  `<runtime>/coordinator/role.md` holds the role and the instructions the
+  latest coordinator was given.
+- A run cannot do what its tools do not allow (coordinator.md, "What a run
+  may do, and not"), whatever the instructions say.
+
+## The interactive coordinator gets no events
+
+- `watch` queues events only with `"wake": true`: with it off, nothing
+  reaches the interactive coordinator either.
+- It must keep `orchestrator coordinator next` running in the background
+  (Claude Code shows a shell still running); ask it to start it again.
+- `setup` and `coordinator` print `orchestrator: a coordinator is running
+  (pid <pid>); waiting for it to end` while another holds: an event run ends
+  within `max_minutes`.
+
 ## Hooks fail through the prefix
 
 Claude Code runs a hook as `/bin/sh -c '<prefix path> <quoted command>'`,
@@ -196,11 +282,15 @@ cargo test --test claude_code -- --ignored --nocapture
 
 starts a real headless session of the installed Claude Code through the
 clone's own build of `orchestrator launch`, not an installed `orchestrator`,
-and reports each contract as `ok` or `BROKEN`. It needs a signed-in `claude`
-and a systemd user manager with cgroup v2, and spends about a cent of tokens.
+then a coordinator as `watch` would, and reports each contract as `ok` or
+`BROKEN`. It needs a signed-in `claude` and a systemd user manager with
+cgroup v2, and spends some tens of thousands of tokens, most read from the
+prompt cache.
 
 ## Turning orchestrator off
 
 - For one session: start it with `claude` alone.
 - Admission only: remove `config.json` or its `admission` section.
-- Learning and events: stop `watch`.
+- Coordinator runs: `orchestrator config coordinator --wake no`, or remove
+  the `coordinator` section.
+- Learning, events and coordinator runs: stop `watch`.

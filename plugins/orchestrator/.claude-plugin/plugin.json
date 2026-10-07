@@ -1,6 +1,6 @@
 {
   "name": "orchestrator",
-  "description": "A guide to orchestrator for Claude Code: installing it, launching sessions through it, configuration, events, learned peaks, admission and troubleshooting",
+  "description": "A guide to orchestrator for Claude Code: installing it, launching sessions through it, configuration, events, learned peaks, admission, the coordinator and troubleshooting",
   "author": {
     "name": "hvn-p",
     "url": "https://github.com/hvn-p"

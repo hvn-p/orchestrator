@@ -8,9 +8,10 @@ up.
 
 `$XDG_RUNTIME_DIR/orchestrator/events.jsonl` (or `watch --runtime-dir`), one
 JSON object per line, appended by `watch`. The file is opened per event, so a
-reader may truncate it between two. Nothing in orchestrator reads it or acts
-on an event: events are for a human, or a tool of the user's own that reads
-the file.
+reader may truncate it between two. Nothing in orchestrator reads the file.
+With `"wake": true` in the configuration, `watch` also queues each
+`memory_pressure` and `admission_wait` event for a coordinator run
+(coordinator.md); otherwise events only report.
 
 A process is never named by its full command line, which can hold
 credentials: an event gives its pid, its `comm` (the kernel's name for the
@@ -40,7 +41,8 @@ Written when some task stalled on memory for at least `--stall-ms` within a
 | `largest.process_pid`, `process_rss_mb`, `process_comm`, `process_command` | Its largest process: pid, resident memory, `comm`, command head. |
 | `next` | Up to two next sessions by memory: `session`, `rss_mb`. |
 
-It reports; it acts on nothing.
+With `wake` on, it is queued for a coordinator run; a pending one merges
+with it. Otherwise it only reports.
 
 ### orphans
 
@@ -68,6 +70,27 @@ process detached with `nohup` or `setsid` from a session that has since run
 `/clear` or been resumed keeps the old id: it is reported as an orphan though
 its session lives. So are the processes of every live session when `watch`
 reads a wrong or missing sessions directory.
+
+### admission_wait
+
+```json
+{"at":1791356890,"kind":"admission_wait","session":"api refactor","session_id":"6f1c2d9e-3b4a-4c5d-8e7f-0a1b2c3d4e5f","job":"job-bash-41390-1791356880123","command":"pnpm typecheck","waited_secs":20,"peak_mb":2210,"need_mb":4258,"free_mb":3100}
+```
+
+Written by `watch`, only with `"wake": true`, once per Bash call that
+admission has held back `coordinator.wait_secs`, and queued for a coordinator
+run.
+
+| Field | Meaning |
+| :- | :- |
+| `session`, `session_id` | The waiting call's session, from the session file of its scope's claude process; `null` when there is none. |
+| `job` | The call's job group. |
+| `command` | The call's label, as its admission notice names it. |
+| `waited_secs` | How long it had waited. |
+| `peak_mb`, `need_mb` | Its expected peak, and the free memory it waits for (peak plus margin). |
+| `free_mb` | The memory free for admission when the event was written. |
+
+The label is text Claude wrote, not a command line read from a process.
 
 ## measurements.jsonl
 
@@ -178,6 +201,20 @@ exit status 127.
   `sessions` prints it too.
 - `orchestrator: learning a peak: <error>`, `orchestrator: waiting: <error>`,
   `orchestrator: <error>`: an error `watch` outlives; it keeps running.
+- With the coordinator waking (coordinator.md):
+  - `orchestrator: <error>; no coordinator starts`: `config.json` cannot be
+    read; no event is queued and no run starts until it can.
+  - `orchestrator: starting the coordinator: <error>`, with `starting claude`
+    when `claude` is not on `watch`'s `PATH`: no run started; the events stay
+    pending for the next try.
+  - `orchestrator: the coordinator ran past its time limit; stopping it`.
+  - `orchestrator: the coordinator ended on signal <n>`.
+  - `orchestrator: the coordinator run failed (see <file>); the next one waits 60 s`:
+    its events are pending again. `<file>` is `last-run.err`.
+  - `orchestrator: <event key> failed 3 coordinator runs; closed`.
+  - `orchestrator: queueing an event for the coordinator: <error>`, and
+    `orchestrator: not watching <runtime>/waiting: <error>`, which means no
+    `admission_wait` event.
 
 `watch` stops at start, printing `Error: …` (with its cause under
 `Caused by:` when there is one) and exiting with status 1, when its runtime
@@ -185,6 +222,25 @@ directory cannot be created, `<proc root>/meminfo` cannot be read or holds no
 `MemAvailable` line (`no MemAvailable line in …`), or a default directory
 cannot be resolved (`neither CLAUDE_CONFIG_DIR nor HOME is set`,
 `neither XDG_STATE_HOME nor HOME is set`).
+
+### setup, coordinator and config
+
+- `orchestrator: a coordinator is running (pid <pid>); waiting for it to
+  end`: `setup` or `coordinator` waits for the holder to end.
+- `Error: running claude`, then the cause: `claude` could not be started.
+- `config admission` and `config coordinator` print `Error: <why>` and exit
+  with status 1 when a value makes no sense, leaving the file as it was:
+  - `heavy_mb must be above 0: every call would wait`;
+  - `heavy_mb (<n> MB) exceeds the machine's memory (<total> MB): no call would ever wait`;
+  - `margin_mb (<n> MB) leaves nothing of the machine's memory (<total> MB)`;
+  - `max_wait_secs (<n>) exceeds the longest a Bash call can last, 600 s`;
+  - `model "<name>" is not a model name or alias, such as claude-sonnet-5-5, sonnet or haiku`;
+  - `max_minutes (<n>) must be between 1 and 60`;
+  - `wait_secs (<n>) must be between 1 and 600`;
+  - `wait_secs (<n>) must be under admission's max_wait_secs (<m>): a call waits no longer, so it would never wake the coordinator`;
+  - `language "<tag>" is not a language tag such as fr, en or pt-BR`;
+  - `reading <path>: …`: the file exists but cannot be read; it is left
+    alone.
 
 ### sessions and peaks, on their standard error
 

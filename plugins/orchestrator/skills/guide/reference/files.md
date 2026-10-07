@@ -13,18 +13,31 @@ writes nothing into a repository it works in.
 
 | Path | Written by | Read by | Holds, and how long |
 | :- | :- | :- | :- |
-| `<config>/config.json` | a human | the prefix, at each Bash call | The admission thresholds. See configuration.md. |
+| `<config>/config.json` | `orchestrator config admission` and `config coordinator` (which the setup conversation uses), or a human | the prefix at each Bash call, `watch` at each event, coordinators | The admission thresholds and the coordinator section. See configuration.md. |
+| `<config>/CLAUDE.md` | a human, or a coordinator the user asked | every coordinator, as it starts | The coordinators' instructions, with the files it imports. See coordinator.md. |
 | `<state>/peaks/<hash of repository>/<0-f>.jsonl` | `watch` | the prefix, `peaks` | Learned peaks: a first line naming the repository, then one JSON line per command (`id`, `label`, `peak_mb`, `last_seen`, `recent` as `[peak_mb, alone]` pairs, oldest first). Sixteen files per repository, chosen by the command's hash, each keeping its 125 most recently seen commands: up to 2,000 per repository. Replaced whole on each write. Kept until removed. |
 | `<runtime>/events.jsonl` | `watch` | nothing in orchestrator | Events. See events.md. Grows until truncated, or until `<runtime>` is removed. |
 | `<runtime>/measurements.jsonl` | `watch` | nothing | One line per measured Bash call, its full command included. Grows until `<runtime>` is removed. |
 | `<runtime>/jobs/<session scope>/<job>.json` | the prefix | `watch` | A Bash call's invocation and working directory, until `watch` has measured the job. Records of sessions gone are dropped by the next sweep. |
 | `<runtime>/reservations/<job>.json` | the prefix | the prefix | A running heavy call's job group and expected peak. Removed by the next admission check once the group is empty or gone. |
 | `<runtime>/admission.lock` | the prefix | the prefix | The lock counting and reserving happen under. |
+| `<runtime>/waiting/<job>.json` | the prefix | `watch`, `admission`, coordinators | A heavy call waiting for memory: its job group, label, expected peak, the memory it needs, and since when. Removed when it runs. One left by a killed prefix is skipped by readers, and removed by `watch` while the coordinator wakes. |
+| `<state>/coordinator/` | orchestrator | coordinators | The coordinators' working directory. Claude Code's project settings in its `.claude/` apply to every coordinator. |
+| `<state>/coordinator/journal.md` | `orchestrator coordinator note` | every coordinator | The coordinators' journal, one dated line per note, the latest 200 kept. Kept across reboots. |
+| `<runtime>/coordinator/holder.json` | `watch`, `setup`, `coordinator` | the same | The process running a coordinator, pid and start time. Stale once that process has ended. |
+| `<runtime>/coordinator/queue.json` | `watch`, `setup`, `coordinator`, `coordinator next` | the same | The queued events and their status; the 20 latest done kept. See coordinator.md. |
+| `<runtime>/coordinator/lock` | the same | the same | The lock the holder and the queue change under. |
+| `<runtime>/coordinator/role.md` | `watch`, `setup`, `coordinator` | the coordinator starting | Its role, plus the setup instructions for setup, plus the coordinators' instructions with their imports. Rewritten at each start. |
+| `<runtime>/coordinator/runs.jsonl` | `watch` | a human | One line per coordinator run. See coordinator.md. Grows until `<runtime>` is removed. |
+| `<runtime>/coordinator/last-run.json`, `last-run.err` | `watch` | a human | What the latest run printed on its standard output and error. |
 | `<runtime>/prefix.log` | the prefix | a human | One line per failure the prefix let pass, once the runtime directory exists (`watch` creates it, as does an orchestrated Bash call writing its job record). See events.md. Grows until `<runtime>` is removed. |
 
 Forgetting learned peaks: remove `<state>/peaks/` or one repository's
 directory under it. Admission then knows nothing of those commands, and
 `watch` learns them again.
+
+Forgetting what coordinators remember: remove
+`<state>/coordinator/journal.md`.
 
 ## The cgroup tree
 
@@ -46,7 +59,7 @@ scope, with every group in it, when the session ends.
 
 | Path | Read by | Use |
 | :- | :- | :- |
-| `<Claude Code config dir>/sessions/<pid>.json` (`$CLAUDE_CONFIG_DIR`, else `~/.claude`) | `watch`, `sessions` | Which sessions are live, their name, id and claude process. The `.key` files next to them hold credentials and are never opened. |
+| `<Claude Code config dir>/sessions/<pid>.json` (`$CLAUDE_CONFIG_DIR`, else `~/.claude`) | `watch`, `sessions`, `admission` | Which sessions are live, their name, id and claude process. The `.key` files next to them hold credentials and are never opened. |
 | `/proc/<pid>/stat`, `status`, `cmdline`, and the `CLAUDE_CODE_SESSION_ID` of `environ` | `watch`, `sessions` | Attributing processes to sessions and finding orphans. Only command heads reach events. |
 | `/proc/meminfo` | the prefix, `watch`, `sessions` | `MemAvailable`. |
 | `/proc/pressure/memory` | `watch` | The memory pressure trigger. |

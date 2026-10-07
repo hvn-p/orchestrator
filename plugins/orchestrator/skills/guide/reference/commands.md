@@ -17,6 +17,8 @@ Requirements:
   `busctl` nor a scope.
 - A Rust toolchain, Rust 1.88 or later for the dependency versions the
   repository locks.
+- For coordinators: a signed-in `claude` on the `PATH` of what starts them,
+  `watch` for event runs, the shell for `setup` and `coordinator`.
 
 From a clone of <https://github.com/hvn-p/orchestrator>:
 
@@ -133,6 +135,12 @@ something:
   peak with the command to `measurements.jsonl` and learns it. It then removes
   the empty group, whatever the job. A sweep every minute catches what it was
   not told.
+- With `"wake": true` in the configuration's `coordinator` section: a Bash
+  call that admission has held back `wait_secs` makes an `admission_wait`
+  event, and `memory_pressure` and `admission_wait` events are queued for a
+  coordinator run, which `watch` starts as soon as no coordinator is running
+  (coordinator.md). It reads the configuration at each event, so a change
+  needs no restart.
 
 | Option | Default | What it sets |
 | :- | :- | :- |
@@ -164,7 +172,8 @@ events.
   manager's, pass each one, as in `--setenv=CLAUDE_CONFIG_DIR` (a name alone
   takes the shell's value). Otherwise `watch` reads another sessions
   directory, or works in other directories than the prefix, with no
-  message. Its messages go to the user journal (`journalctl --user -u
+  message. Coordinator runs need `claude` on that environment's `PATH`
+  (`--setenv=PATH`). Its messages go to the user journal (`journalctl --user -u
   orchestrator-watch`); `systemctl --user stop orchestrator-watch` stops it.
 
 Facts that matter when starting it:
@@ -189,7 +198,7 @@ Facts that matter when starting it:
 ## orchestrator sessions
 
 ```sh
-orchestrator sessions [--proc-root <dir>] [--sessions-dir <dir>]
+orchestrator sessions [--proc-root <dir>] [--sessions-dir <dir>] [--heads]
 ```
 
 Prints, for a human, the available memory, then each live Claude Code session
@@ -212,7 +221,9 @@ ORPHANS (session gone)
 ```
 
 or `No orphaned process.` The command line shown is the start (70 characters)
-of the process's real command line, which can hold credentials. The session
+of the process's real command line, which can hold credentials. With
+`--heads`, it is the head of the command line instead, as events show it
+(events.md), never its arguments: what coordinators read. The session
 name is the one Claude Code records in its session file. With a wrong or
 missing sessions directory, it shows no session, and the processes of live
 sessions as orphans. It exits with `Error: …` and status 1 when it cannot
@@ -252,3 +263,137 @@ default or read the peaks; see events.md.
 
 How a command is recognised and its expected peak computed: see
 configuration.md, "How admission decides".
+
+## orchestrator admission
+
+```sh
+orchestrator admission
+```
+
+Prints the admission thresholds, the memory free for admission, the Bash
+calls waiting for memory and the heavy calls running with a reservation:
+
+```
+Admission: a call expected to peak at 1024 MB or more waits until free memory covers its peak plus 2048 MB, 60 s at most.
+Available memory: 5200 MB; running heavy calls still hold 1800 MB of it: 3400 MB free for admission.
+
+WAITING FOR MEMORY
+  SESSION                                   WAITED  PEAK MB  NEEDS MB  COMMAND
+  api refactor (6f1c2d9e)                     14 s     2210      4258  pnpm typecheck
+
+RESERVED BY RUNNING HEAVY CALLS
+  SESSION                                  HOLDS MB  PEAK MB  USES MB  COMMAND
+  docs (0a9b8c7d)                              1800     3000     1200  pnpm build
+```
+
+- Without thresholds, the first line reads `Admission: off, no admission
+  section in <path>.`, or gives the reason the file cannot be read.
+- `No call waits for memory.` and `No heavy call runs with a reservation.`
+  replace the empty lists.
+- A session shows by its name and the start of its id, else by its scope.
+  `HOLDS MB` is what the reservation still holds, its expected peak minus
+  `USES MB`, what the job group uses now (`?` without a memory controller).
+- A waiting call is the one the prefix records while it waits. Reading takes
+  no lock: what it shows may be a check behind.
+
+It reads the default runtime directory and configuration, and exits with
+`Error: …` when it cannot read `/proc/meminfo` or resolve them.
+
+## orchestrator machine
+
+```sh
+orchestrator machine
+```
+
+Prints what admission thresholds are chosen from:
+
+```
+Memory: 31264 MB total, 5578 MB available
+Swap: 4095 MB total, 16 MB free
+CPUs: 12
+Memory pressure reports (PSI): available
+Controllers the systemd user manager delegates: cpu memory pids
+orchestrator.slice: present
+```
+
+- `CPUs` counts the CPUs this process may run on.
+- The PSI line reads `missing, so watch reports no memory pressure` without
+  `/proc/pressure/memory`.
+- The controllers line adds `(missing <controllers>: sessions cannot be
+  measured or slowed down by it)` when one of `cpu`, `memory`, `pids` is
+  not delegated, and reads `unknown, this process runs outside it` when the
+  command runs outside the user's systemd manager.
+- `orchestrator.slice: absent, no session launched since boot` until a first
+  `launch`.
+
+## orchestrator config
+
+```sh
+orchestrator config
+orchestrator config admission --heavy-mb <MB> --margin-mb <MB> --max-wait-secs <s>
+orchestrator config coordinator [--wake <yes|no>] [--model <model>] [--max-minutes <n>] [--wait-secs <s>] [--language <tag>]
+```
+
+`orchestrator config` prints the path of `config.json` and its content, or
+`No configuration at <path>.`, then `The coordinators' instructions: <path>`
+when that file exists.
+
+The two subcommands write one section of `config.json` (configuration.md),
+keeping the rest, once the values make sense; otherwise they print
+`Error: <why>`, exit with status 1 and leave the file as it was. They also
+leave alone a file they cannot read. On success they print `Wrote <path>`
+and the whole configuration. The file is replaced at once, so the prefix
+never reads half of it.
+
+`config admission` takes all three options:
+
+- `--heavy-mb`: above 0, at most the machine's total memory.
+- `--margin-mb`: under the machine's total memory.
+- `--max-wait-secs`: at most 600.
+- With the coordinator waking (`"wake": true`), its `wait_secs` must stay
+  under `--max-wait-secs`.
+
+`config coordinator` takes at least one option and starts from these values
+when the section does not exist: `wake` no, `model` `claude-sonnet-5-5`,
+`max_minutes` 5, `wait_secs` 20, no `language`.
+
+- `--wake`: `yes` or `no`, also `true`/`false`, `on`/`off`, `1`/`0`.
+- `--model`: a model name or alias, made of letters, digits, `.`, `-`, `_`,
+  `[` and `]`, at most 100 characters. Whether the account can use it is not
+  checked.
+- `--max-minutes`: 1 to 60.
+- `--wait-secs`: 1 to 600, and under admission's `max_wait_secs` while
+  `wake` is on.
+- `--language`: a tag of two or three lowercase letters, then up to three
+  subtags of 2 to 8 letters or digits joined by `-`: `fr`, `en`, `pt-BR`.
+
+`max_budget_usd` has no option; it is written by hand.
+
+## orchestrator setup
+
+```sh
+orchestrator setup
+```
+
+Opens the setup conversation with a coordinator, at the terminal: it asks
+and writes the configuration through the commands above (coordinator.md).
+Run it again to review the configuration.
+
+## orchestrator coordinator
+
+```sh
+orchestrator coordinator
+orchestrator coordinator next
+orchestrator coordinator note <text>…
+```
+
+- Without a subcommand: the setup conversation when `config.json` does not
+  exist, else the interactive coordinator (coordinator.md). Both wait for a
+  coordinator already running.
+- `next`: what the interactive coordinator runs in the background. It marks
+  the events it gave last time done, waits until events are pending, takes
+  them (in progress), prints them, one JSON object per line under
+  `## Events`, then the state under `## State now`, and ends. Run by hand
+  while an interactive coordinator is open, it takes events meant for it.
+- `note`: adds its arguments, joined by spaces, to the coordinator's journal,
+  one dated line per line of text (coordinator.md).
