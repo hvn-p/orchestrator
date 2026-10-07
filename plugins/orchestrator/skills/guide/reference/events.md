@@ -9,8 +9,7 @@ up.
 `$XDG_RUNTIME_DIR/orchestrator/events.jsonl` (or `watch --runtime-dir`), one
 JSON object per line, appended by `watch`. The file is opened per event, so a
 reader may truncate it between two. Events are inputs for scheduling, never
-orders to stop work. On `main`, nothing reads them yet: the coordinator meant
-to is planned. They are for a human or a tool.
+orders to stop work. They are for a human or a tool that reads the file.
 
 A process is never named by its full command line, which can hold
 credentials: an event gives its pid, its `comm` and the head of its command
@@ -38,8 +37,7 @@ Written when some task stalled on memory for at least `--stall-ms` within a
 | `largest.process_pid`, `process_rss_mb`, `process_comm`, `process_command` | Its largest process: pid, resident memory, `comm`, command head. |
 | `next` | Up to two next sessions by memory: `session`, `rss_mb`. |
 
-It reports; it acts on nothing. Today nothing is throttled or paused when it
-fires.
+It reports; it acts on nothing.
 
 ### orphans
 

@@ -39,11 +39,8 @@ Not orchestrated:
   starts itself: they bypass the prefix and are counted with claude in
   `main/`.
 - Background sessions (`claude --bg`, agent view): Claude Code's background
-  service hosts them in the cgroup of whatever started it. Setting Claude
-  Code's `processWrapper` (user settings) to `orchestrator launch --` gave
-  each one a scope of its own with the prefix in a measurement on Claude Code
-  2.1.291 (`docs/design.md`, "Measured"). This is not one of the contracts of
-  `docs/claude-code-dependency.md`, so nothing checks it on later versions.
+  service hosts them in the cgroup of whatever started it, so they are not
+  orchestrated.
 - What runs outside the session's cgroup even when the session started it:
   Docker containers, units started with `systemd-run --user`, services
   activated over D-Bus.

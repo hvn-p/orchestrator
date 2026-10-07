@@ -23,17 +23,15 @@ orchestrator keeps the Claude Code sessions running in parallel on one Linux
 machine within its memory. It never refuses work: it delays it. This guide
 describes the `main` branch of <https://github.com/hvn-p/orchestrator>.
 
-## What exists, what does not
+## What orchestrator does
 
-- **Exists**: `orchestrator launch`, the shell prefix `orchestrator-prefix`,
+- `orchestrator launch`, the shell prefix `orchestrator-prefix`,
   `orchestrator watch` (memory pressure and orphan events, the memory peak of
   every Bash call, learned per repository and command), admission (a Bash
   call learned as memory-hungry waits for memory before it runs),
   `orchestrator sessions` and `orchestrator peaks`.
-- **Planned, design only**: throttling (CPU or memory limits), pausing,
-  reordering, the coordinator (a Claude Code session that reads the events
-  and writes the configuration), a one-step installation with a systemd
-  service, a short launch command. Never present these as available.
+- Anything this guide does not describe, orchestrator does not do. Say so
+  plainly; never infer a feature from elsewhere.
 
 ## How it works
 
@@ -96,7 +94,4 @@ Beyond these:
   [docs/claude-code-dependency.md](https://github.com/hvn-p/orchestrator/blob/main/docs/claude-code-dependency.md),
   with the Claude Code version they were last verified on. Read the version
   there, never from memory.
-- Design, measurements, known gaps and open questions:
-  [docs/design.md](https://github.com/hvn-p/orchestrator/blob/main/docs/design.md).
-
-In a clone of the repository, both files are under `docs/`.
+In a clone of the repository, that file is under `docs/`.

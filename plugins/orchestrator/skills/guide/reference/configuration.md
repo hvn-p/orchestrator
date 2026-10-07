@@ -6,8 +6,7 @@
 `~/.config/orchestrator/config.json` (a relative `XDG_CONFIG_HOME` is
 ignored). Without it, nothing waits. Only the prefix reads it, at every Bash
 call of an orchestrated session: a change applies from the next Bash call,
-with nothing to restart. It is written by hand today; the coordinator meant
-to write it is planned.
+with nothing to restart. It is written by hand.
 
 The README's example, for a machine with about 30 GB of RAM:
 
@@ -36,7 +35,7 @@ The README's example, for a machine with about 30 GB of RAM:
 
 ## Choosing values
 
-Facts to weigh, from the code and `docs/design.md`:
+Facts to weigh:
 
 - **The wait counts toward the Bash call's timeout**: 2 min by default,
   10 min at most, set by Claude Code's `BASH_DEFAULT_TIMEOUT_MS` and
