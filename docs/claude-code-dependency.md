@@ -226,9 +226,14 @@ run `watch` starts, interactively for the setup conversation and the
 interactive coordinator, and Claude Code honours them: `--name` names the
 session; `--append-system-prompt-file` appends a file to the default system
 prompt, in print mode and interactively; `--setting-sources project` leaves
-out the user's settings, hooks, plugins and CLAUDE.md, though not the
-organization's instructions; `--settings` takes inline JSON
-(`autoMemoryEnabled`, `permissions.blockReadsOutsideWorkingDirectories`);
+out the user's settings, hooks, plugins and CLAUDE.md, and the project's
+`settings.local.json` and `CLAUDE.local.md`, though not the organization's
+instructions; `--settings` takes inline JSON (`autoMemoryEnabled`,
+`permissions.blockReadsOutsideWorkingDirectories`, and `claudeMdExcludes`,
+whose `/**` leaves out every `CLAUDE.md`, `.claude/rules/` file and
+`AGENTS.md` that Claude Code would load from the working directory and the
+directories above it, the home directory's `.claude/CLAUDE.md` included,
+but not an organization's managed CLAUDE.md);
 `--strict-mcp-config` without `--mcp-config` starts no MCP server; the
 CLAUDE.md of a directory given with `--add-dir` is not loaded unless
 `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD` is set, which orchestrator
@@ -245,9 +250,17 @@ left open is waited for.
   settings and hooks, or without its bounds; an unknown option makes every
   run fail at once, which `runs.jsonl` and `last-run.err` show.
 - Verified: integration test (the reply quotes the role's first line and the
-  session's name). Measured on 2.1.291: with `--setting-sources project`, a
-  run's context was 4,000 tokens instead of 12,000 and held none of the
-  user's CLAUDE.md; `--model claude-sonnet-5-5` ran that model.
+  session's name, and not the marker of a CLAUDE.md above the coordinator's
+  directory). Measured on 2.1.291: with `--setting-sources project`, a run's
+  context was 4,000 tokens instead of 12,000 and held none of the user's
+  CLAUDE.md; `--model claude-sonnet-5-5` ran that model. Measured on
+  2.1.292: without `claudeMdExcludes`, a run loaded a `CLAUDE.md` and a
+  `.claude/rules/` file from a parent directory (an `InstructionsLoaded` hook
+  logged them as project files), an `AGENTS.md` from a parent directory, and,
+  with its working directory under the home directory, `~/.claude/CLAUDE.md`
+  as a project file; with it, none of them. The integration test's marker
+  check fails without it and passes with it. `CLAUDE.local.md` and
+  `.claude/settings.local.json` were not loaded either way.
   Documentation: cli-reference, memory.
 
 ### coordinator-permissions

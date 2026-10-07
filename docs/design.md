@@ -220,7 +220,9 @@ One binary, `orchestrator`, with subcommands.
   - **What it may do**: read more of the state, note in its journal and,
     outside setup, message sessions with Claude Code's messages between
     sessions. It loads none of the user's settings, hooks, plugins, MCP
-    servers or CLAUDE.md, only the project settings of its own directory. A
+    servers or CLAUDE.md, nor a CLAUDE.md, rules or AGENTS.md from its
+    directory or those above it, only the project settings of its own
+    directory. A
     run started by `watch` is denied anything else without asking
     (`dontAsk`). The setup conversation writes the configuration and the
     instructions file without a permission prompt, the user having agreed
@@ -572,6 +574,11 @@ October 2026, with scratch directories and sessions:
 - With `--setting-sources project`, a run's context held none of the user's
   CLAUDE.md: about 4,000 tokens instead of 12,000. Hooks in its own
   directory's `.claude/settings.json` still ran.
+- Claude Code 2.1.292: that option still loads, as project instructions, a
+  CLAUDE.md, `.claude/rules/` and AGENTS.md from every directory above the
+  working directory, `~/.claude/CLAUDE.md` included when the working
+  directory is under the home directory, as the default state directory is.
+  `claudeMdExcludes: ["/**"]` in `--settings` leaves them all out.
 - `--tools` takes `SendMessage` and `ListAgents`. In `dontAsk` mode, a
   `Bash(<command>)` rule ran exactly that command and nothing else; an
   `Edit(//<path>)` rule allowed writing that file only, while a

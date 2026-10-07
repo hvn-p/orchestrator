@@ -36,6 +36,9 @@ use std::time::{Duration, Instant};
 const TIMEOUT: Duration = Duration::from_secs(180);
 /// What the probe writes to its standard error, as Claude should read it.
 const STDERR_LINE: &str = "orchestrator-probe-stderr-42";
+/// The marker word of a CLAUDE.md above the coordinator's directory, which
+/// must not reach it.
+const ANCESTOR_MARKER: &str = "ANCESTOR-MARKER-7";
 
 #[test]
 #[ignore = "manual: starts a real Claude Code session; run with --ignored"]
@@ -154,14 +157,20 @@ impl CoordinatorRun {
         run::write_role(&paths, &run::Mode::Batch(&[])).expect("writing the role");
         let outside = base.join("outside.txt");
         fs::write(&outside, "outside").expect("writing a file outside");
+        fs::write(
+            base.join("state/CLAUDE.md"),
+            format!("The marker word is {ANCESTOR_MARKER}.\n"),
+        )
+        .expect("writing a CLAUDE.md above the coordinator's directory");
         let prompt = format!(
             "This is an automated compatibility test of orchestrator, not an event: message no \
              one. Do these steps in order, one tool call each, and go on after a denial. 1) Run \
              `orchestrator machine` with the Bash tool. 2) Run `orchestrator coordinator note \
              checked` with the Bash tool. 3) Run `touch {}` with the Bash tool. 4) Run `cat {}` \
-             with the Bash tool. 5) Call ListAgents once. Then reply with exactly three lines: \
+             with the Bash tool. 5) Call ListAgents once. Then reply with exactly four lines: \
              the first line `orchestrator machine` printed, the first line of the ListAgents \
-             result, and the first line of the role appended to your system prompt.",
+             result, the first line of the role appended to your system prompt, and the \
+             marker word a CLAUDE.md gives you, or NONE.",
             paths.home.join("other.md").display(),
             outside.display(),
         );
@@ -250,9 +259,13 @@ impl CoordinatorRun {
     }
 }
 
-/// Its role reached the system prompt, and it ran under its name.
+/// Its role reached the system prompt, it ran under its name, and no
+/// CLAUDE.md above its directory reached it.
 fn coordinator_session(c: &CoordinatorRun) -> Check {
     let reply = c.reply();
+    if reply.contains(ANCESTOR_MARKER) {
+        return Err("a CLAUDE.md above the coordinator's directory reached it".into());
+    }
     // Its heading or its first line of text: the model reads "first line"
     // either way.
     let first: Vec<&str> = run::ROLE

@@ -208,8 +208,12 @@ pub fn args(
             allowed.push(format!("Bash({NEXT})"));
         }
     }
+    // No CLAUDE.md, rules or AGENTS.md from its directory or those above
+    // it, the home directory's `.claude/CLAUDE.md` among them: the user's
+    // instructions for coordinators come through the role.
     let settings = serde_json::json!({
         "autoMemoryEnabled": false,
+        "claudeMdExcludes": ["/**"],
         "permissions": { "blockReadsOutsideWorkingDirectories": true },
     });
     let mut args: Vec<OsString> = vec![
@@ -521,6 +525,7 @@ mod tests {
             settings["permissions"]["blockReadsOutsideWorkingDirectories"],
             true
         );
+        assert_eq!(settings["claudeMdExcludes"], serde_json::json!(["/**"]));
         assert_eq!(args[args.len() - 2..], ["--", "the prompt"]);
         let capped = Coordinator {
             max_budget_usd: Some(0.5),
