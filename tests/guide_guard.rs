@@ -110,7 +110,10 @@ fn a_statement_with_a_reason_passes() {
     let description = "Refactor.\r\n\r\nGuide: unchanged, nothing a user sees changes.\r\n";
     let (code, out) = repo.guard(description);
     assert_eq!(code, 0, "{out}");
-    assert!(out.contains("nothing a user sees changes."), "{out}");
+    assert_eq!(
+        out,
+        "The guide stays unchanged: nothing a user sees changes.\n"
+    );
 }
 
 #[test]

@@ -32,7 +32,8 @@ fi
 
 statement=$(grep -m1 -E '^[[:space:]]*Guide: unchanged,[[:space:]]*[^[:space:]]' <<<"$body" || true)
 if [[ -n $statement ]]; then
-  echo "The guide stays unchanged: ${statement#*Guide: unchanged,}"
+  reason=${statement#*Guide: unchanged,}
+  echo "The guide stays unchanged: ${reason#"${reason%%[![:space:]]*}"}"
   exit 0
 fi
 
