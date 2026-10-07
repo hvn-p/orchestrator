@@ -180,9 +180,12 @@ working bash binary (commands.md, "orchestrator-prefix").
 the queued events and their status; `runs.jsonl` the runs (coordinator.md).
 
 - No `coordinator` section, or `"wake": false`: `watch` starts no run and
-  queues nothing, by design.
-- `config.json` cannot be read: `watch` prints `orchestrator: <error>; no
-  coordinator starts`.
+  queues nothing, by design. Events that came while `wake` was off are not
+  queued later; a call already waiting when it turns on is reported once
+  another call starts or stops waiting, or `watch` restarts.
+- `config.json` cannot be read, or its `coordinator` section holds a
+  hand-written mistake (a `max_budget_usd` at or below 0, for one): `watch`
+  prints `orchestrator: <error>; no coordinator starts`.
 - `watch` is not running, or reads another `config.json` (its
   `XDG_CONFIG_HOME` or `HOME` differs from the sessions').
 - A coordinator holds: the setup conversation or an interactive coordinator
@@ -190,7 +193,9 @@ the queued events and their status; `runs.jsonl` the runs (coordinator.md).
 - A run just failed: the next one waits 60 s (`the coordinator run failed`).
 - `claude` is not on `watch`'s `PATH`: `orchestrator: starting the
   coordinator: starting claude: …`. A `watch` started as a service has the
-  user manager's `PATH` (commands.md, "Starting watch").
+  user manager's `PATH` (commands.md, "Starting watch"). No retry is timed:
+  the events wait for the next queued event, the end of another coordinator,
+  or a restart of `watch`.
 - No event needed one: `orphans` events never start a run. An
   `admission_wait` is written only for a call held back `wait_secs`; a call
   that started earlier, or a `wait_secs` at or above `max_wait_secs`, makes
@@ -203,8 +208,8 @@ the queued events and their status; `runs.jsonl` the runs (coordinator.md).
 `<runtime>/coordinator/last-run.err` and `last-run.json` hold what the latest
 run printed.
 
-- Not signed in: Claude Code prints the failure as the run's result, in
-  `reply`.
+- Not signed in: the run exits 1 with `is_error` true, and `reply` holds
+  Claude Code's message, such as `Not logged in · Please run /login`.
 - A model the account cannot use: `model` is checked only for its form.
 - `stopped: true`: it reached `max_minutes` and `watch` stopped it.
 - A `max_budget_usd` reached.
@@ -213,13 +218,17 @@ run printed.
 
 ## A session did not get the coordinator's message
 
-The run's `reply` and the journal say whom it messaged.
+The run's `reply` and the journal say whom it messaged. Delivery is Claude
+Code's (coordinator.md, "Messages to sessions").
 
-- The session runs in `bypassPermissions` mode: Claude Code holds the
-  message for its user to approve, and a `-p` session drops it unanswered
-  after five minutes by default.
-- The session refuses messages from other sessions (Claude Code's
-  `crossSessionInbound` setting at `refuse`).
+- The session skips permission prompts (`bypassPermissions`, or plan mode
+  where bypass is available): Claude Code holds the message for its user to
+  approve. An interactive session shows a dialog that drops the message when
+  left unanswered past `dialogExpiry`, 5 minutes by default; a `-p` session
+  drops it after the same delay.
+- The session's `crossSessionInbound` setting is `hold`, which keeps the
+  message undelivered, or `refuse`, which drops it.
+- The session was started with `--bare`: it has no inbox.
 - The session ended, or several live sessions share its name.
 - A session reads a message between two tool calls: a long Bash call delays
   it.
@@ -228,11 +237,13 @@ The run's `reply` and the journal say whom it messaged.
 
 ## The coordinator writes in another language
 
-- `language` in the `coordinator` section decides. Unset, event runs write
-  in English, setup and the interactive coordinator in the language of
-  `LC_ALL`, `LC_MESSAGES` or `LANG`, the first set.
+- `language` in the `coordinator` section decides, over a language asked
+  in the user's `CLAUDE.md`. Unset, event runs write in English, setup and
+  the interactive coordinator in the language of `LC_ALL`, `LC_MESSAGES` or
+  `LANG`, the first set, and in English when that is C or POSIX.
 - `orchestrator config coordinator --language <tag>` changes it, as does
-  telling setup or the interactive coordinator.
+  telling setup or the interactive coordinator. Removing it, to follow the
+  system's language again, takes editing `config.json` by hand.
 - orchestrator's own output, admission notices included, is always in
   English.
 
@@ -242,9 +253,13 @@ The run's `reply` and the journal say whom it messaged.
   it exists.
 - It is read when a coordinator starts: an open interactive coordinator keeps
   the version it started with.
-- An import missing, too large, written inside backticks or a fenced block,
-  or with an unescaped space, is not included; the first two leave a line
-  saying so. A relative import resolves from the real file of a symlink.
+- An import missing, unreadable as text or too large is not included, and
+  leaves a line saying so. One written in a code span or a fenced block, or
+  more than four imports down, is not included either, with no line. An
+  unescaped space ends the path: write it `\ `. A relative import resolves
+  from the real file of a symlink.
+- Any word starting with `@` in prose is read as an import, and shows as a
+  missing file.
   `<runtime>/coordinator/role.md` holds the role and the instructions the
   latest coordinator was given.
 - A run cannot do what its tools do not allow (coordinator.md, "What a run
@@ -252,6 +267,8 @@ The run's `reply` and the journal say whom it messaged.
 
 ## The interactive coordinator gets no events
 
+- `watch` is not running, or reads another `config.json`: only `watch`
+  queues events.
 - `watch` queues events only with `"wake": true`: with it off, nothing
   reaches the interactive coordinator either.
 - It must keep `orchestrator coordinator next` running in the background
@@ -259,6 +276,13 @@ The run's `reply` and the journal say whom it messaged.
 - `setup` and `coordinator` print `orchestrator: a coordinator is running
   (pid <pid>); waiting for it to end` while another holds: an event run ends
   within `max_minutes`.
+
+## setup, coordinator or config stops at once
+
+`Error: reading <path>`, then `Caused by:` and the reason: `config.json`
+exists but cannot be read (permissions, not a file). `setup`, `coordinator`
+and every `config` command stop there and leave it alone, so the setup
+conversation cannot repair it: fix or remove it by hand.
 
 ## Hooks fail through the prefix
 

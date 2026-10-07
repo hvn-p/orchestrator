@@ -340,9 +340,12 @@ when that file exists.
 
 The two subcommands write one section of `config.json` (configuration.md),
 keeping the rest, once the values make sense; otherwise they print
-`Error: <why>`, exit with status 1 and leave the file as it was. They also
-leave alone a file they cannot read. On success they print `Wrote <path>`
-and the whole configuration. The file is replaced at once, so the prefix
+`Error: <why>`, exit with status 1 and leave the file as it was. Both check
+the whole `coordinator` section, hand-written values included, so a mistake
+there makes `config admission` refuse too. A `config.json` that cannot be
+read stops every `config` command with `Error: reading <path>` and its cause,
+leaving the file alone. On success they print `Wrote <path>` and the whole
+configuration. The file is replaced at once, so the prefix
 never reads half of it.
 
 `config admission` takes all three options:
@@ -357,7 +360,8 @@ never reads half of it.
 when the section does not exist: `wake` no, `model` `claude-sonnet-5-5`,
 `max_minutes` 5, `wait_secs` 20, no `language`.
 
-- `--wake`: `yes` or `no`, also `true`/`false`, `on`/`off`, `1`/`0`.
+- `--wake`: `yes` or `no`, also `y`/`n`, `true`/`false`, `t`/`f`,
+  `on`/`off`, `1`/`0`, in any case.
 - `--model`: a model name or alias, made of letters, digits, `.`, `-`, `_`,
   `[` and `]`, at most 100 characters. Whether the account can use it is not
   checked.
@@ -366,8 +370,9 @@ when the section does not exist: `wake` no, `model` `claude-sonnet-5-5`,
   `wake` is on.
 - `--language`: a tag of two or three lowercase letters, then up to three
   subtags of 2 to 8 letters or digits joined by `-`: `fr`, `en`, `pt-BR`.
+  No option removes it once set: that takes editing `config.json` by hand.
 
-`max_budget_usd` has no option; it is written by hand.
+`max_budget_usd` has no option; it is written by hand, above 0.
 
 ## orchestrator setup
 
@@ -391,9 +396,11 @@ orchestrator coordinator note <text>…
   exist, else the interactive coordinator (coordinator.md). Both wait for a
   coordinator already running.
 - `next`: what the interactive coordinator runs in the background. It marks
-  the events it gave last time done, waits until events are pending, takes
-  them (in progress), prints them, one JSON object per line under
-  `## Events`, then the state under `## State now`, and ends. Run by hand
-  while an interactive coordinator is open, it takes events meant for it.
+  every event in progress done, which closes the batch it gave last time,
+  waits until events are pending, takes them (in progress), prints them, one
+  JSON object per line under `## Events`, then the state under
+  `## State now`, and ends. It does not check which coordinator holds: run
+  by hand, it closes the events a run is handling and takes events meant for
+  the coordinator that holds.
 - `note`: adds its arguments, joined by spaces, to the coordinator's journal,
   one dated line per line of text (coordinator.md).

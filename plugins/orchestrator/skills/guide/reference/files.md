@@ -13,7 +13,7 @@ writes nothing into a repository it works in.
 
 | Path | Written by | Read by | Holds, and how long |
 | :- | :- | :- | :- |
-| `<config>/config.json` | `orchestrator config admission` and `config coordinator` (which the setup conversation uses), or a human | the prefix at each Bash call, `watch` at each event, coordinators | The admission thresholds and the coordinator section. See configuration.md. |
+| `<config>/config.json` | `orchestrator config admission` and `config coordinator` (which the setup conversation uses), or a human | the prefix at each Bash call, `watch` at each event, `setup`, `coordinator`, `admission`, `config`, coordinators | The admission thresholds and the coordinator section. See configuration.md. |
 | `<config>/CLAUDE.md` | a human, or a coordinator the user asked | every coordinator, as it starts | The coordinators' instructions, with the files it imports. See coordinator.md. |
 | `<state>/peaks/<hash of repository>/<0-f>.jsonl` | `watch` | the prefix, `peaks` | Learned peaks: a first line naming the repository, then one JSON line per command (`id`, `label`, `peak_mb`, `last_seen`, `recent` as `[peak_mb, alone]` pairs, oldest first). Sixteen files per repository, chosen by the command's hash, each keeping its 125 most recently seen commands: up to 2,000 per repository. Replaced whole on each write. Kept until removed. |
 | `<runtime>/events.jsonl` | `watch` | nothing in orchestrator | Events. See events.md. Grows until truncated, or until `<runtime>` is removed. |
@@ -23,7 +23,7 @@ writes nothing into a repository it works in.
 | `<runtime>/admission.lock` | the prefix | the prefix | The lock counting and reserving happen under. |
 | `<runtime>/waiting/<job>.json` | the prefix | `watch`, `admission`, coordinators | A heavy call waiting for memory: its job group, label, expected peak, the memory it needs, and since when. Removed when it runs. One left by a killed prefix is skipped by readers, and removed by `watch` while the coordinator wakes. |
 | `<state>/coordinator/` | orchestrator | coordinators | The coordinators' working directory. Claude Code's project settings in its `.claude/` apply to every coordinator. |
-| `<state>/coordinator/journal.md` | `orchestrator coordinator note` | every coordinator | The coordinators' journal, one dated line per note, the latest 200 kept. Kept across reboots. |
+| `<state>/coordinator/journal.md` | `orchestrator coordinator note` | every coordinator | The coordinators' journal, one dated line per line of a note's text, the latest 200 kept. Kept across reboots. |
 | `<runtime>/coordinator/holder.json` | `watch`, `setup`, `coordinator` | the same | The process running a coordinator, pid and start time. Stale once that process has ended. |
 | `<runtime>/coordinator/queue.json` | `watch`, `setup`, `coordinator`, `coordinator next` | the same | The queued events and their status; the 20 latest done kept. See coordinator.md. |
 | `<runtime>/coordinator/lock` | the same | the same | The lock the holder and the queue change under. |

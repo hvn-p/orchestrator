@@ -7,7 +7,8 @@
 ignored), resolved from the environment Claude Code was started with. Without
 it, nothing waits and no coordinator starts by itself. The prefix reads it at
 every Bash call of an orchestrated session, `watch` at each event and each
-waiting call: a change applies at once, with nothing to restart.
+waiting call, and `setup`, `coordinator`, `admission` and `config` when they
+run: a change applies at once, with nothing to restart.
 
 It is written by `orchestrator config admission` and `orchestrator config
 coordinator`, which the setup conversation uses (commands.md), or by hand.
@@ -38,9 +39,13 @@ For example, for a machine with about 30 GB of RAM:
   a misspelt section) turns admission off, each Bash call logging the error
   to `prefix.log` in the runtime directory, and starts no coordinator,
   `watch` printing `orchestrator: <error>; no coordinator starts`. A typo
-  never makes calls wait nor spends tokens.
+  never makes calls wait nor spends tokens. `setup`, `coordinator` and the
+  `config` commands then stop with `Error: reading <path>` and its cause:
+  the setup conversation cannot repair the file; fix or remove it by hand.
+  `admission` reports admission off with the reason.
 - Removing the file, or its `admission` section, turns admission off, with
   nothing logged.
+- MB here, as everywhere in orchestrator, means 1024 × 1024 bytes.
 
 ### The coordinator section
 
@@ -63,10 +68,20 @@ For example, for a machine with about 30 GB of RAM:
 | `coordinator.max_minutes` | The longest a run lasts; then `watch` stops it. 5 when `config coordinator` creates the section. |
 | `coordinator.wait_secs` | How long admission holds a Bash call back before `watch` writes an `admission_wait` event for it. 20 when `config coordinator` creates the section. At or above `admission.max_wait_secs`, no call waits that long, so none is reported. |
 | `coordinator.language` | Optional. The language coordinators write in, a tag such as `fr` or `pt-BR`. Unset: English for runs, the system's language for setup and the interactive coordinator. |
-| `coordinator.max_budget_usd` | Optional, absent by default. The most a run may spend, checked by Claude Code against its estimate at API list price; a subscription counts tokens against its quota instead. |
+| `coordinator.max_budget_usd` | Optional, absent by default, written only by hand, above 0. The most a run may spend, checked by Claude Code against its estimate at API list price; a subscription counts tokens against its quota instead. |
 
-The section changes only what `watch` does by itself: setup and the
-interactive coordinator open whenever asked. How coordinators work:
+Apart from `language`, which every coordinator follows, the section governs
+the runs `watch` starts. Setup and the interactive coordinator open whenever
+asked, with Claude Code's default model, without `max_minutes` or
+`max_budget_usd`; the interactive one receives events only while `wake` is
+on, since `watch` queues nothing otherwise.
+
+A section that makes no sense (a model name with a space, `max_minutes`
+outside 1 to 60, `wait_secs` outside 1 to 600, a malformed `language`,
+`max_budget_usd` at 0 or below), which only a hand-written file can hold,
+starts no run: `watch` prints `orchestrator: <why>; no coordinator starts`.
+`config admission` and `config coordinator` check the whole section on each
+write, so they refuse to write until it is fixed. How coordinators work:
 coordinator.md.
 
 ## The coordinators' instructions
@@ -74,7 +89,6 @@ coordinator.md.
 `$XDG_CONFIG_HOME/orchestrator/CLAUDE.md`, next to `config.json`, holds
 instructions every coordinator follows, priorities included, and no other
 session reads. Its imports and limits: coordinator.md.
-- MB here, as everywhere in orchestrator, means 1024 × 1024 bytes.
 
 ## Choosing values
 
@@ -192,13 +206,13 @@ anything:
 | Variable | Read by | Effect |
 | :- | :- | :- |
 | `XDG_CONFIG_HOME` | the prefix, `watch`, `config`, `setup`, `coordinator`, `admission` | Where `config.json` and the coordinators' `CLAUDE.md` are (absolute paths only). |
-| `XDG_STATE_HOME` | the prefix, `watch`, `peaks`, coordinators | Where learned peaks and the coordinator's journal are (absolute paths only). |
-| `XDG_RUNTIME_DIR` | the prefix, `watch`, coordinators | The runtime directory, else `/run/user/<uid>`, the uid read from `/proc/self/status`. |
+| `XDG_STATE_HOME` | the prefix, `watch`, `peaks`, `admission`, `setup`, `coordinator`, coordinators | Where learned peaks and the coordinator's journal are (absolute paths only). |
+| `XDG_RUNTIME_DIR` | the prefix, `watch`, `admission`, `setup`, `coordinator`, coordinators | The runtime directory, else `/run/user/<uid>`, the uid read from `/proc/self/status`. |
 | `HOME` | the prefix, `watch`, `sessions`, `peaks`, coordinators | The fallback for `XDG_CONFIG_HOME`, `XDG_STATE_HOME` and `CLAUDE_CONFIG_DIR`; resolves `cd` and `cd ~` when recognising commands, and `~/` in the coordinators' imports. `launch` does not read it. |
 | `LC_ALL`, `LC_MESSAGES`, `LANG` | `setup`, `coordinator` | The first set gives the language a coordinator starts in when none is configured. |
 | `PATH` | `watch`, `setup`, `coordinator` | Where `claude` is found to start a coordinator. A coordinator's own `orchestrator` commands are those of the binary that started it, put first on its `PATH`. |
 | `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD` | Claude Code | Removed from a coordinator's environment, so Claude Code does not load the coordinators' `CLAUDE.md` itself. |
-| `CLAUDE_CONFIG_DIR` | `watch`, `sessions` | Claude Code's configuration directory, holding `sessions/`. |
+| `CLAUDE_CONFIG_DIR` | `watch`, `sessions`, `admission`, `setup`, `coordinator`, coordinators | Claude Code's configuration directory, holding `sessions/`. |
 | `CLAUDE_CODE_SHELL_PREFIX` | Claude Code | Set by `launch` to the prefix's path. |
 | `CLAUDE_CODE_SHELL` | Claude Code | The shell Claude Code uses to run Bash tool commands, a bash or zsh binary. The prefix runs them with bash whatever it is. |
 | `CLAUDE_CODE_SESSION_ID` | `watch`, `sessions` | Set by Claude Code in every command it starts; attributes a process reparented away from claude, and marks orphans. |

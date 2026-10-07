@@ -178,8 +178,8 @@ tokens unless you open a coordinator. `language`, a tag such as `fr`, `en` or
 language every coordinator writes in: replies, journal notes and messages to
 sessions; English when unset. What orchestrator itself prints, admission's
 notices included, stays in English. Nothing caps a run's spending unless
-you add `"max_budget_usd"`, which Claude Code checks against its estimate at
-API list price, not against a subscription's quota.
+you add `"max_budget_usd"`, above 0, which Claude Code checks against its
+estimate at API list price, not against a subscription's quota.
 
 `watch` gathers the state a run needs (the machine, the sessions, the calls
 waiting for memory and the reservations, the heavy commands learned, the

@@ -201,33 +201,43 @@ exit status 127.
   `sessions` prints it too.
 - `orchestrator: learning a peak: <error>`, `orchestrator: waiting: <error>`,
   `orchestrator: <error>`: an error `watch` outlives; it keeps running.
+- `orchestrator: not watching <runtime>/waiting: <error>`, whether or not
+  the coordinator wakes: no `admission_wait` event can be written.
+- `orchestrator: <error>; no coordinator starts`: `config.json` cannot be
+  read, whatever `wake` says in it, or a `coordinator` section with `wake` on
+  makes no sense (configuration.md). No event is queued and no run starts
+  until it is fixed; `watch` prints it each time it checks the file: at
+  start, and whenever it would queue an event or start a run.
 - With the coordinator waking (coordinator.md):
-  - `orchestrator: <error>; no coordinator starts`: `config.json` cannot be
-    read; no event is queued and no run starts until it can.
   - `orchestrator: starting the coordinator: <error>`, with `starting claude`
-    when `claude` is not on `watch`'s `PATH`: no run started; the events stay
-    pending for the next try.
+    when `claude` is not on `watch`'s `PATH`: no run started. The events are
+    pending again, with no timed retry: they go with the next queued event,
+    the end of another coordinator, or a restart of `watch`.
   - `orchestrator: the coordinator ran past its time limit; stopping it`.
   - `orchestrator: the coordinator ended on signal <n>`.
   - `orchestrator: the coordinator run failed (see <file>); the next one waits 60 s`:
     its events are pending again. `<file>` is `last-run.err`.
   - `orchestrator: <event key> failed 3 coordinator runs; closed`.
-  - `orchestrator: queueing an event for the coordinator: <error>`, and
-    `orchestrator: not watching <runtime>/waiting: <error>`, which means no
-    `admission_wait` event.
+  - `orchestrator: queueing an event for the coordinator: <error>`: that
+    event was not queued.
 
 `watch` stops at start, printing `Error: …` (with its cause under
 `Caused by:` when there is one) and exiting with status 1, when its runtime
 directory cannot be created, `<proc root>/meminfo` cannot be read or holds no
 `MemAvailable` line (`no MemAvailable line in …`), or a default directory
 cannot be resolved (`neither CLAUDE_CONFIG_DIR nor HOME is set`,
-`neither XDG_STATE_HOME nor HOME is set`).
+`neither XDG_STATE_HOME nor HOME is set`,
+`neither XDG_CONFIG_HOME nor HOME is set`).
 
 ### setup, coordinator and config
 
 - `orchestrator: a coordinator is running (pid <pid>); waiting for it to
   end`: `setup` or `coordinator` waits for the holder to end.
 - `Error: running claude`, then the cause: `claude` could not be started.
+- `Error: reading <path>`, then `Caused by:` and the reason, from `setup`,
+  `coordinator`, `config` and its subcommands: `config.json` exists but
+  cannot be read. They stop before anything else, leaving the file alone;
+  the setup conversation cannot repair it, so fix or remove it by hand.
 - `config admission` and `config coordinator` print `Error: <why>` and exit
   with status 1 when a value makes no sense, leaving the file as it was:
   - `heavy_mb must be above 0: every call would wait`;
@@ -239,8 +249,9 @@ cannot be resolved (`neither CLAUDE_CONFIG_DIR nor HOME is set`,
   - `wait_secs (<n>) must be between 1 and 600`;
   - `wait_secs (<n>) must be under admission's max_wait_secs (<m>): a call waits no longer, so it would never wake the coordinator`;
   - `language "<tag>" is not a language tag such as fr, en or pt-BR`;
-  - `reading <path>: …`: the file exists but cannot be read; it is left
-    alone.
+  - `max_budget_usd (<n>) must be above 0`, for a hand-written value.
+- `config admission` checks the whole `coordinator` section too, so a
+  hand-written mistake there makes it refuse.
 
 ### sessions and peaks, on their standard error
 

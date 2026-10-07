@@ -82,7 +82,8 @@ describes the `main` branch of <https://github.com/hvn-p/orchestrator>.
    back `wait_secs`, and starts a coordinator run, one at a time, briefed
    with the state it gathers. The run may message the sessions concerned and
    note in its journal, nothing more. Every coordinator also reads the
-   user's `~/.config/orchestrator/CLAUDE.md`.
+   user's `<config>/CLAUDE.md`, next to `config.json`
+   (`$XDG_CONFIG_HOME/orchestrator`, else `~/.config/orchestrator`).
 
 ## How to answer
 
