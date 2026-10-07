@@ -1,0 +1,35 @@
+name: Guide
+
+# The merge guard of the guide, plugins/orchestrator/. It runs again when the
+# pull request is edited, since the statement that the guide needs no update
+# lives in its description; the latest run's verdict replaces the last one.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+
+# Two quick edits of the description: only the latest one's run counts.
+concurrency:
+  group: guide-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  guide:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The guard compares the pull request with its merge base.
+          fetch-depth: 0
+      - name: Check that the guide follows the change
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          # Through the environment, never in the script's text: the
+          # description is anyone's input.
+          DESCRIPTION: ${{ github.event.pull_request.body }}
+        run: |
+          printf '%s\n' "$DESCRIPTION" >"$RUNNER_TEMP/description.md"
+          scripts/guide-guard.sh "$BASE" "$HEAD" "$RUNNER_TEMP/description.md"
