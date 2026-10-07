@@ -14,7 +14,7 @@ const DISPLAY_CMDLINE: usize = 70;
 #[derive(Parser)]
 #[command(
     version,
-    about = "Schedule the work of the parallel Claude Code sessions of this machine"
+    about = "Keep the parallel Claude Code sessions of this machine within its memory"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -61,15 +61,16 @@ struct StateDir {
 struct WatchArgs {
     #[command(flatten)]
     sources: Sources,
-    #[command(flatten)]
-    state: StateDir,
-    /// Where events and measurements are written and job records read [default: `$XDG_RUNTIME_DIR/orchestrator`, else `/run/user/<uid>/orchestrator`].
+    /// Where learned peaks are kept [default: `$XDG_STATE_HOME/orchestrator`, else `~/.local/state/orchestrator`]. The prefix always reads the default: with another directory, admission never sees what `watch` learns.
+    #[arg(long)]
+    state_dir: Option<PathBuf>,
+    /// Where events and measurements are written and job records read [default: `$XDG_RUNTIME_DIR/orchestrator`, else `/run/user/<uid>/orchestrator`]. The prefix always writes its job records to the default: with another directory, no Bash call is measured.
     #[arg(long)]
     runtime_dir: Option<PathBuf>,
     /// Memory stall, within a 2 s window, that makes a pressure event, in ms.
     #[arg(long, default_value_t = 200, value_parser = clap::value_parser!(u64).range(1..=2000))]
     stall_ms: u64,
-    /// Minimum seconds between two memory events.
+    /// Minimum seconds between two memory pressure events.
     #[arg(long, default_value_t = 60)]
     cooldown_secs: u64,
     /// Seconds between two orphan scans when no session ends; 0 counts as 1.
@@ -86,7 +87,7 @@ fn main() -> Result<()> {
                 Some(dir) => dir,
                 None => runtime::default_dir()?,
             },
-            state_dir: state_dir(args.state)?,
+            state_dir: state_dir(args.state_dir)?,
             orphan_interval: Duration::from_secs(args.orphan_interval_secs.max(1)),
             thresholds: watch::Thresholds {
                 stall_ms: args.stall_ms,
@@ -94,7 +95,7 @@ fn main() -> Result<()> {
             },
         }),
         Command::Sessions(sources) => print_sessions(&sources),
-        Command::Peaks(dir) => print_peaks(&state_dir(dir)?),
+        Command::Peaks(dir) => print_peaks(&state_dir(dir.state_dir)?),
         Command::Launch(l) => Err(launch::launch(&l.command)),
     }
 }
@@ -106,8 +107,8 @@ fn sessions_dir(sources: &Sources) -> Result<PathBuf> {
     }
 }
 
-fn state_dir(arg: StateDir) -> Result<PathBuf> {
-    match arg.state_dir {
+fn state_dir(arg: Option<PathBuf>) -> Result<PathBuf> {
+    match arg {
         Some(dir) => Ok(dir),
         None => state::default_dir(),
     }
