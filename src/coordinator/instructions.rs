@@ -1,8 +1,8 @@
 //! The user's instructions for coordinators: a CLAUDE.md of their own, at
 //! `$XDG_CONFIG_HOME/orchestrator/CLAUDE.md`, read by every coordinator and
-//! by no other session. It is personal configuration, kept and versioned
-//! wherever the user likes: the file may be a symlink, and it may import
-//! others with `@path` lines, as Claude Code's own CLAUDE.md does.
+//! by no other session. The file may be a symlink, which is followed, and
+//! it may import others with `@path` lines, as Claude Code's own CLAUDE.md
+//! does.
 //!
 //! orchestrator resolves the imports itself and appends the result to the
 //! coordinator's system prompt, rather than relying on Claude Code's loading

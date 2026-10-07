@@ -610,19 +610,19 @@ mod tests {
             &base.join("state"),
             &base.join("config/config.json"),
         );
-        fs::create_dir_all(base.join("dotfiles")).unwrap();
+        fs::create_dir_all(base.join("elsewhere")).unwrap();
         fs::create_dir_all(base.join("config")).unwrap();
         fs::write(
-            base.join("dotfiles/coordinator.md"),
+            base.join("elsewhere/coordinator.md"),
             "Begin each note with KESTREL.\n@priorities.md\n",
         )
         .unwrap();
         fs::write(
-            base.join("dotfiles/priorities.md"),
+            base.join("elsewhere/priorities.md"),
             "Experiments can wait.\n",
         )
         .unwrap();
-        std::os::unix::fs::symlink(base.join("dotfiles/coordinator.md"), &paths.instructions)
+        std::os::unix::fs::symlink(base.join("elsewhere/coordinator.md"), &paths.instructions)
             .unwrap();
         write_role(&paths, &Mode::Batch(&[])).unwrap();
         let role = fs::read_to_string(paths.role()).unwrap();
@@ -630,7 +630,7 @@ mod tests {
         assert!(role.contains("# The user's instructions for coordinators"));
         assert!(role.contains("Begin each note with KESTREL."));
         assert!(role.contains("Experiments can wait."));
-        assert_eq!(instruction_dirs(&paths), [base.join("dotfiles")]);
+        assert_eq!(instruction_dirs(&paths), [base.join("elsewhere")]);
     }
 
     #[test]
@@ -654,7 +654,7 @@ mod tests {
             &Mode::Interactive,
             &Coordinator::default(),
             &paths(),
-            &[PathBuf::from("/home/u/dotfiles/coordinator")],
+            &[PathBuf::from("/home/u/elsewhere/coordinator")],
             "p",
         ));
         assert_eq!(values(&args, "--permission-mode"), ["default"]);
@@ -667,7 +667,7 @@ mod tests {
             added,
             [
                 "/home/u/.config/orchestrator",
-                "/home/u/dotfiles/coordinator"
+                "/home/u/elsewhere/coordinator"
             ]
         );
         assert!(!args.contains(&"-p".to_string()));

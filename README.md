@@ -216,12 +216,11 @@ every coordinator reads it (runs, setup, the interactive one), no other
 session does. Your priorities go there, with anything else coordinators
 should know of your machine and habits; setup offers to create it.
 
-It is yours to keep, wherever you keep such files. It may be a symlink, into
-a dotfiles repository for instance, and it may import other files with
-`@path` lines, as Claude Code's own CLAUDE.md does: an absolute path, `~/`
-for your home, or a path relative to the importing file (once symlinks are
-resolved), outside code spans and fenced blocks, `\ ` for a space, four
-hops deep at most. orchestrator resolves the imports itself and hands the
+It may import other files with `@path` lines, by Claude Code's rules: an
+absolute path, `~/` for the home directory, or a path relative to the
+importing file, outside code spans and fenced blocks, `\ ` for a space, four
+hops deep at most. A symlinked file is followed, and its relative imports
+resolve from the real file. orchestrator resolves the imports itself and hands the
 result, verbatim, to each coordinator it starts, so an edit applies to the
 next one. A file imported twice, or in a cycle, is read once; a file over
 128 KiB, or past 256 KiB in all, is left out and the coordinator is told.

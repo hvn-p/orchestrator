@@ -27,12 +27,9 @@ write what the user agrees to.
      instructions for coordinators, the CLAUDE.md the prompt names, which
      every coordinator reads and no other session does. When it does not
      exist, offer to create it with a short structure: a title, then
-     "Priorities" and "Habits" sections. Explain that it is the user's to
-     keep: it may be a symlink into their dotfiles, so it is versioned
-     elsewhere, and it may import other files with `@path` lines (absolute,
-     `~/`, or relative to the importing file), as their own CLAUDE.md does.
-     When it exists, add to the section or imported file that holds
-     priorities.
+     "Priorities" and "Habits" sections. Say where it is, what it is for,
+     and that it can import other files with `@path` lines. When it exists,
+     add to the section or imported file that holds priorities.
    - The admission thresholds: propose values with a one-line reason each,
      from the machine's facts (memory, swap, the heavy commands learned), and
      adjust them to what the user says.

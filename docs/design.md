@@ -150,12 +150,12 @@ One binary, `orchestrator`, with subcommands.
   state directory, which is also its working directory), and the user's
   instructions for coordinators.
   - **The user's instructions**: a CLAUDE.md for coordinators only,
-    `CLAUDE.md` next to the configuration, priorities included. It is
-    personal configuration, never in this repository: it may be a symlink
-    into the user's dotfiles and import other files with `@path`, as the
-    user's own CLAUDE.md does. orchestrator resolves the imports itself, by
-    Claude Code's rules (absolute, `~/`, relative to the importing file;
-    four hops), each file once, within 128 KiB a file and 256 KiB in all,
+    `CLAUDE.md` next to the configuration, priorities included. It may
+    import other files with `@path`. orchestrator resolves the imports
+    itself, by Claude Code's rules (absolute, `~/`, relative to the
+    importing file; four hops); a symlinked file is followed and its
+    relative imports resolve from the real file. Each file is read once,
+    within 128 KiB a file and 256 KiB in all,
     and appends the result verbatim to the role it writes for each
     coordinator. Relying on Claude Code's own loading instead would leave
     imports outside the working directory to an approval a headless run
