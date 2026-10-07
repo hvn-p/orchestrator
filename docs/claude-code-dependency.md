@@ -6,7 +6,7 @@ and code must not start relying on one without adding it. Most of these
 contracts are not documented by Claude Code; they were measured, and may
 change in any release.
 
-Last verified: Claude Code 2.1.291, 2026-10-06.
+Last verified: Claude Code 2.1.292, 2026-10-07.
 
 ## Keeping it current
 
