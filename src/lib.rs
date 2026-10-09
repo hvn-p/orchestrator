@@ -71,8 +71,8 @@
 //!   (see `events`).
 //! - **Claude Code is today's only host, behind a listed boundary**: what
 //!   orchestrator relies on in it is a contract of
-//!   `docs/claude-code-dependency.md`, and the code relying on one carries a
-//!   `// claude-code: <id>` marker.
+//!   `docs/claude-code-dependency.md`, and the code relying on one carries
+//!   that contract's marker.
 //!
 //! Decisions and measurements made before the GitHub issues held them are
 //! in the design document as it stood when it was removed:
