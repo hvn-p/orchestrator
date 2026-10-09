@@ -572,6 +572,8 @@ dependencies = [
 name = "orchestrator-claude-code"
 version = "0.1.0"
 dependencies = [
+ "brush-parser",
+ "inotify",
  "serde",
  "serde_json",
  "tempfile",
@@ -582,6 +584,7 @@ name = "orchestrator-config"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "orchestrator-claude-code",
  "serde",
  "serde_json",
  "tempfile",
@@ -610,6 +613,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "brush-parser",
+ "orchestrator-claude-code",
  "orchestrator-system",
  "serde",
  "serde_json",
@@ -623,6 +627,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "inotify",
+ "orchestrator-claude-code",
  "orchestrator-config",
  "orchestrator-learning",
  "orchestrator-system",

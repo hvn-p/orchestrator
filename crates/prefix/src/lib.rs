@@ -15,6 +15,8 @@ use learning::peaks;
 use system::runtime;
 
 use anyhow::{Context, Result};
+use claude_code::call;
+use claude_code::invocation::{self, Kind};
 use serde::{Deserialize, Serialize};
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, OpenOptions};
@@ -32,39 +34,16 @@ pub struct JobRecord {
     pub cwd: String,
 }
 
-// claude-code: shell-prefix-coverage
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Kind {
-    /// A Bash tool call, or a `!` command typed in Claude Code.
-    Bash,
-    /// A hook, the status line or an MCP server.
-    Other,
-}
-
-impl Kind {
-    /// A Bash call sources the session's shell snapshot and records its
-    /// working directory afterwards; hooks, the status line and MCP servers do
-    /// neither.
-    // claude-code: bash-call-signature
-    pub fn of(command: &str) -> Kind {
-        if command.contains("/shell-snapshots/snapshot-") || command.contains("pwd -P >|") {
-            Kind::Bash
-        } else {
-            Kind::Other
-        }
-    }
-
-    fn name(self) -> &'static str {
-        match self {
-            Kind::Bash => "bash",
-            Kind::Other => "other",
-        }
+/// A job's kind, in its group's name.
+fn kind_name(kind: Kind) -> &'static str {
+    match kind {
+        Kind::Bash => "bash",
+        Kind::Other => "other",
     }
 }
 
 /// Places this process, admits a Bash call, then replaces this process with
-/// `bash -c <command>`. Only returns when bash cannot be started.
-// claude-code: shell-prefix-argument
+/// a shell running `command`. Only returns when the shell cannot be started.
 pub fn run(command: &OsStr) -> anyhow::Error {
     let root = Path::new(cgroup::ROOT);
     match place(root, command) {
@@ -76,20 +55,19 @@ pub fn run(command: &OsStr) -> anyhow::Error {
         Ok(None) => {}
         Err(e) => log_failure(&e),
     }
-    let err = Command::new("bash").arg("-c").arg(command).exec();
+    let err = invocation::shell(command).exec();
     anyhow::Error::new(err).context("running bash")
 }
 
 /// Moves this process into a job leaf of its own. Returns the leaf of a Bash
 /// call, which admission may hold back.
-// claude-code: bash-call-cwd
 fn place(root: &Path, command: &OsStr) -> Result<Option<admission::Job>> {
     let own = fs::read_to_string("/proc/self/cgroup").context("reading own cgroup")?;
     let Some(session) = cgroup::own_path(&own).and_then(cgroup::session_of) else {
         return Ok(None);
     };
     let text = command.to_string_lossy();
-    let kind = Kind::of(&text);
+    let kind = invocation::kind(&text);
     let pid = std::process::id();
     let name = job_name(kind, pid, runtime::now_ms());
     cgroup::enter_job(root, session, &name, pid).with_context(|| format!("creating {name}"))?;
@@ -98,7 +76,7 @@ fn place(root: &Path, command: &OsStr) -> Result<Option<admission::Job>> {
     }
     let record = JobRecord {
         command: text.into_owned(),
-        cwd: std::env::current_dir()
+        cwd: invocation::working_dir()
             .map(|d| d.to_string_lossy().into_owned())
             .unwrap_or_default(),
     };
@@ -117,13 +95,11 @@ fn place(root: &Path, command: &OsStr) -> Result<Option<admission::Job>> {
 /// without a configuration, and for a call none of whose commands is known
 /// to be heavy: the configuration is read first, so that without one nothing
 /// is parsed.
-// claude-code: bash-call-cwd
-// claude-code: bash-call-output
 fn admit(root: &Path, job: &admission::Job, command: &OsStr) -> Result<()> {
     let Some(cfg) = config::load(&config::default_path()?)?.and_then(|c| c.admission) else {
         return Ok(());
     };
-    let cwd = std::env::current_dir().context("reading the working directory")?;
+    let cwd = invocation::working_dir().context("reading the working directory")?;
     let home = std::env::var_os("HOME").map(PathBuf::from);
     let peaks = peaks::dir(&state::default_dir()?);
     let invocation = command.to_string_lossy();
@@ -136,13 +112,13 @@ fn admit(root: &Path, job: &admission::Job, command: &OsStr) -> Result<()> {
         meminfo: PathBuf::from("/proc/meminfo"),
         runtime: runtime::default_dir()?,
     };
-    admission::admit(&paths, &cfg, job, &call, &mut std::io::stderr())
+    admission::admit(&paths, &cfg, job, &call, &mut call::notices())
 }
 
 /// The pid names the job for a human; the time keeps the name unique when a
 /// pid comes back before the service has removed the old group.
 pub fn job_name(kind: Kind, pid: u32, ms: u128) -> String {
-    format!("job-{}-{pid}-{ms}", kind.name())
+    format!("job-{}-{pid}-{ms}", kind_name(kind))
 }
 
 /// Kind and start time of a job, from a name made by `job_name`.
@@ -176,16 +152,11 @@ fn write_record(dir: &Path, job: &str, record: &JobRecord) -> Result<()> {
     fs::write(&path, json).with_context(|| format!("writing {}", path.display()))
 }
 
-/// Nothing goes to the terminal: the prefix's stderr is the command's, and a
-/// hook or the status line must not show orchestrator's troubles. Only
-/// admission's notices go there.
-// claude-code: bash-call-output
 /// Runs what Claude Code passed when it is not the one command line the
 /// prefix expects: as a command, unplaced and unadmitted, and logged. A
 /// change on Claude Code's side then costs orchestration, never the command.
 /// Returns None when there is nothing to run, else only when the command
 /// cannot be started.
-// claude-code: shell-prefix-argument
 pub fn run_unexpected(args: &[OsString]) -> Option<anyhow::Error> {
     log_failure(&anyhow::anyhow!(
         "expected one argument, got {}: running them unorchestrated",
@@ -196,6 +167,9 @@ pub fn run_unexpected(args: &[OsString]) -> Option<anyhow::Error> {
     Some(anyhow::Error::new(err).context("running the command"))
 }
 
+/// Nothing goes to the terminal: the prefix's stderr is the command's, and a
+/// hook or the status line must not show orchestrator's troubles. Only
+/// admission's notices go there.
 fn log_failure(e: &anyhow::Error) {
     let Ok(dir) = runtime::default_dir() else {
         return;
@@ -215,13 +189,6 @@ mod tests {
 
     /// A Bash call as Claude Code 2.1.289 hands it to the prefix.
     const BASH_CALL: &str = "source /home/u/.claude/shell-snapshots/snapshot-bash-1-x.sh 2>/dev/null || true && { shopt -u extglob || setopt NO_EXTENDED_GLOB NO_BARE_GLOB; } >/dev/null 2>&1 || true && eval 'echo hi' && pwd -P >| /tmp/claude-ab12-cwd";
-
-    #[test]
-    fn tells_bash_calls_from_the_rest() {
-        assert_eq!(Kind::of(BASH_CALL), Kind::Bash);
-        assert_eq!(Kind::of("bash ~/.claude/hooks/gate.sh"), Kind::Other);
-        assert_eq!(Kind::of("npx -y @scope/mcp-server"), Kind::Other);
-    }
 
     #[test]
     fn job_names_carry_kind_pid_and_time() {

@@ -2,14 +2,32 @@
 //! in its sessions directory. The `.key` files next to them hold credentials
 //! and are never opened.
 
+use inotify::WatchMask;
 use serde::Deserialize;
 use std::fs;
 use std::path::{Path, PathBuf};
+
+/// The environ variable naming the session a process belongs to, as
+/// `NAME=`. Every process a session starts inherits it, with the id the
+/// session had then: after `/clear` or a resume, it names an id the session
+/// no longer has. The environ that holds it also holds the session's
+/// messaging token, so nothing else of it is kept.
+// claude-code: session-id-variable
+pub const ID_VAR: &[u8] = b"CLAUDE_CODE_SESSION_ID=";
+
+/// What to watch the sessions directory for: a new session's file appears,
+/// and Claude Code rewrites a session's file when its status changes.
+// claude-code: session-file
+pub const CHANGES: WatchMask = WatchMask::CLOSE_WRITE
+    .union(WatchMask::MOVED_TO)
+    .union(WatchMask::ONLYDIR);
 
 // claude-code: session-file-fields
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClaudeSession {
+    /// The session's claude process: every process of the session descends
+    /// from it.
     pub pid: u32,
     pub session_id: String,
     pub name: String,
@@ -52,6 +70,18 @@ pub fn read_sessions(dir: &Path) -> std::io::Result<Vec<ClaudeSession>> {
         }
     }
     Ok(sessions)
+}
+
+impl ClaudeSession {
+    /// Whether the process now at `pid`, started at `start_time` in clock
+    /// ticks since boot, is this session's: a session file can outlive its
+    /// process, whose pid may then be reused.
+    // claude-code: session-file-fields
+    pub fn is_process(&self, start_time: u64) -> bool {
+        self.proc_start
+            .as_deref()
+            .is_none_or(|p| p.parse::<u64>().is_ok_and(|p| p == start_time))
+    }
 }
 
 fn is_session_file(path: &Path) -> bool {

@@ -19,10 +19,9 @@
 use crate::repository;
 use brush_parser::ast::{
     AndOr, AndOrList, Command as ShellCommand, CommandPrefixOrSuffixItem, CompoundCommand,
-    CompoundList, IoRedirect, Pipeline, Program, SeparatorOperator, SimpleCommand,
+    CompoundList, IoRedirect, Pipeline, SeparatorOperator, SimpleCommand,
 };
-use brush_parser::word::{self, TildeExpr, WordPiece, WordPieceWithSource};
-use brush_parser::{Parser, ParserOptions};
+use claude_code::invocation::{Unquoted, parse, unquote};
 use std::path::{Path, PathBuf};
 
 /// One simple command of a call, as it is recognised.
@@ -35,21 +34,6 @@ pub struct Command {
     /// The directory it runs in. None when a `cd` before it goes where only
     /// running the call would tell (`cd "$dir"`, `cd -`).
     pub dir: Option<PathBuf>,
-}
-
-/// The command Claude wrote, from the invocation Claude Code hands the shell
-/// prefix: the arguments of the invocation's last top-level `eval`, unquoted
-/// and joined with spaces, as `eval` joins them.
-// claude-code: bash-call-eval
-pub fn written(invocation: &str) -> Option<String> {
-    let program = parse(invocation)?;
-    let eval = top_level(&program)
-        .filter_map(|p| match p.seq.as_slice() {
-            [ShellCommand::Simple(s)] if is_eval(s) => Some(s),
-            _ => None,
-        })
-        .last()?;
-    Some(eval_args(eval)?.join(" "))
 }
 
 /// The simple commands of `script` run from `cwd`, in order. `home` resolves
@@ -65,56 +49,6 @@ pub fn commands(script: &str, cwd: &Path, home: Option<&Path>) -> Option<Vec<Com
         walk.list(list, &mut dir);
     }
     Some(walk.found)
-}
-
-// claude-code: bash-call-eval
-fn options() -> ParserOptions {
-    // The invocation turns extglob off before its eval.
-    ParserOptions {
-        enable_extended_globbing: false,
-        ..ParserOptions::default()
-    }
-}
-
-fn parse(script: &str) -> Option<Program> {
-    Parser::new(script.as_bytes(), &options())
-        .parse_program()
-        .ok()
-}
-
-/// The pipelines at the top level of `program`.
-fn top_level(program: &Program) -> impl Iterator<Item = &Pipeline> {
-    program
-        .complete_commands
-        .iter()
-        .flat_map(|list| &list.0)
-        .flat_map(|item| &item.0)
-        .map(|(_, pipeline)| pipeline)
-}
-
-fn is_eval(s: &SimpleCommand) -> bool {
-    s.prefix.is_none() && s.word_or_name.as_ref().is_some_and(|w| w.value == "eval")
-}
-
-/// The unquoted arguments of an `eval` command. None when only running it
-/// would tell them.
-fn eval_args(s: &SimpleCommand) -> Option<Vec<String>> {
-    let mut args = Vec::new();
-    for item in s.suffix.iter().flat_map(|suffix| &suffix.0) {
-        match item {
-            CommandPrefixOrSuffixItem::Word(w)
-            | CommandPrefixOrSuffixItem::AssignmentWord(_, w) => {
-                let arg = unquote(&w.value);
-                if !arg.literal || arg.home {
-                    return None;
-                }
-                args.push(arg.text);
-            }
-            CommandPrefixOrSuffixItem::IoRedirect(_) => {}
-            CommandPrefixOrSuffixItem::ProcessSubstitution(..) => return None,
-        }
-    }
-    Some(args)
 }
 
 /// Walks a parsed call, collecting its simple commands.
@@ -254,61 +188,6 @@ fn add_item(
     }
 }
 
-/// A word without its quotes. Expansions stay as written: nothing is run.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct Unquoted {
-    text: String,
-    /// The text is the word's value: it holds no expansion.
-    literal: bool,
-    /// The word starts with a `~` standing for the home directory.
-    home: bool,
-}
-
-fn unquote(word: &str) -> Unquoted {
-    let Ok(pieces) = word::parse(word, &options()) else {
-        return Unquoted {
-            text: word.to_string(),
-            literal: false,
-            home: false,
-        };
-    };
-    let mut out = Unquoted {
-        text: String::new(),
-        literal: true,
-        home: matches!(
-            pieces.first().map(|p| &p.piece),
-            Some(WordPiece::TildeExpansion(TildeExpr::Home))
-        ),
-    };
-    push_pieces(word, &pieces, &mut out);
-    out
-}
-
-fn push_pieces(word: &str, pieces: &[WordPieceWithSource], out: &mut Unquoted) {
-    for p in pieces {
-        match &p.piece {
-            WordPiece::Text(s) | WordPiece::SingleQuotedText(s) => out.text.push_str(s),
-            WordPiece::DoubleQuotedSequence(inner)
-            | WordPiece::GettextDoubleQuotedSequence(inner) => push_pieces(word, inner, out),
-            WordPiece::EscapeSequence(s) => out.text.push_str(s.strip_prefix('\\').unwrap_or(s)),
-            // `$'…'` keeps its escapes unprocessed.
-            WordPiece::AnsiCQuotedText(s) => {
-                out.text.push_str(s);
-                out.literal &= !s.contains('\\');
-            }
-            WordPiece::TildeExpansion(_)
-            | WordPiece::ParameterExpansion(_)
-            | WordPiece::CommandSubstitution(_)
-            | WordPiece::BackquotedCommandSubstitution(_)
-            | WordPiece::ArithmeticExpression(_) => {
-                out.text
-                    .push_str(word.get(p.start_index..p.end_index).unwrap_or_default());
-                out.literal = false;
-            }
-        }
-    }
-}
-
 /// How many leading words are wrappers that do not change the work:
 /// `timeout`, `time`, `nice`, `nohup`, `stdbuf`, `command` and `builtin`, with
 /// their options (and `timeout`'s duration).
@@ -394,6 +273,7 @@ fn cd(dir: Option<PathBuf>, args: &[Unquoted], home: Option<&Path>) -> Option<Pa
 #[cfg(test)]
 mod tests {
     use super::*;
+    use claude_code::invocation;
 
     /// A Bash call as Claude Code 2.1.289 hands it to the prefix.
     fn invocation(eval: &str) -> String {
@@ -416,38 +296,6 @@ mod tests {
 
     fn ws(words: &[&str]) -> Vec<String> {
         words.iter().map(|w| (*w).to_string()).collect()
-    }
-
-    #[test]
-    fn extracts_a_single_quoted_command() {
-        let call = invocation(r#"'python3 -c '"'"'x=1'"'"''"#);
-        assert_eq!(written(&call).as_deref(), Some("python3 -c 'x=1'"));
-    }
-
-    #[test]
-    fn extracts_a_bare_word_followed_by_a_redirection() {
-        let call = invocation("true < /dev/null");
-        assert_eq!(written(&call).as_deref(), Some("true"));
-    }
-
-    #[test]
-    fn extracts_a_double_quoted_command_and_joins_arguments() {
-        let call = invocation(r#""echo \"\$HOME\"" < /dev/null"#);
-        assert_eq!(written(&call).as_deref(), Some(r#"echo "$HOME""#));
-        assert_eq!(written(&invocation("ls -la")).as_deref(), Some("ls -la"));
-    }
-
-    #[test]
-    fn extracts_across_a_multi_line_preamble() {
-        let call = format!("export A=1\n: && {}", invocation("'make test'"));
-        assert_eq!(written(&call).as_deref(), Some("make test"));
-    }
-
-    #[test]
-    fn no_eval_or_an_unknown_argument_yields_nothing() {
-        assert_eq!(written("bash ~/.claude/hooks/gate.sh"), None);
-        assert_eq!(written(&invocation("\"$CMD\"")), None);
-        assert_eq!(written("eval 'unterminated"), None);
     }
 
     #[test]
@@ -644,17 +492,17 @@ mod tests {
         let call = invocation(
             r"'cd app && timeout 300 pnpm exec vitest run X 2>&1 | grep FAIL' < /dev/null",
         );
-        let script = written(&call).unwrap();
+        let script = invocation::written(&call).unwrap();
         assert_eq!(
             words(&script),
             [w("pnpm exec vitest run X"), w("grep FAIL")]
         );
         // Two forms of one command.
-        let alone = written(&invocation(
+        let alone = invocation::written(&invocation(
             r#"'python3 -c '"'"'b = bytearray(300 << 20)'"'"''"#,
         ))
         .unwrap();
-        let piped = written(&invocation(
+        let piped = invocation::written(&invocation(
             r#"'timeout 60 python3 -c '"'"'b = bytearray(300 << 20)'"'"' 2>&1 | tail -1'"#,
         ))
         .unwrap();

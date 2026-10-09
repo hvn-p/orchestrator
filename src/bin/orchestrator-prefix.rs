@@ -4,12 +4,11 @@
 use std::ffi::OsString;
 use std::process::ExitCode;
 
-// claude-code: shell-prefix-argument
 fn main() -> ExitCode {
     let args: Vec<OsString> = std::env::args_os().skip(1).collect();
-    let err = match args.as_slice() {
-        [command] => prefix::run(command),
-        other => match prefix::run_unexpected(other) {
+    let err = match claude_code::invocation::command(&args) {
+        Some(command) => prefix::run(command),
+        None => match prefix::run_unexpected(&args) {
             Some(err) => err,
             None => return ExitCode::SUCCESS,
         },

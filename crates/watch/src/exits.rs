@@ -3,7 +3,7 @@
 //! session's claude process and becomes readable when that process exits.
 
 use claude_code::sessions::{self, ClaudeSession};
-use inotify::{Inotify, WatchMask};
+use inotify::Inotify;
 use rustix::process::{Pid, PidfdFlags, pidfd_open};
 use std::collections::HashMap;
 use std::io::{self, ErrorKind};
@@ -25,12 +25,9 @@ pub struct Exits {
 impl Exits {
     /// Watches `dir`, Claude Code's sessions directory, and holds the claude
     /// process of every live session in it.
-    // claude-code: session-file
     pub fn new(dir: PathBuf, proc_root: PathBuf) -> io::Result<Exits> {
         let inotify = Inotify::init()?;
-        // Claude Code rewrites a session file when the session's status changes.
-        let mask = WatchMask::CLOSE_WRITE | WatchMask::MOVED_TO | WatchMask::ONLYDIR;
-        inotify.watches().add(&dir, mask)?;
+        inotify.watches().add(&dir, sessions::CHANGES)?;
         let mut exits = Exits {
             inotify,
             dir,
@@ -70,7 +67,6 @@ impl Exits {
         self.held.remove(&pid);
     }
 
-    // claude-code: session-file
     fn hold_new(&mut self) {
         let Ok(found) = sessions::read_sessions(&self.dir) else {
             return;
@@ -86,15 +82,8 @@ impl Exits {
         }
     }
 
-    /// A session file can outlive its process, whose pid may then be reused.
-    // claude-code: session-file-fields
     fn alive(&self, s: &ClaudeSession) -> bool {
-        let Some(started) = procfs::start_time(&self.proc_root, s.pid) else {
-            return false;
-        };
-        s.proc_start
-            .as_deref()
-            .is_none_or(|p| p.parse::<u64>().is_ok_and(|p| p == started))
+        procfs::start_time(&self.proc_root, s.pid).is_some_and(|started| s.is_process(started))
     }
 }
 

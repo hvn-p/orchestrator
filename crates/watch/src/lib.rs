@@ -17,7 +17,7 @@ use system::procfs;
 /// Reads processes and sessions, then attributes. A missing sessions
 /// directory means no Claude session has run yet.
 pub fn scan(proc_root: &Path, sessions_dir: &Path) -> Result<Attribution> {
-    let procs = procfs::read_processes(proc_root)
+    let procs = procfs::read_processes(proc_root, sessions::ID_VAR)
         .with_context(|| format!("reading {}", proc_root.display()))?;
     let sessions = match sessions::read_sessions(sessions_dir) {
         Ok(s) => s,

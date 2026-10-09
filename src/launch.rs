@@ -7,6 +7,7 @@
 //! warning.
 
 use anyhow::{Context, Result, anyhow, bail, ensure};
+use claude_code::launch::PREFIX_VAR;
 use std::ffi::OsString;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -15,10 +16,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use system::cgroup;
 
 /// The shell prefix binary, installed next to `orchestrator`.
-// claude-code: shell-prefix-variable
 pub const PREFIX_BIN: &str = "orchestrator-prefix";
-// claude-code: shell-prefix-variable
-const PREFIX_VAR: &str = "CLAUDE_CODE_SHELL_PREFIX";
 
 /// The longest the scope may take, from asking for it to being in it. A
 /// launcher has to replace itself with its command within about 3 s.

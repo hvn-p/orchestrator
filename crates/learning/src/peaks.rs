@@ -108,8 +108,8 @@ pub fn learn(dir: &Path, m: &Measurement, home: Option<&Path>) -> Result<()> {
     if !cwd.is_absolute() {
         return Ok(());
     }
-    let Some(commands) =
-        recognise::written(&m.command).and_then(|script| recognise::commands(&script, cwd, home))
+    let Some(commands) = claude_code::invocation::written(&m.command)
+        .and_then(|script| recognise::commands(&script, cwd, home))
     else {
         return Ok(());
     };

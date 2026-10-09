@@ -4,12 +4,6 @@
 use std::fs;
 use std::path::Path;
 
-/// The only environ variable orchestrator reads. Every process a Claude session
-/// launches inherits it. Nothing else in environ is ever kept: it also holds
-/// the session's messaging token.
-// claude-code: session-id-variable
-const SESSION_VAR: &[u8] = b"CLAUDE_CODE_SESSION_ID=";
-
 /// Longest command line kept, in characters.
 const CMDLINE_MAX: usize = 200;
 /// Words after the program a command head keeps.
@@ -29,26 +23,30 @@ pub struct ProcInfo {
     pub cmdline: String,
     /// See `command_head`.
     pub command_head: String,
+    /// The value of the session variable `read_processes` was given.
     pub session_env: Option<String>,
 }
 
 /// Reads every process under `root`. A process that exits while being read is
 /// skipped, and so is one whose stat cannot be parsed.
-pub fn read_processes(root: &Path) -> std::io::Result<Vec<ProcInfo>> {
+/// The processes under `root`. `session_var`, `NAME=`, is the only environ
+/// variable read, into `session_env`: nothing else in environ is ever kept,
+/// since it may hold credentials.
+pub fn read_processes(root: &Path, session_var: &[u8]) -> std::io::Result<Vec<ProcInfo>> {
     let mut procs = Vec::new();
     for entry in fs::read_dir(root)? {
         let Ok(entry) = entry else { continue };
         let Some(pid) = entry.file_name().to_str().and_then(|n| n.parse().ok()) else {
             continue;
         };
-        if let Some(proc_info) = read_process(&entry.path(), pid) {
+        if let Some(proc_info) = read_process(&entry.path(), pid, session_var) {
             procs.push(proc_info);
         }
     }
     Ok(procs)
 }
 
-fn read_process(dir: &Path, pid: u32) -> Option<ProcInfo> {
+fn read_process(dir: &Path, pid: u32, session_var: &[u8]) -> Option<ProcInfo> {
     let stat = fs::read_to_string(dir.join("stat")).ok()?;
     let (comm, ppid, start_time) = parse_stat(&stat)?;
     // Kernel threads have no VmRSS line.
@@ -59,7 +57,7 @@ fn read_process(dir: &Path, pid: u32) -> Option<ProcInfo> {
     // Unreadable for other users' processes, which is fine: they are not ours.
     let session_env = fs::read(dir.join("environ"))
         .ok()
-        .and_then(|e| parse_session_env(&e));
+        .and_then(|e| parse_session_env(&e, session_var));
     let raw_cmdline = fs::read(dir.join("cmdline")).unwrap_or_default();
     let cmdline = parse_cmdline(&raw_cmdline);
     let command_head = command_head(&raw_cmdline);
@@ -117,10 +115,10 @@ fn parse_rss_kb(status: &str) -> Option<u64> {
         .and_then(|n| n.parse().ok())
 }
 
-fn parse_session_env(environ: &[u8]) -> Option<String> {
+fn parse_session_env(environ: &[u8], session_var: &[u8]) -> Option<String> {
     environ
         .split(|b| *b == 0)
-        .find_map(|var| var.strip_prefix(SESSION_VAR))
+        .find_map(|var| var.strip_prefix(session_var))
         .and_then(|id| std::str::from_utf8(id).ok())
         .filter(|id| !id.is_empty())
         .map(str::to_string)
@@ -191,6 +189,8 @@ pub fn truncate(s: &str, max_chars: usize) -> String {
 mod tests {
     use super::*;
 
+    const VAR: &[u8] = b"SESSION_ID=";
+
     fn stat_line(pid: u32, comm: &str, ppid: u32, start: u64) -> String {
         // 52 fields as in Linux 6.x; only ppid (4) and starttime (22) matter.
         let mut rest: Vec<String> = vec!["S".into(), ppid.to_string()];
@@ -241,13 +241,9 @@ mod tests {
 
     #[test]
     fn keeps_only_the_session_variable() {
-        let env =
-            b"PATH=/bin\0CLAUDE_CODE_MESSAGING_TOKEN=secret\0CLAUDE_CODE_SESSION_ID=abc-123\0";
-        assert_eq!(parse_session_env(env).as_deref(), Some("abc-123"));
-        assert_eq!(
-            parse_session_env(b"CLAUDE_CODE_MESSAGING_TOKEN=secret\0"),
-            None
-        );
+        let env = b"PATH=/bin\0MESSAGING_TOKEN=secret\0SESSION_ID=abc-123\0";
+        assert_eq!(parse_session_env(env, VAR).as_deref(), Some("abc-123"));
+        assert_eq!(parse_session_env(b"MESSAGING_TOKEN=secret\0", VAR), None);
     }
 
     #[test]
@@ -268,7 +264,7 @@ mod tests {
             10,
             &stat_line(10, "node", 1, 500),
             Some(2048),
-            b"CLAUDE_CODE_SESSION_ID=s1\0",
+            b"SESSION_ID=s1\0",
             b"node\0server.js\0",
         );
         write_proc(r, 11, &stat_line(11, "kworker/0:1", 2, 3), None, b"", b"");
@@ -276,7 +272,7 @@ mod tests {
         fs::create_dir_all(r.join("self")).unwrap();
         fs::create_dir_all(r.join("12")).unwrap();
 
-        let mut procs = read_processes(r).unwrap();
+        let mut procs = read_processes(r, VAR).unwrap();
         procs.sort_by_key(|p| p.pid);
         assert_eq!(procs.len(), 2);
         let node = &procs[0];

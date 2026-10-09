@@ -21,11 +21,12 @@
 // Clippy exempts only `#[test]` functions; every function here is test code.
 #![allow(clippy::expect_used)]
 
+use claude_code::invocation::Kind;
 use claude_code::sessions;
 use config::Coordinator;
 use coordinator::{self, run};
 use learning::recognise;
-use prefix::{JobRecord, Kind};
+use prefix::JobRecord;
 use serde_json::Value;
 use std::ffi::OsString;
 use std::fs::{self, File};
@@ -578,7 +579,7 @@ fn bash_call_signature(s: &Session) -> Check {
 
 fn bash_call_eval(s: &Session) -> Check {
     let record = s.record()?;
-    let script = recognise::written(&record.command)
+    let script = claude_code::invocation::written(&record.command)
         .ok_or("no command found in the invocation (see the record)")?;
     let home = std::env::var_os("HOME").map(PathBuf::from);
     let commands = recognise::commands(&script, &s.repo, home.as_deref())

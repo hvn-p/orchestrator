@@ -9,9 +9,10 @@
 //! the whole tree instead. It catches up at start and after an event queue
 //! overflow, and finds the rare job that ended before its watch was in place.
 
+use claude_code::invocation::Kind;
 use inotify::{EventMask, Events, Inotify, WatchDescriptor, WatchMask};
 use learning::peaks::Measurement;
-use prefix::{self, JobRecord, Kind};
+use prefix::{self, JobRecord};
 use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, DirEntry};

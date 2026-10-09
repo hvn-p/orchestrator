@@ -5,9 +5,9 @@ use anyhow::{Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-/// The longest admission wait a configuration may hold: Claude Code stops
-/// waiting for a Bash call after 10 minutes at most, the wait included.
-pub const MAX_WAIT_SECS: u64 = 600;
+/// The longest admission wait a configuration may hold: the longest a Bash
+/// call may last, the wait included.
+pub const MAX_WAIT_SECS: u64 = claude_code::call::MAX_TIMEOUT_SECS;
 
 /// When a Bash call waits for memory before it runs. Sizes in MB.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -18,7 +18,6 @@ pub struct Admission {
     /// Free memory kept on top of a heavy call's expected peak.
     pub margin_mb: u64,
     /// The longest a call waits; then it runs anyway.
-    // claude-code: bash-call-timeout
     pub max_wait_secs: u64,
 }
 

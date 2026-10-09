@@ -184,8 +184,8 @@ struct Check {
 /// The commands of the Bash call `invocation`, run from `cwd`, that have a
 /// learned peak, in the call's order. Empty when the call cannot be parsed.
 pub fn known(invocation: &str, cwd: &Path, home: Option<&Path>, peaks_dir: &Path) -> Vec<Known> {
-    let Some(commands) =
-        recognise::written(invocation).and_then(|script| recognise::commands(&script, cwd, home))
+    let Some(commands) = claude_code::invocation::written(invocation)
+        .and_then(|script| recognise::commands(&script, cwd, home))
     else {
         return Vec::new();
     };
