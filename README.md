@@ -1,9 +1,11 @@
 # orchestrator
 
 orchestrator keeps the Claude Code sessions running in parallel on one Linux
-machine working within its finite resources. Rather than refusing work, it
-observes what each session runs and schedules it: delay, queue, slow down,
-pause, reorder.
+machine working within its finite resources, without refusing their work.
+Today it measures what each command uses, learns which commands are
+memory-hungry, and holds such a Bash call back until memory covers it.
+Planned work is tracked in the
+[issues](https://github.com/hvn-p/orchestrator/issues).
 
 ## Status
 

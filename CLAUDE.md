@@ -1,8 +1,9 @@
 # orchestrator
 
 Keeps the Claude Code sessions running in parallel on one Linux machine working
-within its finite resources: it delays, queues, slows down, pauses and reorders
-their work rather than refusing it. `docs/design.md` describes what exists and
+within its finite resources without refusing their work. Today it measures
+what each command uses and holds a memory-hungry Bash call back until memory
+covers it; planned work is in the GitHub issues. `docs/design.md` describes what exists and
 why: the design, its decisions, what has been measured and the known gaps.
 Start there.
 

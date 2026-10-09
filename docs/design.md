@@ -53,7 +53,7 @@ Every command Claude Code starts goes through `CLAUDE_CODE_SHELL_PREFIX`, which
 places it in its own sub-group before running it. The service measures these
 groups, and admission learns from what they used, without any list of
 commands. Beyond a Bash call's memory peak, jobs are not classified by
-behaviour (#?).
+behaviour (#22).
 
 ## Levers
 
@@ -67,9 +67,9 @@ behaviour (#?).
   when the project has one. The session decides. Enforcing the CI is a user
   policy, not orchestrator's.
 
-No lever slows a job down (#?),
-pauses or stops one (#?),
-or orders the calls waiting for memory (#?).
+No lever slows a job down (#19),
+pauses or stops one (#20),
+or orders the calls waiting for memory (#21).
 
 ## Principles
 
@@ -190,7 +190,7 @@ One binary, `orchestrator`, with subcommands.
     stays in English: Claude reads it.
   - **What wakes it**: `memory_pressure`, and `admission_wait`, which
     `watch` writes once per Bash call that admission has held back for the
-    configured time. Orphans do not wake it (#?).
+    configured time. Orphans do not wake it (#26).
   - **One at a time**: a holder file names the process running the
     coordinator by pid and start time, under a file lock; `watch`'s runs,
     `setup` and `orchestrator coordinator` all take it, and it frees itself
@@ -257,7 +257,7 @@ and survive a reboot, the configuration in `$XDG_CONFIG_HOME/orchestrator/`.
 - **A process**: `orchestrator sessions`, memory pressure events, orphans and
   the coordinator's briefing attribute it to the live session whose claude
   process it descends from, then to the one its `CLAUDE_CODE_SESSION_ID`
-  names, whether the session was started through `launch` or not (#?).
+  names, whether the session was started through `launch` or not (#23).
 
 ## Admission
 
@@ -301,7 +301,7 @@ replacing itself with the shell:
   `cgroup.events` of a job holding a reservation, which is how memory mostly
   frees up, and every second otherwise: available memory has no notification.
   Waiting calls have no order: the first to check once memory frees up
-  runs (#?).
+  runs (#21).
 - It writes one notice to its standard error when it starts waiting and one
   when it runs; Claude reads them with the call's output. A notice names the
   call by the label of its first heavy command that has run alone (its peak
@@ -641,7 +641,7 @@ October 2026, with scratch directories and sessions:
 
 ## Known gaps
 
-- **Outside the session's group**: Docker containers (#?), anything started
+- **Outside the session's group**: Docker containers (#30), anything started
   through `systemd-run --user`, services activated over D-Bus, an `xdg-open`
   handed to an already running browser. A shared service counts for the
   session that started it.
@@ -652,7 +652,7 @@ October 2026, with scratch directories and sessions:
   cannot see: only the longest wait bounds it (#16).
 - **The packages of a monorepo share one key**: the repository is the git
   common directory, so `pnpm test` run in two of them is one command, with one
-  expected peak (#?).
+  expected peak (#31).
 - **A heavy call that leaves a process running**, such as a server started in
   the background, keeps its reservation, net of what its group uses, until
   that process ends.
@@ -698,12 +698,6 @@ October 2026, with scratch directories and sessions:
 - **The kernel process connector to see sessions end**: it reports every
   process of the machine, thousands per second during a build. A pidfd on each
   session's claude process reports only what matters.
-- **`claude agents --json` to find sessions**: the supported interface, but
-  it starts a process per read and gives no process start time, which a
-  session file's `procStart` gives to tell a reused pid apart. The session
-  files are read instead, an undocumented contract under the merge guard and
-  the integration test (see `session-file` in
-  [claude-code-dependency.md](claude-code-dependency.md)).
 - **A threshold on available memory**: the kernel cannot report it crossing a
   threshold, so it has to be polled, and low available memory alone does not
   slow anything down. A PSI trigger reports the stall itself; admission, not an
