@@ -33,8 +33,9 @@ Early. What exists:
   lever. `orchestrator setup` is a conversation with it that ends with the
   configuration written.
 
-[docs/design.md](docs/design.md) describes what exists and why. Planned work,
-such as slowing down or pausing jobs and ordering waiting calls, is in the
+The documentation at the top of [src/lib.rs](src/lib.rs), and of each
+module, describes what exists and why. Planned work, such as slowing down or
+pausing jobs and ordering waiting calls, is in the
 [issues](https://github.com/hvn-p/orchestrator/issues).
 
 ## Requirements
@@ -101,8 +102,8 @@ Learned peaks live in `$XDG_STATE_HOME/orchestrator/peaks/` (by default
 `~/.local/state/orchestrator/peaks/`) unless `--state-dir` says otherwise, for
 `watch` as for `peaks`. A command is stored under a hash, with a label for
 display: the command as recognised, cut to 60 characters. Only commands Claude
-wrote land there; see "Recognising a command" in
-[docs/design.md](docs/design.md).
+wrote land there; see [src/recognise.rs](src/recognise.rs) and
+[src/peaks.rs](src/peaks.rs).
 
 ## Configuration
 

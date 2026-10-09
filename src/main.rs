@@ -1,5 +1,5 @@
 //! orchestrator: schedules the work of the Claude Code sessions running in
-//! parallel on one machine, so development keeps going. See docs/design.md.
+//! parallel on one machine, so development keeps going. See `src/lib.rs`.
 
 use anyhow::{Context, Result, anyhow};
 use clap::{Args, Parser, Subcommand};

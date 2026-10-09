@@ -5,6 +5,11 @@
 //! long. A run that ends successfully has handled its events; one that fails
 //! gives them back, and the next run waits `RETRY_DELAY`. A run lasts at most
 //! the configured time: past it, `watch` stops its process group.
+//!
+//! Two events wake it: memory pressure, and a Bash call admission has held
+//! back the configured time, once per call. Orphans do not. A run outlives
+//! a restarted `watch`: the new one waits for it to end, but no longer
+//! enforces its time limit.
 
 use super::queue::{self, Queued};
 use super::state::{self, Places};

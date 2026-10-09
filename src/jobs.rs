@@ -1,7 +1,9 @@
 //! Finished jobs. Once every process of a job has exited, its group still
 //! holds the job's memory peak. The service reads it, keeps it with the
-//! command of a Bash call, then removes the group. systemd removes every group
-//! of a session when the session ends, so peaks are read while it lives.
+//! command of a Bash call, then removes the group: empty groups would pile
+//! up, one per hook call and status line refresh. systemd removes every
+//! group of a session when the session ends, so peaks are read while it
+//! lives.
 //!
 //! `Tracker` follows the session tree through inotify: the kernel reports each
 //! new session scope, each new job group and each change of a job's

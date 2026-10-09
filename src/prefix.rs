@@ -5,6 +5,20 @@
 //! call back until memory covers it. The prefix then replaces itself with a
 //! shell running the command, so output, exit code and signals stay the
 //! command's. Any failure leaves the command running at once, unchanged.
+//!
+//! The prefix is where a command can wait: inside the call, already in its
+//! job group. A `PreToolUse` hook could not: it cannot wait past its own
+//! timeout, after which the call proceeds, and it runs before the call has
+//! a job group. Nor could interception at system level: `LD_PRELOAD` is
+//! fragile and misses static binaries, seccomp breaks `sudo` and stalls the
+//! session if its supervisor dies, ptrace breaks strace and gdb, and
+//! `eBPF`, fanotify and audit need root.
+//!
+//! Processes Claude Code starts without the prefix, such as its clipboard
+//! helpers, stay in `main/` and count with claude. Claude Code's own memory
+//! cap on tool commands (`CLAUDE_CODE_TOOL_MEMORY_LIMIT`) must stay off: it
+//! puts commands in a memory cgroup of its own, out of their job groups,
+//! and kills them past its limit.
 
 use crate::{admission, cgroup, config, peaks, runtime, state};
 use anyhow::{Context, Result};
