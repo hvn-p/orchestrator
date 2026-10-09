@@ -8,122 +8,37 @@
 //! Bash call is named by its label instead (see `peaks`): a command Claude
 //! wrote, which went through the model already.
 
-use crate::attribution::{Attribution, Orphan, SessionUsage};
+mod admission_wait;
+mod memory_pressure;
+mod orphans;
+
+pub use admission_wait::AdmissionWait;
+pub use memory_pressure::{MemoryPressure, SessionBrief, SessionSummary};
+pub use orphans::{OrphanSummary, Orphans};
+
+use crate::attribution::{Attribution, Orphan};
 use anyhow::{Context, Result};
 use serde::Serialize;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::Path;
 
-/// Sessions listed after the largest one in `memory_pressure`.
-const NEXT: usize = 2;
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct SessionSummary {
-    pub session: String,
-    pub session_id: String,
-    pub rss_mb: u64,
-    /// The session's largest process.
-    pub process_pid: u32,
-    pub process_rss_mb: u64,
-    pub process_comm: String,
-    pub process_command: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct SessionBrief {
-    pub session: String,
-    pub rss_mb: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct OrphanSummary {
-    pub pid: u32,
-    pub session_id: String,
-    pub rss_mb: u64,
-    pub processes: usize,
-    pub comm: String,
-    pub command: String,
-}
-
+/// One kind of event per variant, its payload in a module of its own.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Event {
-    MemoryPressure {
-        available_mb: u64,
-        /// The trigger: some task stalled on memory this long within a PSI
-        /// window.
-        stall_ms: u64,
-        largest: Option<SessionSummary>,
-        next: Vec<SessionBrief>,
-    },
-    Orphans {
-        orphans: Vec<OrphanSummary>,
-    },
-    /// Admission has held a heavy Bash call back this long; reported once
-    /// per call.
-    AdmissionWait {
-        /// The waiting session's name and id, when its claude process has a
-        /// session file.
-        session: Option<String>,
-        session_id: Option<String>,
-        job: String,
-        /// The call's label.
-        command: String,
-        waited_secs: u64,
-        peak_mb: u64,
-        /// The free memory it waits for.
-        need_mb: u64,
-        /// The memory free for admission now.
-        free_mb: u64,
-    },
+    MemoryPressure(MemoryPressure),
+    Orphans(Orphans),
+    AdmissionWait(AdmissionWait),
 }
 
 impl Event {
     pub fn memory_pressure(available_mb: u64, stall_ms: u64, att: &Attribution) -> Self {
-        Event::MemoryPressure {
-            available_mb,
-            stall_ms,
-            largest: att.sessions.first().map(summary),
-            next: att
-                .sessions
-                .iter()
-                .skip(1)
-                .take(NEXT)
-                .map(|s| SessionBrief {
-                    session: s.name.clone(),
-                    rss_mb: s.rss_kb / 1024,
-                })
-                .collect(),
-        }
+        Event::MemoryPressure(MemoryPressure::new(available_mb, stall_ms, att))
     }
 
     pub fn orphans(orphans: &[&Orphan]) -> Self {
-        Event::Orphans {
-            orphans: orphans
-                .iter()
-                .map(|o| OrphanSummary {
-                    pid: o.root.pid,
-                    session_id: o.session_id.clone(),
-                    rss_mb: o.rss_kb / 1024,
-                    processes: o.processes,
-                    comm: o.root.comm.clone(),
-                    command: o.root.command_head.clone(),
-                })
-                .collect(),
-        }
-    }
-}
-
-fn summary(s: &SessionUsage) -> SessionSummary {
-    SessionSummary {
-        session: s.name.clone(),
-        session_id: s.session_id.clone(),
-        rss_mb: s.rss_kb / 1024,
-        process_pid: s.largest.pid,
-        process_rss_mb: s.largest.rss_kb / 1024,
-        process_comm: s.largest.comm.clone(),
-        process_command: s.largest.command_head.clone(),
+        Event::Orphans(Orphans::new(orphans))
     }
 }
 
@@ -165,7 +80,7 @@ pub fn append_line(path: &Path, value: &impl Serialize) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::attribution::ProcRef;
+    use crate::attribution::{ProcRef, SessionUsage};
 
     #[test]
     fn memory_pressure_line_shape() {
@@ -201,7 +116,7 @@ mod tests {
 
     #[test]
     fn admission_wait_line_shape() {
-        let event = Event::AdmissionWait {
+        let event = Event::AdmissionWait(AdmissionWait {
             session: Some("alpha".into()),
             session_id: Some("a".into()),
             job: "job-bash-7-1".into(),
@@ -210,7 +125,7 @@ mod tests {
             peak_mb: 3000,
             need_mb: 5048,
             free_mb: 1200,
-        };
+        });
         let v: serde_json::Value = serde_json::from_str(&to_line(5, &event).unwrap()).unwrap();
         assert_eq!(v["kind"], "admission_wait");
         assert_eq!(v["session"], "alpha");
@@ -223,7 +138,7 @@ mod tests {
     fn appends_one_line_per_event() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("events.jsonl");
-        let event = Event::Orphans { orphans: vec![] };
+        let event = Event::Orphans(Orphans { orphans: vec![] });
         append(&path, 1, &event).unwrap();
         append(&path, 2, &event).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();

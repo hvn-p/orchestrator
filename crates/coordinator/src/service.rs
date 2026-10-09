@@ -259,7 +259,7 @@ impl Service {
             let session = cgroup::session_of(&w.group)
                 .and_then(|scope| cgroup::main_pid(&self.places.admission.cgroup_root, scope))
                 .and_then(|pid| sessions.iter().find(|s| s.pid == pid));
-            let event = Event::AdmissionWait {
+            let event = Event::AdmissionWait(watch::events::AdmissionWait {
                 session: session.map(|s| s.name.clone()),
                 session_id: session.map(|s| s.session_id.clone()),
                 job: w.job.clone(),
@@ -268,7 +268,7 @@ impl Service {
                 peak_mb: w.peak_mb,
                 need_mb: w.need_mb,
                 free_mb,
-            };
+            });
             if let Err(e) = events::append(&self.events, at, &event) {
                 eprintln!("orchestrator: {e:#}");
             }
@@ -490,12 +490,12 @@ printf '{"type":"result","is_error":false,"num_turns":1,"usage":{"input_tokens":
     }
 
     fn pressure(available_mb: u64) -> Event {
-        Event::MemoryPressure {
+        Event::MemoryPressure(watch::events::MemoryPressure {
             available_mb,
             stall_ms: 200,
             largest: None,
             next: vec![],
-        }
+        })
     }
 
     /// Waits for the running coordinator to end, then lets the service

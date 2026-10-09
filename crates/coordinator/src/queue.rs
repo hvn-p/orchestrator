@@ -53,9 +53,13 @@ impl Queued {
     /// coordinator's yet.
     pub fn new(at: u64, event: &Event) -> Result<Option<Queued>> {
         let key = match event {
-            Event::MemoryPressure { .. } => "memory_pressure".to_string(),
-            Event::AdmissionWait { job, .. } => format!("admission_wait {job}"),
-            Event::Orphans { .. } => return Ok(None),
+            Event::MemoryPressure(watch::events::MemoryPressure { .. }) => {
+                "memory_pressure".to_string()
+            }
+            Event::AdmissionWait(watch::events::AdmissionWait { job, .. }) => {
+                format!("admission_wait {job}")
+            }
+            Event::Orphans(watch::events::Orphans { .. }) => return Ok(None),
         };
         Ok(Some(Queued {
             key,
@@ -171,7 +175,7 @@ mod tests {
     use watch::events::SessionBrief;
 
     fn pressure(available_mb: u64) -> Event {
-        Event::MemoryPressure {
+        Event::MemoryPressure(watch::events::MemoryPressure {
             available_mb,
             stall_ms: 200,
             largest: None,
@@ -179,11 +183,11 @@ mod tests {
                 session: "alpha".into(),
                 rss_mb: 4000,
             }],
-        }
+        })
     }
 
     fn wait(job: &str) -> Event {
-        Event::AdmissionWait {
+        Event::AdmissionWait(watch::events::AdmissionWait {
             session: Some("alpha".into()),
             session_id: Some("a".into()),
             job: job.into(),
@@ -192,7 +196,7 @@ mod tests {
             peak_mb: 3000,
             need_mb: 5000,
             free_mb: 1000,
-        }
+        })
     }
 
     pub(crate) fn queued(at: u64, event: &Event) -> Queued {
@@ -229,7 +233,7 @@ mod tests {
 
     #[test]
     fn orphans_are_not_queued() {
-        let orphans = Event::Orphans { orphans: vec![] };
+        let orphans = Event::Orphans(watch::events::Orphans { orphans: vec![] });
         assert_eq!(Queued::new(1, &orphans).unwrap(), None);
     }
 

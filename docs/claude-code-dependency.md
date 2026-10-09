@@ -152,7 +152,7 @@ counts toward it, and the prefix cannot see it: `max_wait_secs` has to leave
 the command its time. A foreground call that reaches its timeout is moved to
 the background, not stopped, unless it starts with `sleep`.
 
-- Code: `crates/config/src/lib.rs` (`Admission::max_wait_secs`).
+- Code: `crates/config/src/admission.rs` (`Admission::max_wait_secs`).
 - If it changes: a shorter default makes a waiting call reach its timeout:
   Claude then gets a timeout notice instead of the result.
 - Verified: documentation (env-vars; tools-reference, "Timeout and output

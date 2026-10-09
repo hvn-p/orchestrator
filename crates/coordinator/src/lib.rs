@@ -334,16 +334,16 @@ mod tests {
     use watch::events::Event;
 
     fn pressure(available_mb: u64) -> Event {
-        Event::MemoryPressure {
+        Event::MemoryPressure(watch::events::MemoryPressure {
             available_mb,
             stall_ms: 200,
             largest: None,
             next: vec![],
-        }
+        })
     }
 
     fn wait(job: &str) -> Event {
-        Event::AdmissionWait {
+        Event::AdmissionWait(watch::events::AdmissionWait {
             session: Some("alpha".into()),
             session_id: Some("a".into()),
             job: job.into(),
@@ -352,7 +352,7 @@ mod tests {
             peak_mb: 3000,
             need_mb: 5000,
             free_mb: 1000,
-        }
+        })
     }
 
     fn queued(at: u64, event: &Event) -> Queued {

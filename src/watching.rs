@@ -39,7 +39,7 @@ pub struct Thresholds {
     pub cooldown_secs: u64,
 }
 
-pub struct Config {
+pub struct Options {
     pub proc_root: PathBuf,
     pub sessions_dir: PathBuf,
     pub runtime_dir: PathBuf,
@@ -138,7 +138,7 @@ enum Signal {
     Coordinator(Wake),
 }
 
-pub fn run(cfg: &Config) -> Result<()> {
+pub fn run(cfg: &Options) -> Result<()> {
     std::fs::create_dir_all(&cfg.runtime_dir)
         .with_context(|| format!("creating {}", cfg.runtime_dir.display()))?;
     let meminfo = cfg.proc_root.join("meminfo");
@@ -244,7 +244,7 @@ pub fn run(cfg: &Config) -> Result<()> {
 }
 
 /// The coordinator as `watch` drives it, with `watch`'s own places.
-fn coordinator_service(cfg: &Config, meminfo: &Path, events_path: &Path) -> Service {
+fn coordinator_service(cfg: &Options, meminfo: &Path, events_path: &Path) -> Service {
     let places = coordinator::state::Places {
         proc_root: cfg.proc_root.clone(),
         sessions_dir: cfg.sessions_dir.clone(),
@@ -260,7 +260,7 @@ fn coordinator_service(cfg: &Config, meminfo: &Path, events_path: &Path) -> Serv
 }
 
 /// Sets up each kernel signal, reporting the ones that cannot be.
-fn sources(cfg: &Config, job_paths: Option<&JobPaths>) -> Sources {
+fn sources(cfg: &Options, job_paths: Option<&JobPaths>) -> Sources {
     Sources {
         trigger: report(
             "memory pressure",
@@ -331,7 +331,7 @@ fn wait(src: &Sources, coordinator: &Service, timeout: Duration) -> std::io::Res
 
 /// Writes a memory pressure event when one is due, and returns it.
 fn on_pressure(
-    cfg: &Config,
+    cfg: &Options,
     meminfo: &Path,
     events_path: &Path,
     watcher: &mut Watcher,
@@ -347,7 +347,7 @@ fn on_pressure(
     Ok(event.map(|e| (now, e)))
 }
 
-fn scan_orphans(cfg: &Config, events_path: &Path, watcher: &mut Watcher) -> Result<()> {
+fn scan_orphans(cfg: &Options, events_path: &Path, watcher: &mut Watcher) -> Result<()> {
     let att = watch::scan(&cfg.proc_root, &cfg.sessions_dir)?;
     if let Some(event) = watcher.check_orphans(&att) {
         events::append(events_path, now_secs(), &event)?;
@@ -465,7 +465,7 @@ mod tests {
         assert!(w.check_orphans(&one).is_some());
         assert!(w.check_orphans(&one).is_none());
         match w.check_orphans(&two) {
-            Some(Event::Orphans { orphans }) => assert_eq!(orphans.len(), 1),
+            Some(Event::Orphans(o)) => assert_eq!(o.orphans.len(), 1),
             other => panic!("expected one new orphan, got {other:?}"),
         }
         // The pid comes back with another start time: a new process.

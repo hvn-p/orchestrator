@@ -459,12 +459,12 @@ mod tests {
     }
 
     fn batch() -> Vec<Queued> {
-        let event = Event::MemoryPressure {
+        let event = Event::MemoryPressure(watch::events::MemoryPressure {
             available_mb: 700,
             stall_ms: 200,
             largest: None,
             next: vec![],
-        };
+        });
         vec![Queued::new(1_791_210_633, &event).unwrap().unwrap()]
     }
 
