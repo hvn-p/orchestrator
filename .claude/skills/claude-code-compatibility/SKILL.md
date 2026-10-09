@@ -6,14 +6,14 @@ description: Use when Claude Code was updated or a new version is out, before tr
 # orchestrator and Claude Code compatibility
 
 orchestrator relies on Claude Code only through the contracts listed in
-`docs/claude-code-dependency.md`, each with an id. This skill checks them
+`crates/claude-code/claude-code-dependency.md`, each with an id. This skill checks them
 against the installed Claude Code. It never changes the code: a broken
 contract becomes an issue, and fixing it is a separate decision.
 
 ## Steps
 
 1. **Versions.** Read the version on the `Last verified: Claude Code <version>,
-   <date>.` line of `docs/claude-code-dependency.md`, then run
+   <date>.` line of `crates/claude-code/claude-code-dependency.md`, then run
    `claude --version`. Same version: say so, and stop unless the user wants
    the test run anyway.
 

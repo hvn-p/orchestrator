@@ -308,7 +308,7 @@ special to `sh` breaks every hook. Install where the path is plain.
 ## After a Claude Code update
 
 orchestrator relies on Claude Code through the contracts of
-[docs/claude-code-dependency.md](https://github.com/hvn-p/orchestrator/blob/main/docs/claude-code-dependency.md),
+[crates/claude-code/claude-code-dependency.md](https://github.com/hvn-p/orchestrator/blob/main/crates/claude-code/claude-code-dependency.md),
 whose "Last verified" line names the version they were checked on. A broken
 contract costs orchestration, not the command: commands no longer in job
 groups, Bash calls in `job-other-*`, no admission notice reaching Claude,

@@ -31,7 +31,7 @@ writes the configuration in a setup conversation and, once the user agrees,
 waits, from the state `watch` gathers for it; it pulls no lever. What was
 measured, on throwaway prototypes and on the code, is under "Measured". What
 orchestrator relies on in Claude Code is listed in
-[claude-code-dependency.md](claude-code-dependency.md), with the version it
+[claude-code-dependency.md](../crates/claude-code/claude-code-dependency.md), with the version it
 was last verified on.
 
 ## One process group per session
@@ -89,7 +89,7 @@ or orders the calls waiting for memory (#21).
   group, out of `main/`, and start immediately.
 - **Claude Code is today's only host, behind a listed boundary**: everything
   orchestrator relies on in it is a contract of
-  [claude-code-dependency.md](claude-code-dependency.md), and the code
+  [claude-code-dependency.md](../crates/claude-code/claude-code-dependency.md), and the code
   relying on one carries its marker. Nothing else of Claude Code is relied
   on. A merge guard keeps the list current, and a manual integration test
   checks it against a new Claude Code version.

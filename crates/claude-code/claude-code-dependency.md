@@ -12,10 +12,13 @@ Last verified: Claude Code 2.1.292, 2026-10-07.
 
 - **Markers**: each place in the code that relies on a contract carries, on
   its own line right above the item, the comment `// claude-code: <id>`, with
-  `<id>` a contract's heading below. `grep -rn 'claude-code: '` finds them.
+  `<id>` a contract's heading below. They all live in the `claude-code`
+  crate, which no other crate bypasses. `grep -rn 'claude-code: '` finds
+  them.
 - **Consistency**: `tests/claude_code_markers.rs`, part of `cargo test`,
-  fails when the ids of the markers and the headings below differ, or when a
-  contract's Code line does not list exactly the files holding its markers.
+  fails when the ids of the markers and the headings below differ, when a
+  contract's Code line does not list exactly the files holding its markers,
+  or when a marker lies outside `crates/claude-code/`.
 - **Merge guard**: a pull request that changes a file holding a marker,
   before or after the change, must change this file too, unless it carries
   the label `claude-code-dependency-unchanged`.
@@ -56,7 +59,7 @@ call or an MCP server, and through `/bin/sh -c '<prefix> <quoted command>'`
 for a hook, with the path unquoted: it must hold no space nor character
 special to `sh`.
 
-- Code: `src/launch.rs` (`PREFIX_BIN`, `PREFIX_VAR`).
+- Code: `crates/claude-code/src/launch.rs` (`PREFIX_VAR`).
 - If it changes: renamed or ignored, sessions still run, but every command
   stays in `main/`: nothing is measured, nothing waits.
 - Verified: integration test (the probe's Bash call runs in a job group of
@@ -71,7 +74,7 @@ assembled, setup included (see `bash-call-signature`). The prefix runs it
 with `bash -c`, which assumes Claude Code's shell is bash, its default when
 `$SHELL` is bash; `CLAUDE_CODE_SHELL` can make it zsh.
 
-- Code: `src/bin/orchestrator-prefix.rs` (`main`), `crates/prefix/src/lib.rs` (`run`).
+- Code: `crates/claude-code/src/invocation.rs` (`command`, `shell`).
 - If it changes: with more than one argument, the prefix runs them as a
   command, unplaced and unadmitted, and logs it to `prefix.log`; with none,
   it exits successfully. Orchestration is lost, never the command. With a
@@ -87,7 +90,7 @@ shell-form command hooks, the status line, and stdio MCP server starts. These
 do not: exec-form hooks (`args` set), PowerShell hooks, and helpers Claude
 Code starts itself, such as clipboard tools; they stay in `main/`.
 
-- Code: `crates/prefix/src/lib.rs` (`Kind`).
+- Code: `crates/claude-code/src/invocation.rs` (`Kind`).
 - If it changes: whatever leaves the prefix is counted with claude in
   `main/`; if Bash calls leave it, admission and learning stop.
 - Verified: integration test (a Bash call, a hook and an MCP server each run
@@ -103,7 +106,7 @@ directory with `pwd -P >| <file>`. Hooks, the status line and MCP servers do
 neither. Either sign marks a Bash call: a call may run before its snapshot
 exists.
 
-- Code: `crates/prefix/src/lib.rs` (`Kind::of`).
+- Code: `crates/claude-code/src/invocation.rs` (`kind`).
 - If it changes: Bash calls are taken for hooks: they run at once in
   `job-other-*` groups, unmeasured and never held back.
 - Verified: integration test (the probe's call runs in a `job-bash-*` group
@@ -117,7 +120,7 @@ invocation: single-quoted, or bare when it is one word, followed by
 `< /dev/null` unless it reads its own input. Setup lines before it may span
 several lines, and turn `extglob` off.
 
-- Code: `crates/learning/src/recognise.rs` (`written`, `options`).
+- Code: `crates/claude-code/src/invocation.rs` (`written`, `parser_options`).
 - If it changes: no command is recognised: nothing is learned, nothing
   waits. Unit tests hold copies of a real invocation ("as Claude Code
   <version> hands it to the prefix"), to update with the contract.
@@ -129,7 +132,7 @@ Claude Code starts the prefix of a Bash call in the directory the command
 runs in: the session's working directory, which follows a `cd` within the
 project from one call to the next.
 
-- Code: `crates/prefix/src/lib.rs` (`place`, `admit`).
+- Code: `crates/claude-code/src/invocation.rs` (`working_dir`).
 - If it changes: peaks are learned and looked up in the wrong repository.
 - Verified: integration test (the record's directory is the session's).
   Documentation: tools-reference, the Bash tool's working directory.
@@ -139,7 +142,7 @@ project from one call to the next.
 What a Bash call writes to its standard error reaches Claude with the call's
 result. Admission's notices go there; the prefix's own failures must not.
 
-- Code: `crates/prefix/src/lib.rs` (`admit`, `log_failure`).
+- Code: `crates/claude-code/src/call.rs` (`notices`).
 - If it changes: Claude no longer learns why a call waited.
 - Verified: integration test (a line the probe writes to its standard error
   is in the session's output).
@@ -152,7 +155,7 @@ counts toward it, and the prefix cannot see it: `max_wait_secs` has to leave
 the command its time. A foreground call that reaches its timeout is moved to
 the background, not stopped, unless it starts with `sleep`.
 
-- Code: `crates/config/src/admission.rs` (`Admission::max_wait_secs`).
+- Code: `crates/claude-code/src/call.rs` (`MAX_TIMEOUT_SECS`).
 - If it changes: a shorter default makes a waiting call reach its timeout:
   Claude then gets a timeout notice instead of the result.
 - Verified: documentation (env-vars; tools-reference, "Timeout and output
@@ -167,8 +170,7 @@ written when the session starts, rewritten (closed after writing, or moved
 in place) when its status changes, and may outlive a crashed process. The
 `<pid>.<hash>.key` files next to it hold credentials and are never opened.
 
-- Code: `crates/claude-code/src/sessions.rs` (`read_sessions`), `crates/watch/src/exits.rs` (`Exits::new`,
-  `Exits::hold_new`), `crates/watch/src/attribution.rs` (`owning_session`).
+- Code: `crates/claude-code/src/sessions.rs` (`read_sessions`, `CHANGES`).
 - If it changes: `watch` no longer sees sessions start or end; `sessions`
   and memory events attribute nothing to a session.
 - Verified: integration test (the probe finds the file of an ancestor
@@ -185,8 +187,8 @@ is the claude process's start time in clock ticks since boot, field 22 of
 match its process belongs to a dead session whose pid was reused. Other
 fields are ignored.
 
-- Code: `crates/claude-code/src/sessions.rs` (`ClaudeSession`), `crates/watch/src/attribution.rs`
-  (`is_alive`), `crates/watch/src/exits.rs` (`Exits::alive`).
+- Code: `crates/claude-code/src/sessions.rs` (`ClaudeSession`,
+  `ClaudeSession::is_process`).
 - If it changes: a missing or renamed field makes the file unreadable; a
   `procStart` with another meaning makes every session look dead.
 - Verified: integration test (the file parses, its `pid`, `sessionId`, `cwd`
@@ -199,7 +201,7 @@ session's `sessionId`. It keeps the value it had when the process started:
 after `/clear` or a resume, the session's id changes and the process's does
 not.
 
-- Code: `crates/system/src/procfs.rs` (`SESSION_VAR`), `crates/watch/src/attribution.rs` (`attribute`).
+- Code: `crates/claude-code/src/sessions.rs` (`ID_VAR`).
 - If it changes: a process reparented away from claude (`nohup`, `setsid`)
   can no longer be attributed to its session, nor reported as an orphan.
 - Verified: integration test (the Bash call, the hook and the MCP server
@@ -249,7 +251,7 @@ one, stops the run once its estimated spend at list price reaches the
 amount, `--no-session-persistence` keeps no transcript, and a standard input
 left open is waited for.
 
-- Code: `crates/coordinator/src/run.rs` (`args`, `command`).
+- Code: `crates/claude-code/src/agent.rs` (`command`, `args`).
 - If it changes: a coordinator starts without its role, with the user's
   settings and hooks, or without its bounds; an unknown option makes every
   run fail at once, which `runs.jsonl` and `last-run.err` show.
@@ -287,7 +289,7 @@ is denied without asking; with `default`, it is asked.
 `blockReadsOutsideWorkingDirectories`, read-only commands such as `cat` are
 denied outside the working directories.
 
-- Code: `crates/coordinator/src/run.rs` (`args`).
+- Code: `crates/claude-code/src/agent.rs` (`args`).
 - If it changes: a coordinator cannot read the state or note in its
   journal, or, worse, may run what it was not given.
 - Verified: integration test (`orchestrator machine` and the journal note
@@ -310,8 +312,8 @@ has an inbox too. The receiver reads the message between tool calls, or in a
 new turn when idle. `ListAgents` lists the reachable sessions, its first line
 naming the session itself.
 
-- Code: `crates/coordinator/src/run.rs` (`args`), `crates/coordinator/src/service.rs`
-  (`check_waits`), `crates/watch/src/report.rs` (`sessions`, `session_label`).
+- Code: `crates/claude-code/src/agent.rs` (`args`),
+  `crates/claude-code/src/messages.rs` (`address`).
 - If it changes: the coordinator's messages do not arrive, arrive held, or
   go to another session of the same name.
 - Verified: integration test (`ListAgents` runs and names the session; the
@@ -328,7 +330,7 @@ summed over the run (`input_tokens`, `cache_creation_input_tokens`,
 `permission_denials` the calls denied, and `total_cost_usd` the estimated
 spend at API list price, which a subscription does not pay.
 
-- Code: `crates/coordinator/src/run.rs` (`RunRecord::new`).
+- Code: `crates/claude-code/src/agent.rs` (`RunResult::parse`).
 - If it changes: `runs.jsonl` and `orchestrator setup` lose the tokens and
   the reply of each run. A run that exits successfully still counts as
   having handled its events; one whose `is_error` reads true does not.
@@ -342,7 +344,7 @@ In an interactive session, a Bash call started with `run_in_background` runs
 with no time limit, and when it ends, an idle session starts a turn with its
 output.
 
-- Code: `crates/coordinator/src/run.rs` (`NEXT`).
+- Code: `crates/claude-code/src/agent.rs` (`args`).
 - If it changes: an interactive coordinator no longer wakes for events; they
   wait in the queue until it closes and `watch` takes them.
 - Verified: measured on 2.1.291 with a background session (claude --bg),

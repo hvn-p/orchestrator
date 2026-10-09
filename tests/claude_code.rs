@@ -1,5 +1,5 @@
 //! Checks the installed Claude Code against the contracts orchestrator relies
-//! on, listed by id in docs/claude-code-dependency.md. Manual only: it starts
+//! on, listed by id in crates/claude-code/claude-code-dependency.md. Manual only: it starts
 //! real headless sessions, which need a signed-in `claude` on the `PATH`, a
 //! systemd user manager with cgroup v2, and spend a few tens of thousands of
 //! tokens, most read from the prompt cache.
@@ -75,7 +75,7 @@ fn the_installed_claude_code_keeps_every_contract() {
     eprintln!("Claude Code {}\n{report}", s.version);
     assert!(
         broken == 0,
-        "Claude Code {} broke {broken} contract(s) of docs/claude-code-dependency.md. They are \
+        "Claude Code {} broke {broken} contract(s) of crates/claude-code/claude-code-dependency.md. They are \
          listed in dependency order: a broken one may break those after it.\n{report}",
         s.version
     );
@@ -123,7 +123,7 @@ fn the_installed_claude_code_runs_a_coordinator() {
     );
     assert!(
         broken == 0,
-        "Claude Code {} broke {broken} contract(s) of docs/claude-code-dependency.md while \
+        "Claude Code {} broke {broken} contract(s) of crates/claude-code/claude-code-dependency.md while \
          running a coordinator.\n{report}\nIts reply: {:?}",
         c.version,
         c.reply()

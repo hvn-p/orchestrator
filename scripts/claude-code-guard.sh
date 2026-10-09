@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Merge guard of docs/claude-code-dependency.md. A change to a file that relies
+# Merge guard of crates/claude-code/claude-code-dependency.md. A change to a file that relies
 # on Claude Code, one holding a marker comment before or after the change,
 # must update that document too.
 #
@@ -8,7 +8,7 @@
 # Exits 0 when the document is not due, 1 when it is, 2 on an error.
 set -euo pipefail
 
-doc=docs/claude-code-dependency.md
+doc=crates/claude-code/claude-code-dependency.md
 marker='^[[:space:]]*// claude-code: [a-z0-9]+(-[a-z0-9]+)*[[:space:]]*$'
 
 if [[ $# -ne 2 ]]; then

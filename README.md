@@ -249,7 +249,7 @@ orchestrator@orchestrator` fetches the latest guide.
 ## Claude Code dependency
 
 orchestrator relies on Claude Code only through the contracts listed in
-[docs/claude-code-dependency.md](docs/claude-code-dependency.md), with the
+[crates/claude-code/claude-code-dependency.md](crates/claude-code/claude-code-dependency.md), with the
 Claude Code version they were last verified on. To check them against the
 installed Claude Code:
 
@@ -267,7 +267,7 @@ prompt cache. It never runs in CI.
 Every pull request and every push to `main` runs `cargo fmt --check`,
 `cargo clippy --all-targets -- -D warnings`, `cargo test`, and a build with
 Rust 1.88. A pull request that changes code relying on Claude Code must also
-update `docs/claude-code-dependency.md`, unless it carries the label
+update `crates/claude-code/claude-code-dependency.md`, unless it carries the label
 `claude-code-dependency-unchanged`; `scripts/claude-code-guard.sh <base>
 <head>` runs that check locally. A pull request that changes anything outside
 the guide, `plugins/orchestrator/`, must update the guide too, or hold in its

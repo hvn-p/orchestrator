@@ -129,7 +129,7 @@ Read the one the question needs:
 
 Claude Code compatibility: orchestrator relies on Claude Code only through the
 contracts listed in
-[docs/claude-code-dependency.md](https://github.com/hvn-p/orchestrator/blob/main/docs/claude-code-dependency.md)
-(under `docs/` in a clone of the repository), whose "Last verified" line names
+[crates/claude-code/claude-code-dependency.md](https://github.com/hvn-p/orchestrator/blob/main/crates/claude-code/claude-code-dependency.md)
+(under `crates/claude-code/` in a clone of the repository), whose "Last verified" line names
 the Claude Code version they were checked on. Read the version there, never
 from memory.
