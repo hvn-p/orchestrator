@@ -12,9 +12,10 @@ known gaps. Start there.
   design. Each issue carries exactly one type label (`type: feature`,
   `type: bug`, `type: task`), its area labels, and `needs decision` or
   `proposal` when it applies.
-- `src/`: the Rust binary (`orchestrator sessions`, `orchestrator watch`). Done
-  means `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` and
-  `cargo test` all pass.
+- A Cargo workspace, one crate per component under `crates/`; the root
+  package holds the two binaries, `orchestrator` and `orchestrator-prefix`.
+  Done means `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`
+  and `cargo test` all pass; run from the root, they cover every crate.
 - Code, comments and docs are in English; the repository is public, so nothing
   specific to one person's machine, accounts or setup goes in.
 - What orchestrator relies on in Claude Code is listed in

@@ -9,12 +9,11 @@
 use super::queue::{self, Queued};
 use super::state::{self, Places};
 use super::{Holder, Paths, Waits, pidfd, run};
-use crate::admission;
-use crate::config::{self, Coordinator};
-use crate::events::{self, Event};
-use crate::{cgroup, runtime, sessions};
 use anyhow::{Context, Result};
+use claude_code::sessions;
+use config::{self, Coordinator};
 use inotify::{Inotify, WatchMask};
+use prefix::admission;
 use rustix::process::{Pid, Signal, kill_process_group};
 use std::ffi::OsString;
 use std::fs::{self, File};
@@ -23,6 +22,9 @@ use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::Child;
 use std::time::{Duration, Instant};
+use system::cgroup;
+use system::runtime;
+use watch::events::{self, Event};
 
 /// Where holders are looked up: always the real processes, whatever the
 /// proc root `watch` reads sessions from.
@@ -310,7 +312,7 @@ impl Service {
         let at = now_ms() / 1000;
         // Nobody is at a terminal to set the language from: the configured
         // one, else English.
-        let briefing = state::briefing(&self.places, &self.paths, crate::language::DEFAULT);
+        let briefing = state::briefing(&self.places, &self.paths, config::language::DEFAULT);
         let prompt = run::prompt(&run::Mode::Batch(&batch), &self.paths, at, &briefing);
         let mode = run::Mode::Batch(&batch);
         let spawned =
@@ -423,7 +425,7 @@ fn now_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Config;
+    use config::Config;
     use queue::Status;
     use rustix::event::{PollFd, PollFlags, Timespec, poll};
     use std::os::unix::fs::PermissionsExt;

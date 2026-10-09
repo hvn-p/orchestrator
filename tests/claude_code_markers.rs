@@ -12,8 +12,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 const DOC: &str = "docs/claude-code-dependency.md";
-/// Where markers live, from the crate root.
-const SOURCES: [&str; 2] = ["src", "tests"];
+/// Where markers live, from the workspace root.
+const SOURCES: [&str; 3] = ["src", "crates", "tests"];
 /// What a marker comment starts with, the contract's id following.
 const MARKER: &str = "// claude-code: ";
 /// What a comment that means to be a marker holds.

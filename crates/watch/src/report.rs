@@ -2,7 +2,20 @@
 //! or a coordinator: `watch` hands the same text to a coordinator when it
 //! wakes one, so that it need not run the commands itself.
 
-use crate::{admission, cgroup, config, memory, peaks, procfs, runtime, sessions, watch};
+use prefix::admission;
+
+use system::cgroup;
+
+use system::memory;
+
+use learning::peaks;
+
+use system::procfs;
+
+use system::runtime;
+
+use claude_code::sessions;
+
 use anyhow::Result;
 use std::fmt::Write as _;
 use std::path::Path;
@@ -17,7 +30,7 @@ const DISPLAY_CMDLINE: usize = 70;
 // claude-code: cross-session-message
 pub fn sessions(proc_root: &Path, sessions_dir: &Path, heads: bool) -> Result<String> {
     let available = memory::available_mb(&proc_root.join("meminfo"))?;
-    let att = watch::scan(proc_root, sessions_dir)?;
+    let att = crate::scan(proc_root, sessions_dir)?;
     let shown = |p: &crate::attribution::ProcRef| {
         if heads {
             p.command_head.clone()

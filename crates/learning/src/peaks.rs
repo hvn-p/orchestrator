@@ -24,9 +24,8 @@
 //! `RECENT` calls count, so the estimate follows a command whose weight
 //! changes.
 
-use crate::jobs::Measurement;
 use crate::recognise::{self, Command};
-use crate::{procfs, repository};
+use crate::repository;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -36,6 +35,20 @@ use std::fs;
 use std::io::ErrorKind;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
+use system::procfs;
+
+/// One finished Bash call.
+#[derive(Debug, PartialEq, Eq, Serialize)]
+pub struct Measurement {
+    pub at: u64,
+    /// The session's scope.
+    pub session: String,
+    pub job: String,
+    pub peak_mb: u64,
+    /// The whole invocation Claude Code assembled.
+    pub command: String,
+    pub cwd: String,
+}
 
 /// Calls remembered per command.
 const RECENT: usize = 5;

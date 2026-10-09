@@ -1,0 +1,17 @@
+[package]
+name = "orchestrator-system"
+description = "The machine as orchestrator sees it: cgroups, processes, memory, memory pressure, and where orchestrator keeps its files."
+publish = false
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

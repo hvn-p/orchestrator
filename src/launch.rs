@@ -6,13 +6,13 @@
 //! unorchestrated, never prevents it: the command runs unchanged, after one
 //! warning.
 
-use crate::cgroup;
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use std::ffi::OsString;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use system::cgroup;
 
 /// The shell prefix binary, installed next to `orchestrator`.
 // claude-code: shell-prefix-variable

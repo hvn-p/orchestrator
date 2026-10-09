@@ -21,16 +21,19 @@
 // Clippy exempts only `#[test]` functions; every function here is test code.
 #![allow(clippy::expect_used)]
 
-use orchestrator::config::Coordinator;
-use orchestrator::coordinator::{self, run};
-use orchestrator::prefix::{JobRecord, Kind};
-use orchestrator::{cgroup, prefix, procfs, recognise, sessions};
+use claude_code::sessions;
+use config::Coordinator;
+use coordinator::{self, run};
+use learning::recognise;
+use prefix::{JobRecord, Kind};
 use serde_json::Value;
 use std::ffi::OsString;
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
+use system::cgroup;
+use system::procfs;
 
 /// The longest the session may take; it takes about ten seconds.
 const TIMEOUT: Duration = Duration::from_secs(180);

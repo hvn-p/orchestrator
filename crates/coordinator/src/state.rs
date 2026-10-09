@@ -6,10 +6,14 @@
 //! as the read commands print, which it may still run for more.
 
 use super::{Paths, journal};
-use crate::{admission, cgroup, config, machine, report, runtime};
 use anyhow::Result;
+use prefix::admission;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
+use system::cgroup;
+use system::machine;
+use system::runtime;
+use watch::report;
 
 /// Journal lines a coordinator is shown.
 const JOURNAL_LINES: usize = 40;
@@ -31,7 +35,7 @@ impl Places {
     pub fn from_env() -> Result<Places> {
         let proc_root = PathBuf::from("/proc");
         Ok(Places {
-            sessions_dir: crate::sessions::default_dir()
+            sessions_dir: claude_code::sessions::default_dir()
                 .ok_or_else(|| anyhow::anyhow!("neither CLAUDE_CONFIG_DIR nor HOME is set"))?,
             admission: admission::Paths {
                 cgroup_root: PathBuf::from(cgroup::ROOT),
@@ -39,7 +43,7 @@ impl Places {
                 runtime: runtime::default_dir()?,
             },
             proc_root,
-            state_dir: crate::state::default_dir()?,
+            state_dir: system::state::default_dir()?,
             config: config::default_path()?,
         })
     }

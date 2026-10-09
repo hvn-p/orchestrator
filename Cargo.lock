@@ -555,13 +555,105 @@ name = "orchestrator"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "brush-parser",
  "clap",
+ "orchestrator-claude-code",
+ "orchestrator-config",
+ "orchestrator-coordinator",
+ "orchestrator-learning",
+ "orchestrator-prefix",
+ "orchestrator-system",
+ "orchestrator-watch",
+ "rustix",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "orchestrator-claude-code"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "orchestrator-config"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "orchestrator-coordinator"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
  "inotify",
+ "orchestrator-claude-code",
+ "orchestrator-config",
+ "orchestrator-prefix",
+ "orchestrator-system",
+ "orchestrator-watch",
  "rustix",
  "serde",
  "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "orchestrator-learning"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "brush-parser",
+ "orchestrator-system",
+ "serde",
+ "serde_json",
  "sha2",
+ "tempfile",
+]
+
+[[package]]
+name = "orchestrator-prefix"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "inotify",
+ "orchestrator-config",
+ "orchestrator-learning",
+ "orchestrator-system",
+ "rustix",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "orchestrator-system"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "tempfile",
+]
+
+[[package]]
+name = "orchestrator-watch"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "inotify",
+ "orchestrator-claude-code",
+ "orchestrator-config",
+ "orchestrator-learning",
+ "orchestrator-prefix",
+ "orchestrator-system",
+ "rustix",
+ "serde",
+ "serde_json",
  "tempfile",
 ]
 

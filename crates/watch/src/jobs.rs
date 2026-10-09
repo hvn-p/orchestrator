@@ -9,16 +9,17 @@
 //! the whole tree instead. It catches up at start and after an event queue
 //! overflow, and finds the rare job that ended before its watch was in place.
 
-use crate::prefix::{self, JobRecord, Kind};
-use crate::{cgroup, runtime};
 use inotify::{EventMask, Events, Inotify, WatchDescriptor, WatchMask};
-use serde::Serialize;
+use learning::peaks::Measurement;
+use prefix::{self, JobRecord, Kind};
 use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, DirEntry};
 use std::io::{self, ErrorKind};
 use std::os::fd::{AsFd, BorrowedFd};
 use std::path::{Path, PathBuf};
+use system::cgroup;
+use system::runtime;
 
 /// A sweep leaves a job younger than this alone: between creating its group
 /// and moving into it, the prefix leaves the group empty for an instant.
@@ -30,19 +31,6 @@ const EVENT_BUFFER: usize = 4096;
 /// Deletes a job group: `fs::remove_dir` on cgroupfs, where the group's
 /// interface files go with it.
 pub type Remove = fn(&Path) -> io::Result<()>;
-
-/// One finished Bash call.
-#[derive(Debug, PartialEq, Eq, Serialize)]
-pub struct Measurement {
-    pub at: u64,
-    /// The session's scope.
-    pub session: String,
-    pub job: String,
-    pub peak_mb: u64,
-    /// The whole invocation Claude Code assembled.
-    pub command: String,
-    pub cwd: String,
-}
 
 /// Measures and removes the finished jobs of every session in `slice`, then
 /// drops the records of sessions that are gone. `records` is the root of the

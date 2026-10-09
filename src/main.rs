@@ -1,16 +1,25 @@
 //! orchestrator: schedules the work of the Claude Code sessions running in
 //! parallel on one machine, so development keeps going. See docs/design.md.
 
+mod launch;
+mod watching;
+
 use anyhow::{Context, Result, anyhow};
 use clap::{Args, Parser, Subcommand};
-use orchestrator::config::{self, Admission, Coordinator};
-use orchestrator::coordinator::state::{self as briefing, Places};
-use orchestrator::coordinator::{self, Holder, journal, run};
-use orchestrator::{cgroup, language, launch, machine, report, runtime, sessions, state, watch};
+use claude_code::sessions;
+use config::language;
+use config::{self, Admission, Coordinator};
+use coordinator::state::{self as briefing, Places};
+use coordinator::{self, Holder, journal, run};
 use std::ffi::OsString;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+use system::cgroup;
+use system::machine;
+use system::runtime;
+use system::state;
+use watch::report;
 
 /// Where this process's own and other processes' state is read.
 const PROC: &str = "/proc";
@@ -173,7 +182,7 @@ enum CoordinatorCommand {
 
 fn main() -> Result<()> {
     match Cli::parse().command {
-        Command::Watch(args) => watch::run(&watch::Config {
+        Command::Watch(args) => watching::run(&watching::Config {
             sessions_dir: sessions_dir(&args.sources)?,
             proc_root: args.sources.proc_root,
             runtime_dir: match args.runtime_dir {
@@ -183,7 +192,7 @@ fn main() -> Result<()> {
             state_dir: state_dir(args.state_dir)?,
             config_path: config::default_path()?,
             orphan_interval: Duration::from_secs(args.orphan_interval_secs.max(1)),
-            thresholds: watch::Thresholds {
+            thresholds: watching::Thresholds {
                 stall_ms: args.stall_ms,
                 cooldown_secs: args.cooldown_secs,
             },

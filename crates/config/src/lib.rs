@@ -5,6 +5,8 @@
 //! `coordinator` section, `watch` starts no coordinator: nothing spends
 //! tokens unless the user opens one.
 
+pub mod language;
+
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use std::fs;

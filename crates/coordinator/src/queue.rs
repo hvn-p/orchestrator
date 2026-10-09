@@ -10,10 +10,10 @@
 //! one. An event given back by `MAX_FAILURES` failed runs is closed rather
 //! than retried forever.
 
-use crate::events::{self, Event};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use watch::events::{self, Event};
 
 /// Failed runs after which an event is closed.
 pub const MAX_FAILURES: u32 = 3;
@@ -168,7 +168,7 @@ pub fn prune(queue: &mut Vec<Queued>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::events::SessionBrief;
+    use watch::events::SessionBrief;
 
     fn pressure(available_mb: u64) -> Event {
         Event::MemoryPressure {

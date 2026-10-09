@@ -19,8 +19,8 @@
 use super::queue::Queued;
 use super::state::{Briefing, missing};
 use super::{Paths, instructions};
-use crate::config::Coordinator;
 use anyhow::{Context, Result};
+use config::Coordinator;
 use serde::Serialize;
 use serde_json::Value;
 use std::ffi::{OsStr, OsString};
@@ -431,8 +431,8 @@ impl RunRecord {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::events::Event;
     use std::path::PathBuf;
+    use watch::events::Event;
 
     fn paths() -> Paths {
         Paths::new(
@@ -472,7 +472,7 @@ mod tests {
         Briefing {
             state: "### Machine\n\nMemory: 31250 MB total\n\n".into(),
             journal: Some("2026-10-05 14:00 UTC  asked alpha".into()),
-            language: crate::coordinator::state::Language {
+            language: crate::state::Language {
                 tag: "fr".into(),
                 configured: true,
             },

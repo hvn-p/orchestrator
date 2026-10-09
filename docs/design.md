@@ -137,7 +137,7 @@ One binary, `orchestrator`, with subcommands.
   minute catches what inotify cannot see, such as a job that ended before its
   watch was in place.
 - **The coordinator**: a fresh Claude Code session,
-  started by `watch` with its role (`src/coordinator/role.md`) appended to the
+  started by `watch` with its role (`crates/coordinator/src/role.md`) appended to the
   system prompt, for each batch of events that need judgment. It is never
   resumed: what it must remember between wakes lives in files, a journal of
   its actions and of the exchanges still open (in its directory under the
@@ -168,7 +168,7 @@ One binary, `orchestrator`, with subcommands.
     answers in plain words, even dictated, and propose values.
     `orchestrator setup`, or `orchestrator coordinator` when no
     configuration exists, opens the interactive coordinator with setup
-    instructions on top of its role (`src/coordinator/setup.md`). It starts
+    instructions on top of its role (`crates/coordinator/src/setup.md`). It starts
     in the system's language, from the locale (`LC_ALL`, `LC_MESSAGES`,
     `LANG`, in that order; English without one), and offers to switch in
     its first message. It says what orchestrator does, looks at the machine,

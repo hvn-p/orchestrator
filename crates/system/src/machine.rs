@@ -3,7 +3,9 @@
 //! pressure, and which cgroup controllers the systemd user manager hands to
 //! the groups below it, the orchestrator slice and its sessions included.
 
-use crate::{cgroup, memory};
+use crate::cgroup;
+
+use crate::memory;
 use anyhow::{Context, Result};
 use std::fmt::Write as _;
 use std::fs;

@@ -1,10 +1,10 @@
 //! Which Claude session each process belongs to, and which processes outlived
 //! theirs. Pure: everything comes in as data.
 
-use crate::procfs::ProcInfo;
-use crate::sessions::ClaudeSession;
+use claude_code::sessions::ClaudeSession;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
+use system::procfs::ProcInfo;
 
 /// Guards the ancestry walk against a malformed ppid cycle.
 const MAX_DEPTH: usize = 512;

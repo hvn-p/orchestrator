@@ -18,10 +18,9 @@ pub mod run;
 pub mod service;
 pub mod state;
 
-use crate::admission::{self, Waiting};
-use crate::{procfs, runtime};
 use anyhow::{Context, Result};
 use inotify::{Inotify, WatchMask};
+use prefix::admission::{self, Waiting};
 use queue::Queued;
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use rustix::process::{Pid, PidfdFlags, pidfd_open};
@@ -32,6 +31,8 @@ use std::io::ErrorKind;
 use std::os::fd::{AsFd, OwnedFd};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+use system::procfs;
+use system::runtime;
 
 /// The longest the lock is waited for: it is held for a few reads and writes,
 /// and for starting a process.
@@ -58,7 +59,7 @@ impl Paths {
         Paths {
             runtime: runtime.join("coordinator"),
             home: state.join("coordinator"),
-            instructions: crate::config::instructions_path(config),
+            instructions: config::instructions_path(config),
         }
     }
 
@@ -66,8 +67,8 @@ impl Paths {
     pub fn from_env() -> Result<Paths> {
         Ok(Paths::new(
             &runtime::default_dir()?,
-            &crate::state::default_dir()?,
-            &crate::config::default_path()?,
+            &system::state::default_dir()?,
+            &config::default_path()?,
         ))
     }
 
@@ -329,8 +330,8 @@ fn pidfd(pid: u32) -> std::io::Result<OwnedFd> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::events::Event;
     use queue::Status;
+    use watch::events::Event;
 
     fn pressure(available_mb: u64) -> Event {
         Event::MemoryPressure {

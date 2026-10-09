@@ -1,0 +1,26 @@
+[package]
+name = "orchestrator-watch"
+description = "Observing sessions and jobs: measurements, attribution, events."
+publish = false
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+claude-code.workspace = true
+config.workspace = true
+inotify.workspace = true
+learning.workspace = true
+prefix.workspace = true
+rustix.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+system.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

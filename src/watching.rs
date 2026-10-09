@@ -6,20 +6,23 @@
 //! teaches its peak to the learned peaks. Once the configuration enables the
 //! coordinator, the events that need judgment go to it (see `coordinator`).
 
-use crate::attribution::{self, Attribution};
-use crate::coordinator::{self, service::Service, service::Wake};
-use crate::events::{self, Event};
-use crate::exits::Exits;
-use crate::jobs::{self, Tracker};
-use crate::pressure::Trigger;
-use crate::{admission, cgroup, memory, peaks, prefix, procfs, runtime, sessions};
 use anyhow::{Context, Result};
+use coordinator::{self, service::Service, service::Wake};
+use learning::peaks;
+use prefix::admission;
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use rustix::io::Errno;
 use std::collections::HashSet;
-use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
+use system::cgroup;
+use system::memory;
+use system::pressure::Trigger;
+use system::runtime;
+use watch::attribution::Attribution;
+use watch::events::{self, Event};
+use watch::exits::Exits;
+use watch::jobs::{self, Tracker};
 
 /// Between two sweeps of the job groups while the tracker runs.
 const JOB_SWEEP: Duration = Duration::from_secs(60);
@@ -105,19 +108,6 @@ impl Watcher {
         self.reported = current;
         (!new.is_empty()).then(|| Event::orphans(&new))
     }
-}
-
-/// Reads processes and sessions, then attributes. A missing sessions
-/// directory means no Claude session has run yet.
-pub fn scan(proc_root: &Path, sessions_dir: &Path) -> Result<Attribution> {
-    let procs = procfs::read_processes(proc_root)
-        .with_context(|| format!("reading {}", proc_root.display()))?;
-    let sessions = match sessions::read_sessions(sessions_dir) {
-        Ok(s) => s,
-        Err(e) if e.kind() == ErrorKind::NotFound => Vec::new(),
-        Err(e) => return Err(e).with_context(|| format!("reading {}", sessions_dir.display())),
-    };
-    Ok(attribution::attribute(&procs, &sessions))
 }
 
 /// Where finished jobs are found, and where their measurements go.
@@ -348,7 +338,9 @@ fn on_pressure(
 ) -> Result<Option<(u64, Event)>> {
     let now = now_secs();
     let available = memory::available_mb(meminfo)?;
-    let event = watcher.on_pressure(available, now, || scan(&cfg.proc_root, &cfg.sessions_dir))?;
+    let event = watcher.on_pressure(available, now, || {
+        watch::scan(&cfg.proc_root, &cfg.sessions_dir)
+    })?;
     if let Some(event) = &event {
         events::append(events_path, now, event)?;
     }
@@ -356,7 +348,7 @@ fn on_pressure(
 }
 
 fn scan_orphans(cfg: &Config, events_path: &Path, watcher: &mut Watcher) -> Result<()> {
-    let att = scan(&cfg.proc_root, &cfg.sessions_dir)?;
+    let att = watch::scan(&cfg.proc_root, &cfg.sessions_dir)?;
     if let Some(event) = watcher.check_orphans(&att) {
         events::append(events_path, now_secs(), &event)?;
     }
@@ -376,7 +368,7 @@ fn remove_group(dir: &Path) -> std::io::Result<()> {
 
 /// Writes each measurement down and learns from it. A failure is reported,
 /// never fatal.
-fn keep(p: &JobPaths, measured: &[jobs::Measurement]) {
+fn keep(p: &JobPaths, measured: &[learning::peaks::Measurement]) {
     let home = std::env::var_os("HOME").map(PathBuf::from);
     for m in measured {
         if let Err(e) = events::append_line(&p.measurements, m) {
@@ -416,7 +408,7 @@ fn own_slice(proc_root: &Path) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::attribution::{Orphan, ProcRef};
+    use watch::attribution::{Orphan, ProcRef};
 
     const T: Thresholds = Thresholds {
         stall_ms: 200,

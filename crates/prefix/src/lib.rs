@@ -6,7 +6,14 @@
 //! shell running the command, so output, exit code and signals stay the
 //! command's. Any failure leaves the command running at once, unchanged.
 
-use crate::{admission, cgroup, config, peaks, runtime, state};
+pub mod admission;
+
+use system::cgroup;
+
+use learning::peaks;
+
+use system::runtime;
+
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::ffi::{OsStr, OsString};
@@ -15,6 +22,7 @@ use std::io::Write;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use system::state;
 
 /// What a Bash call ran, kept for the service until it has measured the job.
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]

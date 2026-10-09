@@ -32,10 +32,12 @@
 //! when it waits long. Reading the waiting calls and the reservations takes
 //! no lock: what a reader shows may be a check behind.
 
-use crate::config::Admission;
-use crate::{memory, peaks, recognise, repository, runtime};
 use anyhow::{Context, Result, bail};
+use config::Admission;
 use inotify::{Inotify, WatchMask};
+use learning::peaks;
+use learning::recognise;
+use learning::repository;
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use rustix::fs::{FlockOperation, flock};
 use rustix::io::Errno;
@@ -46,6 +48,8 @@ use std::io::Write;
 use std::os::fd::AsFd;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
+use system::memory;
+use system::runtime;
 
 /// Between two checks of a waiting call when no job holding a reservation
 /// reports a change.
@@ -476,7 +480,7 @@ fn current_mb(group: &Path) -> Option<u64> {
 
 /// Takes the lock file at `path`, trying for `patience`. It is released when
 /// the returned file closes, at the latest when the process ends.
-pub(crate) fn lock(path: &Path, patience: Duration) -> Result<File> {
+pub fn lock(path: &Path, patience: Duration) -> Result<File> {
     let file = OpenOptions::new()
         .create(true)
         .append(true)
@@ -589,7 +593,7 @@ fn running_notice(call: &Heavy, waited: Duration, still_short: Option<(u64, u64)
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::jobs::Measurement;
+    use learning::peaks::Measurement;
     use std::sync::{Arc, Barrier};
 
     const CFG: Admission = Admission {

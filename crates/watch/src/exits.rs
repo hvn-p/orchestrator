@@ -2,14 +2,14 @@
 //! Code's sessions directory shows each new session; a pidfd then holds the
 //! session's claude process and becomes readable when that process exits.
 
-use crate::procfs;
-use crate::sessions::{self, ClaudeSession};
+use claude_code::sessions::{self, ClaudeSession};
 use inotify::{Inotify, WatchMask};
 use rustix::process::{Pid, PidfdFlags, pidfd_open};
 use std::collections::HashMap;
 use std::io::{self, ErrorKind};
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::path::PathBuf;
+use system::procfs;
 
 /// Room for a batch of inotify events; one takes 16 bytes plus its name.
 const EVENT_BUFFER: usize = 4096;
