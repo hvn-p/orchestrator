@@ -1,9 +1,11 @@
 # orchestrator
 
 orchestrator keeps the Claude Code sessions running in parallel on one Linux
-machine working within its finite resources. Rather than refusing work, it
-observes what each session runs and schedules it: delay, queue, slow down,
-pause, reorder.
+machine working within its finite resources, without refusing their work.
+Today it measures what each command uses, learns which commands are
+memory-hungry, and holds such a Bash call back until memory covers it.
+Planned work is tracked in the
+[issues](https://github.com/hvn-p/orchestrator/issues).
 
 ## Status
 
@@ -15,7 +17,7 @@ Early. What exists:
   sub-group of its own.
 - Admission: once a configuration exists, a Bash call whose commands were
   learned as memory-hungry waits, before it runs, until free memory covers its
-  expected peak. Every other command starts at once. Nothing is throttled yet.
+  expected peak. Every other command starts at once.
 - `orchestrator sessions` prints the memory used by each Claude Code session
   (with its largest process) and the processes left behind by sessions that no
   longer exist.
@@ -31,8 +33,9 @@ Early. What exists:
   lever. `orchestrator setup` is a conversation with it that ends with the
   configuration written.
 
-Everything else is design (throttling, priorities between waiting calls):
-see [docs/design.md](docs/design.md).
+[docs/design.md](docs/design.md) describes what exists and why. Planned work,
+such as slowing down or pausing jobs and ordering waiting calls, is in the
+[issues](https://github.com/hvn-p/orchestrator/issues).
 
 ## Requirements
 

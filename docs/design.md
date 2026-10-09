@@ -1,10 +1,8 @@
 # orchestrator design
 
 orchestrator keeps the Claude Code sessions running in parallel on one Linux
-machine working within its finite resources. It schedules their work: it delays,
-queues, slows down, pauses and reorders it. It never refuses work. A job may take
-longer, it is not prevented. Stopping a process remains possible as a last
-resort, when memory is about to run out and nothing else holds.
+machine working within its finite resources. It schedules their work rather
+than refusing it: a job may take longer, it is not prevented.
 
 Anything that can be decided without judgment is done by code and spends no
 tokens. Judgment (priorities, exceptions, negotiating with a session) is left to
@@ -16,22 +14,25 @@ of a few MB.
 
 ## Status
 
-`orchestrator launch` and the shell prefix exist: a session runs in a cgroup
-of its own, and each command it starts in a job group of its own. `orchestrator
+This document describes what exists and why. Planned work and open questions
+are [GitHub issues](https://github.com/hvn-p/orchestrator/issues), one per
+piece of work.
+
+`orchestrator launch` and the shell prefix run a session in a cgroup of its
+own, and each command it starts in a job group of its own. `orchestrator
 watch` measures the memory peak of each finished Bash call, learns it per
 repository and command, and removes empty job groups; `orchestrator peaks`
 shows what it learned. Once a configuration exists, a Bash call learned as
-memory-hungry waits for memory before it runs (admission). Nothing is
-throttled yet. `orchestrator sessions` and
-`orchestrator watch` still attribute processes to sessions by process ancestry
-and report memory pressure and orphaned processes. A first coordinator
-exists: a setup conversation with it writes the configuration, and, once
-the user agrees, `watch` wakes it to ask sessions to free memory or tell
-them why a call waits, from the state `watch` gathers for it; it pulls no
-lever. Everything else here is design; the parts validated by
-throwaway prototypes are listed under "Measured". What orchestrator relies on
-in Claude Code is listed in [claude-code-dependency.md](claude-code-dependency.md),
-with the version it was last verified on.
+memory-hungry waits for memory before it runs (admission). `orchestrator
+sessions` and `orchestrator watch` attribute processes to sessions by process
+ancestry and report memory pressure and orphaned processes. A coordinator
+writes the configuration in a setup conversation and, once the user agrees,
+`watch` wakes it to ask sessions to free memory or tell them why a call
+waits, from the state `watch` gathers for it; it pulls no lever. What was
+measured, on throwaway prototypes and on the code, is under "Measured". What
+orchestrator relies on in Claude Code is listed in
+[claude-code-dependency.md](claude-code-dependency.md), with the version it
+was last verified on.
 
 ## One process group per session
 
@@ -49,31 +50,26 @@ session A        delegated systemd user scope, started by `orchestrator launch`
 ```
 
 Every command Claude Code starts goes through `CLAUDE_CODE_SHELL_PREFIX`, which
-places it in its own sub-group before running it. The service observes these
-groups and classifies them by behaviour, without any list of commands.
+places it in its own sub-group before running it. The service measures these
+groups, and admission learns from what they used, without any list of
+commands. Beyond a Bash call's memory peak, jobs are not classified by
+behaviour (#22).
 
-## Levers, gentlest first
+## Levers
 
-1. **Slow down**: lower a job's CPU weight or cap (`cpu.weight`, `cpu.max`).
-   Jest, pnpm and Vitest size their worker pools on the available parallelism,
-   which follows `cpu.max`, so a cap also reduces their workers. The memory
-   limit (`memory.high`) applies to the whole session, never to a job: Node
-   sizes its default heap from the `memory.high` of its own cgroup, so a limit
-   on the job would shrink the heap and a large type check would fail with
-   "heap out of memory".
-2. **Queue**: a Bash call already measured as memory-hungry waits, before it
-   runs, until free memory covers its known peak (see "Admission"). Every other
-   command starts at once. The wait counts toward the Bash call's timeout, so
-   it is bounded: past the longest wait, the call runs anyway.
-3. **Do it elsewhere**: when a project has a CI, whole-project checks (full test
-   suite, type check, build) belong there. Whether to enforce this is a user
-   policy, not part of the foundation.
-4. **Reorder**: when several jobs wait, the coordinator decides which goes
-   first.
-5. **Pause**: freeze a job (`cgroup.freeze`). A frozen job stops growing; its
-   memory stays allocated until it is swapped out.
-6. **Stop**: last resort, when memory is about to run out and no other lever is
-   enough.
+- **Queue**: a Bash call already measured as memory-hungry waits, before it
+  runs, until free memory covers its known peak (see "Admission"). Every other
+  command starts at once. The wait counts toward the Bash call's timeout, so
+  it is bounded: past the longest wait, the call runs anyway.
+- **Ask**: the coordinator asks a session to free memory without losing work:
+  stop a server or a watcher it no longer needs, hold off a heavy command, or
+  run a whole-project check (full test suite, type check, build) in the CI
+  when the project has one. The session decides. Enforcing the CI is a user
+  policy, not orchestrator's.
+
+No lever slows a job down (#19),
+pauses or stops one (#20),
+or orders the calls waiting for memory (#21).
 
 ## Principles
 
@@ -90,7 +86,7 @@ groups and classifies them by behaviour, without any list of commands.
   Arguments can hold credentials, and the coordinator hands what it reads to a
   model.
 - **Hooks, the status line and MCP servers never queue**: they get their own
-  group, to be measured, and start immediately.
+  group, out of `main/`, and start immediately.
 - **Claude Code is today's only host, behind a listed boundary**: everything
   orchestrator relies on in it is a contract of
   [claude-code-dependency.md](claude-code-dependency.md), and the code
@@ -102,11 +98,10 @@ groups and classifies them by behaviour, without any list of commands.
 
 One binary, `orchestrator`, with subcommands.
 
-- **Installation** (planned): one step puts the two binaries, `orchestrator`
-  and `orchestrator-prefix`, on the `PATH` and the service under the systemd
-  user manager. `cargo install` covers the binaries today.
-- **`orchestrator launch -- claude …`** (exists; the short command is planned),
-  exposed as a short command available from any directory: asks the systemd
+- **Installation**: `cargo install` puts the two binaries, `orchestrator` and
+  `orchestrator-prefix`, side by side, where `launch` finds the prefix. No
+  systemd unit ships (#15).
+- **`orchestrator launch -- claude …`**: asks the systemd
   user manager, over the user bus with `busctl` (shipped with systemd), for a
   delegated scope in `orchestrator.slice` holding its own process
   (`orchestrator-<pid>-<ms since the epoch>.scope`, collected once its last
@@ -118,8 +113,8 @@ One binary, `orchestrator`, with subcommands.
   before that (no `busctl`, no user bus, no answer, a refused scope, a setup
   error), it runs claude unchanged after one warning; otherwise it prints
   nothing, unless it replaces another `CLAUDE_CODE_SHELL_PREFIX`. A session
-  started with `claude` alone stays outside orchestration.
-- **The shell prefix**, `orchestrator-prefix` (exists):
+  started with `claude` alone stays outside orchestration (#15).
+- **The shell prefix**, `orchestrator-prefix`:
   Claude Code calls it with the full command line as a single argument, for
   every Bash call, hook, status line refresh and MCP stdio server start. It
   creates the sub-group, moves itself in, keeps the command of a Bash call for
@@ -127,22 +122,21 @@ One binary, `orchestrator`, with subcommands.
   itself with the command. Output and exit code pass through unchanged. Claude
   Code runs the prefix as one quoted path, hence a binary of its own rather
   than a subcommand.
-- **`orchestrator watch`**, a systemd user service:
-  - exists: it sleeps until the kernel reports something. Memory pressure
-    comes from a PSI trigger on `/proc/pressure/memory`; the end of a Claude
-    session from a pidfd on its claude process, the session being found
-    through inotify on Claude Code's sessions directory, and its orphans are
-    looked for five seconds later; both go as JSON lines to `events.jsonl`. A
-    scan every five minutes catches orphans no session end announces. Each
-    finished job's peak (`memory.peak`), read as soon as
-    inotify reports its `cgroup.events` unpopulated, kept with the command of a
-    Bash call in `measurements.jsonl` and learned per repository and command
-    (see "Recognising a command"), then the job's empty group removed. A
-    sweep every minute catches what inotify cannot see, such as a job that
-    ended before its watch was in place;
-  - planned: `memory.events` and memory pressure (PSI) per job; listening sockets every one or two seconds, attributed to their job;
-    classification, levers; the token quota left by the status line.
-- **The coordinator** (exists, first version): a fresh Claude Code session,
+- **`orchestrator watch`**, a long-running process started by hand, which
+  collects jobs only below the user's systemd manager: it sleeps until the
+  kernel reports something. Memory pressure comes from a PSI trigger on
+  `/proc/pressure/memory`; the end of a Claude session from a pidfd on its
+  claude process, the session being found through inotify on Claude Code's
+  sessions directory, and its orphans are looked for five seconds later;
+  both go as JSON lines to `events.jsonl`. A scan every five minutes catches
+  orphans no session end announces. Each finished Bash call's peak
+  (`memory.peak`), read as soon as inotify reports its `cgroup.events`
+  unpopulated, is kept with its command in `measurements.jsonl` and learned
+  per repository and command (see "Recognising a command"); then the job's
+  empty group is removed, other jobs' groups too, unmeasured. A sweep every
+  minute catches what inotify cannot see, such as a job that ended before its
+  watch was in place.
+- **The coordinator**: a fresh Claude Code session,
   started by `watch` with its role (`src/coordinator/role.md`) appended to the
   system prompt, for each batch of events that need judgment. It is never
   resumed: what it must remember between wakes lives in files, a journal of
@@ -196,7 +190,7 @@ One binary, `orchestrator`, with subcommands.
     stays in English: Claude reads it.
   - **What wakes it**: `memory_pressure`, and `admission_wait`, which
     `watch` writes once per Bash call that admission has held back for the
-    configured time. Orphans do not wake it yet.
+    configured time. Orphans do not wake it (#26).
   - **One at a time**: a holder file names the process running the
     coordinator by pid and start time, under a file lock; `watch`'s runs,
     `setup` and `orchestrator coordinator` all take it, and it frees itself
@@ -236,20 +230,17 @@ One binary, `orchestrator`, with subcommands.
     against Claude Code's estimate at API list price, which is not what a
     subscription counts. `runs.jsonl` in the runtime directory keeps each
     run's turns, seconds and tokens, then its reply.
-  - **Later**: setting priorities between waiting calls, slowing down,
-    pausing or stopping, negotiating a slot when the limit of long-running
-    servers is reached, orphans, and answering "who is working on X?".
-- **`orchestrator sessions`** (exists): memory per session and orphaned
+- **`orchestrator sessions`**: memory per session and orphaned
   processes, for a human.
-- **`orchestrator peaks`** (exists): the learned peaks, per repository, for a
+- **`orchestrator peaks`**: the learned peaks, per repository, for a
   human: each command's expected peak, its label and its latest calls.
 - **`orchestrator admission`**, **`orchestrator machine`**,
-  **`orchestrator config`** (exist): the calls waiting for memory and the
+  **`orchestrator config`**: the calls waiting for memory and the
   reservations of running ones; what the configuration is chosen from; the
   configuration, and a validated write of its admission thresholds. With
   `orchestrator sessions --heads`, they are how the coordinator reads the
   state.
-- **The guide** (exists): a Claude Code plugin in `plugins/orchestrator/`,
+- **The guide**: a Claude Code plugin in `plugins/orchestrator/`,
   this repository being its marketplace, whose skill answers a user's
   questions about orchestrator in any session. It describes the code it ships
   with: a merge guard makes every pull request update it or state why it
@@ -259,16 +250,14 @@ Runtime data lives in `$XDG_RUNTIME_DIR/orchestrator/`: in memory, cleared at
 reboot, never versioned. Learned peaks live in `$XDG_STATE_HOME/orchestrator/`
 and survive a reboot, the configuration in `$XDG_CONFIG_HOME/orchestrator/`.
 
-## Classifying by behaviour
+## Attribution
 
-- **Lifetime**: a job that ends quickly, or one that keeps running.
-- **Server**: a process of the job listens on a port, whatever the service (web,
-  database, emulator).
-- **Profile**: the job's CPU and memory over time, peak included. The memory
-  peak feeds admission.
-- **Attribution**: the group, inherited through the kernel, names the job and the
-  session. For a process outside any orchestrated session, attribution falls back
-  to process ancestry, then to `CLAUDE_CODE_SESSION_ID`.
+- **A job**: its group lies in its session's scope, inherited through the
+  kernel, so a measurement or a waiting call names its session by it.
+- **A process**: `orchestrator sessions`, memory pressure events, orphans and
+  the coordinator's briefing attribute it to the live session whose claude
+  process it descends from, then to the one its `CLAUDE_CODE_SESSION_ID`
+  names, whether the session was started through `launch` or not (#23).
 
 ## Admission
 
@@ -294,7 +283,8 @@ measures.
 
 Admission gets more accurate as commands are measured, with no list to
 maintain. What it cannot foresee (a first run, a form of the command it does not
-recognise) is left to the other levers.
+recognise) starts at once; if memory then runs short, `watch` reports the
+pressure.
 
 The prefix admits a Bash call after moving into its job group and before
 replacing itself with the shell:
@@ -310,6 +300,8 @@ replacing itself with the shell:
 - A waiting call checks again as soon as inotify reports a change in the
   `cgroup.events` of a job holding a reservation, which is how memory mostly
   frees up, and every second otherwise: available memory has no notification.
+  Waiting calls have no order: the first to check once memory frees up
+  runs (#21).
 - It writes one notice to its standard error when it starts waiting and one
   when it runs; Claude reads them with the call's output. A notice names the
   call by the label of its first heavy command that has run alone (its peak
@@ -649,19 +641,18 @@ October 2026, with scratch directories and sessions:
 
 ## Known gaps
 
-- **Outside the session's group**: Docker containers, anything started through
-  `systemd-run --user`, services activated over D-Bus, an `xdg-open` handed to an
-  already running browser. A shared service counts for the session that started
-  it.
+- **Outside the session's group**: Docker containers (#30), anything started
+  through `systemd-run --user`, services activated over D-Bus, an `xdg-open`
+  handed to an already running browser. A shared service counts for the
+  session that started it.
 - **A scope granted after the 2 s bound**: the session has already started
   unorchestrated; systemd still moves it into the scope, where it runs without
   `main/` nor the prefix.
-- **Freezing frees no RAM** by itself; with little swap it only stops growth.
-- **systemd-oomd**: some distributions arm it on `user@.service` (kill above 50 %
-  memory pressure for 20 s on the reference machine). Throttling too hard might
-  trigger it: plausible, not verified.
 - **The admission wait counts toward the Bash timeout**, which the prefix
-  cannot see: only the longest wait bounds it.
+  cannot see: only the longest wait bounds it (#16).
+- **The packages of a monorepo share one key**: the repository is the git
+  common directory, so `pnpm test` run in two of them is one command, with one
+  expected peak (#31).
 - **A heavy call that leaves a process running**, such as a server started in
   the background, keeps its reservation, net of what its group uses, until
   that process ends.
@@ -670,11 +661,11 @@ October 2026, with scratch directories and sessions:
 - **Claude Code's own memory cap** (`CLAUDE_CODE_TOOL_MEMORY_LIMIT`) kills a
   session's commands past a size, with a memory cgroup of its own. It must
   stay off under orchestrator: it refuses work and competes with the job
-  groups.
+  groups (#18).
 - **Background sessions**: Claude Code's supervisor (`claude daemon`) starts
   on demand in the cgroup of whatever started it, and hosts every background
   session there. Unless `processWrapper` routes it through `orchestrator
-  launch`, those sessions are not orchestrated.
+  launch`, those sessions are not orchestrated (#15).
 - **A run's answers**: a coordinator run ends with its reply, so a session
   cannot answer it; the next run checks the effect in the state instead.
   Only an interactive coordinator gets answers.
@@ -683,40 +674,6 @@ October 2026, with scratch directories and sessions:
 - **The coordinator's bounds are Claude Code's**: what it may run rests on
   Claude Code's permission rules, not on a sandbox; organization
   instructions reach it too.
-
-## Open questions
-
-- Maximum hook timeout: two readings of the documentation disagree (30 s for
-  `PreToolUse`, 600 s by default for command hooks). To retest.
-- Learning: the packages of a monorepo share one key, so `pnpm test` run in
-  two of them is one command.
-- Learning: the expected peak leans low, the smallest of recent calls; does
-  the admission margin cover the spread of a command's peak from run to run?
-- Admission: the configuration's values are chosen by hand until the
-  coordinator writes them. Does a 60 s longest wait leave enough of a 2 min
-  Bash timeout to the command itself?
-- Claude Code's sessions: keep reading the undocumented session files, or
-  move to `claude agents --json`, which starts a process per read and gives no
-  process start time to tell a reused pid apart.
-- Admission: waiting calls have no order; the first to check once memory
-  frees up runs. Reordering them is the coordinator's (see "Levers").
-- Long-running servers: how many before the coordinator negotiates.
-- Orphans and idle sessions holding resources: reported to the coordinator, or
-  released automatically.
-- Docker: regulated separately (`docker pause`, `docker update`, attribution by
-  compose label), or left out of scope.
-- Launching: the short command's name, and whether sessions started by other
-  tools (a worktree manager, for instance) go through it. A lead: Claude Code's
-  `processWrapper` setting starts every process Claude Code starts itself
-  through a launcher, and `orchestrator launch` can be that launcher (see
-  "Measured"); sessions started from a terminal would need a `claude` script
-  earlier on `PATH`. A launcher must print nothing before it replaces itself:
-  `orchestrator launch` prints only its fallback warning, or that it replaces
-  another `CLAUDE_CODE_SHELL_PREFIX`.
-- Coordinator: a spending policy across runs, from the quota the status line
-  reports rather than dollars; whether orphans wake it; whether a run should
-  message only sessions orchestrated by `orchestrator launch`.
-- `memory.reclaim` on a frozen job: not tested yet.
 
 ## Inspirations
 
@@ -754,6 +711,9 @@ October 2026, with scratch directories and sessions:
   are bypassed by `node_modules/.bin`. Tool-specific knobs
   (`VITEST_MAX_WORKERS`, `PNPM_CONFIG_WORKSPACE_CONCURRENCY`) remain useful
   complements.
+- **Admission in a `PreToolUse` hook**: a hook cannot wait past its own
+  timeout, after which the call proceeds, and it runs before the call has a
+  job group. The prefix waits inside the call, in its job group.
 - **System-level interception**: `LD_PRELOAD` is fragile and misses static
   binaries; seccomp breaks `sudo` and stalls the session if its supervisor dies;
   ptrace breaks strace and gdb; eBPF, fanotify and audit need root.
