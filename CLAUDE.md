@@ -2,9 +2,13 @@
 
 Keeps the Claude Code sessions running in parallel on one Linux machine working
 within its finite resources: it delays, queues, slows down, pauses and reorders
-their work rather than refusing it. `docs/design.md` holds the design, what has
-been measured and the open questions: start there.
+their work rather than refusing it. `docs/design.md` describes what exists and
+why: the design, its decisions, what has been measured and the known gaps.
+Start there.
 
+- Planned features and open questions are GitHub issues, one per piece of
+  work, never in the design. Implementing one moves what it settles into the
+  design.
 - `src/`: the Rust binary (`orchestrator sessions`, `orchestrator watch`). Done
   means `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` and
   `cargo test` all pass.
