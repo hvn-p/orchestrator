@@ -10,6 +10,7 @@ use super::queue::{self, Queued};
 use super::state::{self, Places};
 use super::{Holder, Paths, Waits, pidfd, run};
 use anyhow::{Context, Result};
+use claude_code::messages;
 use claude_code::sessions;
 use config::{self, Coordinator};
 use inotify::{Inotify, WatchMask};
@@ -237,7 +238,6 @@ impl Service {
 
     /// Reports each call that has waited long, naming its session as
     /// messages address it.
-    // claude-code: cross-session-message
     fn check_waits(&mut self) {
         let Some(cfg) = config::waking(&self.places.config) else {
             self.next_wait = None;
@@ -260,7 +260,7 @@ impl Service {
                 .and_then(|scope| cgroup::main_pid(&self.places.admission.cgroup_root, scope))
                 .and_then(|pid| sessions.iter().find(|s| s.pid == pid));
             let event = Event::AdmissionWait(watch::events::AdmissionWait {
-                session: session.map(|s| s.name.clone()),
+                session: session.map(|s| messages::address(s).to_string()),
                 session_id: session.map(|s| s.session_id.clone()),
                 job: w.job.clone(),
                 command: w.label.clone(),

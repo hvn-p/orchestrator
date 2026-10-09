@@ -1,6 +1,7 @@
 //! Which Claude session each process belongs to, and which processes outlived
 //! theirs. Pure: everything comes in as data.
 
+use claude_code::messages;
 use claude_code::sessions::ClaudeSession;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
@@ -20,6 +21,7 @@ pub struct ProcRef {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionUsage {
+    /// What messages address the session by.
     pub name: String,
     pub session_id: String,
     pub rss_kb: u64,
@@ -71,7 +73,7 @@ pub fn attribute(procs: &[ProcInfo], sessions: &[ClaudeSession]) -> Attribution 
                 let entry = usage
                     .entry(s.session_id.as_str())
                     .or_insert_with(|| SessionUsage {
-                        name: s.name.clone(),
+                        name: messages::address(s).to_string(),
                         session_id: s.session_id.clone(),
                         rss_kb: 0,
                         largest: proc_ref(p),

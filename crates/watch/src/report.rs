@@ -2,6 +2,7 @@
 //! or a coordinator: `watch` hands the same text to a coordinator when it
 //! wakes one, so that it need not run the commands itself.
 
+use claude_code::messages;
 use prefix::admission;
 
 use system::cgroup;
@@ -26,8 +27,7 @@ const DISPLAY_CMDLINE: usize = 70;
 /// Memory per session with its largest process, and the orphaned processes.
 /// With `heads`, processes show as events name them: no argument that could
 /// hold a credential, for a reader that hands the output to a model. A
-/// session shows by its name, which messages address.
-// claude-code: cross-session-message
+/// session shows by what messages address it by.
 pub fn sessions(proc_root: &Path, sessions_dir: &Path, heads: bool) -> Result<String> {
     let available = memory::available_mb(&proc_root.join("meminfo"))?;
     let att = crate::scan(proc_root, sessions_dir)?;
@@ -70,9 +70,8 @@ pub fn sessions(proc_root: &Path, sessions_dir: &Path, heads: bool) -> Result<St
     Ok(out)
 }
 
-/// The session a job group belongs to, by name, which messages address,
-/// and the start of its id, else by its scope.
-// claude-code: cross-session-message
+/// The session a job group belongs to, by what messages address it by and
+/// the start of its id, else by its scope.
 fn session_label(group: &str, cgroup_root: &Path, known: &[sessions::ClaudeSession]) -> String {
     let scope = cgroup::session_of(group);
     let session = scope
@@ -81,7 +80,7 @@ fn session_label(group: &str, cgroup_root: &Path, known: &[sessions::ClaudeSessi
     match (session, scope) {
         (Some(s), _) => format!(
             "{} ({})",
-            s.name,
+            messages::address(s),
             s.session_id.chars().take(8).collect::<String>()
         ),
         (None, Some(scope)) => scope.rsplit('/').next().unwrap_or(scope).to_string(),

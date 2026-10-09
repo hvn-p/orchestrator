@@ -20,13 +20,13 @@ use super::queue::Queued;
 use super::state::{Briefing, missing};
 use super::{Paths, instructions};
 use anyhow::{Context, Result};
+use claude_code::agent::{self, Agent, Run, RunResult};
 use config::Coordinator;
 use serde::Serialize;
-use serde_json::Value;
 use std::ffi::{OsStr, OsString};
 use std::fmt::Write as _;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 /// The role every coordinator gets.
@@ -56,7 +56,6 @@ const WRITE_CONFIG: [&str; 2] = [
     "orchestrator config coordinator *",
 ];
 /// What an interactive coordinator runs in the background to receive events.
-// claude-code: background-command-wake
 pub const NEXT: &str = "orchestrator coordinator next";
 
 /// Why a coordinator starts.
@@ -129,7 +128,6 @@ fn instruction_dirs(paths: &Paths) -> Vec<std::path::PathBuf> {
 /// its own directory, with `bin` first on its `PATH` so that its
 /// `orchestrator` commands are this orchestrator's. `cfg` gives a run its
 /// model; an interactive coordinator has its user instead.
-// claude-code: coordinator-session
 pub fn command(
     mode: &Mode<'_>,
     cfg: &Coordinator,
@@ -153,127 +151,88 @@ pub fn command_of(
         Mode::Setup { .. } | Mode::Interactive => instruction_dirs(paths),
         Mode::Batch(_) => Vec::new(),
     };
-    let mut cmd = Command::new(program);
-    cmd.args(args(mode, cfg, paths, &dirs, prompt))
-        .current_dir(&paths.home)
-        .env("PATH", search_path(bin))
-        // The user's instructions come through the role, imports resolved:
-        // Claude Code must not load them a second time from `--add-dir`.
-        .env_remove("CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD");
-    if !matches!(mode, Mode::Interactive) {
-        // claude -p waits for input on a standard input left open.
+    let role = paths.role();
+    let mut cmd = agent::command(
+        program,
+        &coordinator(mode, cfg, paths, &role, bin, &dirs, prompt),
+    );
+    if matches!(mode, Mode::Setup { .. }) {
         cmd.stdin(Stdio::null());
     }
     cmd
 }
 
-/// `bin` first, then the inherited search path.
-fn search_path(bin: &Path) -> OsString {
-    let inherited = std::env::var_os("PATH").unwrap_or_default();
-    let dirs = std::iter::once(bin.to_path_buf()).chain(std::env::split_paths(&inherited));
-    std::env::join_paths(dirs).unwrap_or(inherited)
-}
-
 /// The arguments of `claude` for a coordinator in `mode`, asked `prompt`,
 /// with `dirs` readable besides its own.
-// claude-code: coordinator-session
-// claude-code: coordinator-permissions
-// claude-code: cross-session-message
 pub fn args(
     mode: &Mode<'_>,
     cfg: &Coordinator,
     paths: &Paths,
-    dirs: &[std::path::PathBuf],
+    dirs: &[PathBuf],
     prompt: &str,
 ) -> Vec<OsString> {
-    let mut tools = vec!["Bash", "Read"];
-    let mut allowed: Vec<String> = ALLOWED.iter().map(|c| format!("Bash({c})")).collect();
-    match mode {
-        // The file tools create the user's instructions file when it is
-        // missing; its imports, elsewhere, are asked for.
-        Mode::Setup { .. } => {
-            tools.extend(["Edit", "Write"]);
-            allowed.extend(WRITE_CONFIG.iter().map(|c| format!("Bash({c})")));
-            allowed.push(format!("Edit({})", absolute_rule(&paths.instructions)));
-        }
-        Mode::Batch(_) => {
-            tools.extend(["SendMessage", "ListAgents"]);
-            allowed.extend(["SendMessage".to_string(), "ListAgents".to_string()]);
-        }
-        // The file tools edit the user's instructions, which it asks its
-        // user for, like the thresholds.
-        Mode::Interactive => {
-            tools.extend(["Edit", "Write", "SendMessage", "ListAgents"]);
-            allowed.extend(["SendMessage".to_string(), "ListAgents".to_string()]);
-            allowed.push(format!("Bash({NEXT})"));
-        }
-    }
-    // No CLAUDE.md, rules or AGENTS.md from its directory or those above
-    // it, the home directory's `.claude/CLAUDE.md` among them: the user's
-    // instructions for coordinators come through the role. No agent view:
-    // a coordinator moved to the background would outlive the process that
-    // holds the coordinator, and run beside the next one.
-    let settings = serde_json::json!({
-        "autoMemoryEnabled": false,
-        "claudeMdExcludes": ["/**"],
-        "disableAgentView": true,
-        "permissions": { "blockReadsOutsideWorkingDirectories": true },
-    });
-    let mut args: Vec<OsString> = vec![
-        "--name".into(),
-        NAME.into(),
-        "--append-system-prompt-file".into(),
-        paths.role().into(),
-        "--setting-sources".into(),
-        "project".into(),
-        "--settings".into(),
-        settings.to_string().into(),
-        "--strict-mcp-config".into(),
-        "--tools".into(),
-        tools.join(",").into(),
-        "--allowedTools".into(),
-    ];
-    args.extend(allowed.into_iter().map(OsString::from));
-    // The instructions' directories: readable without asking.
-    for dir in paths
-        .instructions
-        .parent()
-        .into_iter()
-        .chain(dirs.iter().map(std::path::PathBuf::as_path))
-    {
-        args.extend(["--add-dir".into(), dir.as_os_str().to_owned()]);
-    }
-    match mode {
-        Mode::Interactive | Mode::Setup { .. } => {
-            args.extend(["--permission-mode".into(), "default".into()]);
-        }
-        Mode::Batch(_) => {
-            args.extend(
-                [
-                    "-p",
-                    "--model",
-                    &cfg.model,
-                    "--permission-mode",
-                    "dontAsk",
-                    "--no-session-persistence",
-                    "--output-format",
-                    "json",
-                ]
-                .map(OsString::from),
-            );
-            if let Some(usd) = cfg.max_budget_usd {
-                args.extend(["--max-budget-usd".into(), usd.to_string().into()]);
-            }
-        }
-    }
-    // The prompt last, after `--`: it may start with a dash.
-    args.extend(["--".into(), prompt.into()]);
-    args
+    let role = paths.role();
+    agent::args(&coordinator(
+        mode,
+        cfg,
+        paths,
+        &role,
+        Path::new(""),
+        dirs,
+        prompt,
+    ))
 }
 
-/// `path` as a permission rule names an absolute path.
-fn absolute_rule(path: &Path) -> String {
-    format!("/{}", path.display())
+/// The agent a coordinator in `mode` is. It reads the state and notes in
+/// its journal; setup also writes the configuration and the user's
+/// instructions; the others message sessions; an interactive one waits for
+/// events with `NEXT`.
+fn coordinator<'a>(
+    mode: &Mode<'_>,
+    cfg: &'a Coordinator,
+    paths: &'a Paths,
+    role: &'a Path,
+    bin: &'a Path,
+    dirs: &[PathBuf],
+    prompt: &'a str,
+) -> Agent<'a> {
+    let mut commands: Vec<String> = ALLOWED.iter().map(|c| (*c).to_string()).collect();
+    if matches!(mode, Mode::Setup { .. }) {
+        commands.extend(WRITE_CONFIG.iter().map(|c| (*c).to_string()));
+    }
+    Agent {
+        name: NAME,
+        role,
+        dir: &paths.home,
+        bin,
+        // The instructions' directories: readable without asking.
+        readable: paths
+            .instructions
+            .parent()
+            .map(Path::to_path_buf)
+            .into_iter()
+            .chain(dirs.iter().cloned())
+            .collect(),
+        commands,
+        // Setup creates the user's instructions file when it is missing; its
+        // imports, elsewhere, are asked for. An interactive coordinator asks
+        // its user for every file, like the thresholds.
+        editable: match mode {
+            Mode::Setup { .. } => vec![paths.instructions.clone()],
+            Mode::Batch(_) | Mode::Interactive => Vec::new(),
+        },
+        edits_files: matches!(mode, Mode::Setup { .. } | Mode::Interactive),
+        messages: matches!(mode, Mode::Batch(_) | Mode::Interactive),
+        waits_on: matches!(mode, Mode::Interactive).then_some(NEXT),
+        run: match mode {
+            Mode::Batch(_) => Run::Headless {
+                model: &cfg.model,
+                max_budget_usd: cfg.max_budget_usd,
+            },
+            Mode::Setup { .. } | Mode::Interactive => Run::Interactive,
+        },
+        prompt,
+    }
 }
 
 /// What the coordinator is asked, after its role, at `now` in seconds since
@@ -394,31 +353,22 @@ pub struct RunRecord {
 }
 
 impl RunRecord {
-    /// From what the run printed with `--output-format json`.
-    // claude-code: print-json-result
+    /// From what the run printed when it ended.
     pub fn new(at: u64, events: usize, outcome: Outcome, output: &[u8]) -> RunRecord {
-        let result: Value = serde_json::from_slice(output).unwrap_or(Value::Null);
-        let usage = &result["usage"];
-        let input = [
-            usage["input_tokens"].as_u64(),
-            usage["cache_creation_input_tokens"].as_u64(),
-        ];
+        let result = RunResult::parse(output);
         RunRecord {
             at,
             events,
             secs: outcome.secs,
-            turns: result["num_turns"].as_u64(),
-            input_tokens: input
-                .iter()
-                .any(Option::is_some)
-                .then(|| input.iter().flatten().sum()),
-            cache_read_tokens: usage["cache_read_input_tokens"].as_u64(),
-            output_tokens: usage["output_tokens"].as_u64(),
+            turns: result.turns,
+            input_tokens: result.input_tokens,
+            cache_read_tokens: result.cache_read_tokens,
+            output_tokens: result.output_tokens,
             exit: outcome.exit,
             stopped: outcome.stopped,
-            is_error: result["is_error"].as_bool(),
-            list_price_estimate_usd: result["total_cost_usd"].as_f64(),
-            reply: result["result"].as_str().map(str::to_string),
+            is_error: result.is_error,
+            list_price_estimate_usd: result.list_price_estimate_usd,
+            reply: result.reply,
         }
     }
 
@@ -523,7 +473,8 @@ mod tests {
         assert_eq!(values(&args, "--add-dir"), ["/home/u/.config/orchestrator"]);
         assert!(args.contains(&"-p".to_string()));
         assert!(args.contains(&"--no-session-persistence".to_string()));
-        let settings: Value = serde_json::from_str(values(&args, "--settings")[0]).unwrap();
+        let settings: serde_json::Value =
+            serde_json::from_str(values(&args, "--settings")[0]).unwrap();
         assert_eq!(
             settings["permissions"]["blockReadsOutsideWorkingDirectories"],
             true
