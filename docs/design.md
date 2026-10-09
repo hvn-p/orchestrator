@@ -24,7 +24,11 @@ shows what it learned. Once a configuration exists, a Bash call learned as
 memory-hungry waits for memory before it runs (admission). Nothing is
 throttled yet. `orchestrator sessions` and
 `orchestrator watch` still attribute processes to sessions by process ancestry
-and report memory pressure and orphaned processes. Everything else here is design; the parts validated by
+and report memory pressure and orphaned processes. A first coordinator
+exists: a setup conversation with it writes the configuration, and, once
+the user agrees, `watch` wakes it to ask sessions to free memory or tell
+them why a call waits, from the state `watch` gathers for it; it pulls no
+lever. Everything else here is design; the parts validated by
 throwaway prototypes are listed under "Measured". What orchestrator relies on
 in Claude Code is listed in [claude-code-dependency.md](claude-code-dependency.md),
 with the version it was last verified on.
@@ -138,30 +142,113 @@ One binary, `orchestrator`, with subcommands.
     ended before its watch was in place;
   - planned: `memory.events` and memory pressure (PSI) per job; listening sockets every one or two seconds, attributed to their job;
     classification, levers; the token quota left by the status line.
-- **The coordinator** (planned): a fresh Claude Code session, started by
-  `watch` with its role appended to the system prompt, for each batch of
-  events that need judgment. It is never resumed: what it must remember
-  between wakes lives in files it reads on start, a journal of its actions
-  and of the exchanges still open, and the user's priorities. It also gets the
-  events and the machine's current state through `orchestrator`'s commands.
-  - **One at a time**: `watch` never starts a coordinator while another runs.
-    Events arriving meanwhile wait, duplicates merge, and the next coordinator
-    gets them together as soon as the current one ends.
+- **The coordinator** (exists, first version): a fresh Claude Code session,
+  started by `watch` with its role (`src/coordinator/role.md`) appended to the
+  system prompt, for each batch of events that need judgment. It is never
+  resumed: what it must remember between wakes lives in files, a journal of
+  its actions and of the exchanges still open (in its directory under the
+  state directory, which is also its working directory), and the user's
+  instructions for coordinators.
+  - **The user's instructions**: a CLAUDE.md for coordinators only,
+    `CLAUDE.md` next to the configuration, priorities included. It may
+    import other files with `@path`. orchestrator resolves the imports
+    itself, by Claude Code's rules (absolute, `~/`, relative to the
+    importing file; four hops); a symlinked file is followed and its
+    relative imports resolve from the real file. Each file is read once,
+    within 128 KiB a file and 256 KiB in all,
+    and appends the result verbatim to the role it writes for each
+    coordinator. Relying on Claude Code's own loading instead would leave
+    imports outside the working directory to an approval a headless run
+    cannot give. A coordinator with the user at the terminal may read the
+    files' directories, and proposes changes to the file that holds the
+    matter, written once the user agrees; a run never edits them.
+  - **Briefed by code**: gathering the state takes no judgment, so the
+    prompt carries it: the events, the machine, the sessions (as
+    `orchestrator sessions --heads` shows them), the calls waiting for memory
+    and the reservations, the heavy commands learned and the latest lines of
+    the journal. The coordinator decides, messages and
+    notes (`orchestrator coordinator note`, which dates the line and keeps
+    the latest ones); it runs a read command only for what the prompt lacks.
+  - **Setup is a conversation**: a configuration written by hand is tedious
+    and needs exact values; a Claude can explain, answer questions, take
+    answers in plain words, even dictated, and propose values.
+    `orchestrator setup`, or `orchestrator coordinator` when no
+    configuration exists, opens the interactive coordinator with setup
+    instructions on top of its role (`src/coordinator/setup.md`). It starts
+    in the system's language, from the locale (`LC_ALL`, `LC_MESSAGES`,
+    `LANG`, in that order; English without one), and offers to switch in
+    its first message. It says what orchestrator does, looks at the machine,
+    and asks, one subject at a time: whether `watch` may wake it, with which model (it proposes Sonnet
+    5.5), the user's priorities, and admission thresholds it proposes from
+    the machine's facts. It writes each part once the user agrees, through
+    `orchestrator config coordinator` and `orchestrator config admission`,
+    which refuse values that make no sense on the machine or together, and
+    the priorities in the user's instructions, offering to create that file
+    when it is missing; never the configuration file itself.
+  - **Consent**: `wake` in the `coordinator` section. Without it, `watch`
+    queues nothing and starts no coordinator: nothing spends tokens unless
+    the user opens one.
+  - **Language**: `language` in the same section, a tag such as `fr` or
+    `pt-BR`, settled in the setup conversation. The role and every prompt
+    state it, so that runs, the interactive coordinator, its journal and
+    its messages use it, whatever organization-level instructions say;
+    English when unset. What code writes, admission's notices included,
+    stays in English: Claude reads it.
+  - **What wakes it**: `memory_pressure`, and `admission_wait`, which
+    `watch` writes once per Bash call that admission has held back for the
+    configured time. Orphans do not wake it yet.
+  - **One at a time**: a holder file names the process running the
+    coordinator by pid and start time, under a file lock; `watch`'s runs,
+    `setup` and `orchestrator coordinator` all take it, and it frees itself
+    when that process ends. Events arriving meanwhile wait in a queue,
+    pending ones merge (memory pressure into the latest, an admission wait
+    once per call), and the next run gets them together as soon as the
+    current one ends. An admission wait whose call has run meanwhile needs
+    nothing.
+  - **Event status**: a queued event is pending, in progress once a
+    coordinator takes it, done once handled: when the run that took it ends
+    successfully, or when the interactive coordinator asks for the next
+    batch. A coordinator that ends with events in progress gives them back,
+    pending for the next one. A failed run delays the next by a minute, and
+    an event three failed runs took is closed.
   - **Talking to it**: `orchestrator coordinator` opens an interactive one. It
-    takes the coordinator lock, once any running coordinator has ended, and
-    receives the events itself, waiting for them with a background command,
-    for as long as it stays open. When it closes, `watch` starts fresh ones
-    again with what came in meanwhile.
-  - **Its work**: on its first start it examines the machine (memory, swap,
-    CPU, what the systemd user manager delegates) and writes the configuration
-    (see "Configuration"). It sets priorities, tells sessions about their
-    delays through Claude Code's messages between sessions, negotiates a slot
-    when the limit of long-running servers is reached, and answers "who is
-    working on X?".
+    takes the coordinator, once any running one has ended, and receives the
+    events itself, waiting for them with `orchestrator coordinator next` in
+    the background, which prints them with the state, for as long as it
+    stays open. When it closes, `watch` starts fresh runs again with what
+    came in meanwhile and what it left unhandled.
+  - **What it may do**: read more of the state, note in its journal and,
+    outside setup, message sessions with Claude Code's messages between
+    sessions. It loads none of the user's settings, hooks, plugins, MCP
+    servers or CLAUDE.md, nor a CLAUDE.md, rules or AGENTS.md from its
+    directory or those above it, only the project settings of its own
+    directory, and its agent view is off, so it cannot be moved to the
+    background. A run started by `watch` is denied anything else without
+    asking (`dontAsk`). The setup conversation writes the configuration and the
+    instructions file without a permission prompt, the user having agreed
+    in the conversation; an interactive coordinator asks its user for them. Both
+    prompt for anything else, like the sessions they message. A run for
+    events cannot change the thresholds: it reports them when they look
+    wrong.
+  - **Bounds**: each run has the configured model and a time limit, past
+    which `watch` stops its process group: a guard against a stuck run, not
+    a spending limit. No spending cap by default; `max_budget_usd` sets one,
+    against Claude Code's estimate at API list price, which is not what a
+    subscription counts. `runs.jsonl` in the runtime directory keeps each
+    run's turns, seconds and tokens, then its reply.
+  - **Later**: setting priorities between waiting calls, slowing down,
+    pausing or stopping, negotiating a slot when the limit of long-running
+    servers is reached, orphans, and answering "who is working on X?".
 - **`orchestrator sessions`** (exists): memory per session and orphaned
   processes, for a human.
 - **`orchestrator peaks`** (exists): the learned peaks, per repository, for a
   human: each command's expected peak, its label and its latest calls.
+- **`orchestrator admission`**, **`orchestrator machine`**,
+  **`orchestrator config`** (exist): the calls waiting for memory and the
+  reservations of running ones; what the configuration is chosen from; the
+  configuration, and a validated write of its admission thresholds. With
+  `orchestrator sessions --heads`, they are how the coordinator reads the
+  state.
 - **The guide** (exists): a Claude Code plugin in `plugins/orchestrator/`,
   this repository being its marketplace, whose skill answers a user's
   questions about orchestrator in any session. It describes the code it ships
@@ -234,8 +321,9 @@ replacing itself with the shell:
 ### Configuration
 
 The thresholds live in `$XDG_CONFIG_HOME/orchestrator/config.json`, by default
-`~/.config/orchestrator/config.json`. The coordinator is meant to write it on
-its first start, adapted to the machine; until it exists, a human does.
+`~/.config/orchestrator/config.json`. The coordinator writes it in the setup
+conversation, adapted to the machine and to the user's answers, through the
+validated `orchestrator config` commands; a human may write it too.
 Without the file, or without its `admission` section, nothing waits. A file
 that cannot be read whole, an unknown field included, lets everything through
 too, and the error goes to `prefix.log` in the runtime directory.
@@ -244,6 +332,10 @@ too, and the error goes to `prefix.log` in the runtime directory.
   memory.
 - `admission.margin_mb`: free memory kept on top of the expected peak.
 - `admission.max_wait_secs`: the longest a call waits before it runs anyway.
+
+The `coordinator` section enables the coordinator: `model`, the user's
+choice; `max_minutes` per run; `wait_secs`, how long admission holds a call
+before `watch` reports it; and optionally `max_budget_usd` per run.
 
 ### Recognising a command
 
@@ -400,7 +492,8 @@ Other measurements:
 - Coordinator loop, first prototype (the Monitor tool on an events file): 11 s
   from the event to the message reaching the session, no token spent between
   events. A Monitor expires after 30 min; re-arming it costs about 0.07 USD and
-  handling an event about 0.09 USD, as estimated by Claude Code at list price.
+  handling an event about 0.09 USD, as estimated by Claude Code at API list
+  price, which a subscription does not pay.
   Each coordinator turn re-reads about 72,000 tokens of base context. A
   background command ran for 36 min without being cut, which makes it the
   preferred way to wait.
@@ -468,11 +561,91 @@ Coordinator spike, Claude Code 2.1.291, Haiku, October 2026:
 - `claude agents --json` lists interactive and background sessions, but gives
   no process start time; background sessions also write
   `~/.claude/sessions/<pid>.json`.
-- Cost at list price: a background coordinator, about 0.09 USD to start and
+- Cost as Claude Code estimates it at API list price, which a subscription
+  does not pay: a background coordinator, about 0.09 USD to start and
   0.02 USD per event, nothing while idle; a resumed `claude -p` run, about
   0.007 USD per event. Memory: about 280 MB per background session, plus its
   terminal host (87 MB), the supervisor (145 MB) and the standby session the
   supervisor keeps ready (220 to 370 MB).
+
+Coordinator, first version, Claude Code 2.1.291, Haiku and Sonnet 5.5,
+October 2026, with scratch directories and sessions:
+
+- With `--setting-sources project`, a run's context held none of the user's
+  CLAUDE.md: about 4,000 tokens instead of 12,000. Hooks in its own
+  directory's `.claude/settings.json` still ran.
+- Claude Code 2.1.292: that option still loads, as project instructions, a
+  CLAUDE.md, `.claude/rules/` and AGENTS.md from every directory above the
+  working directory, `~/.claude/CLAUDE.md` included when the working
+  directory is under the home directory, as the default state directory is.
+  `claudeMdExcludes: ["/**"]` in `--settings` leaves them all out.
+- `disableAgentView` in a coordinator's `--settings` keeps it from being
+  moved to the background, where it would outlive the process holding the
+  coordinator. In a scratch interactive coordinator with it, the background
+  `coordinator next` still woke the session, `SendMessage` still reached a
+  peer, and a running supervisor kept its pid and its background session.
+  `Move to background and exit` never showed on this machine, with or
+  without it.
+- `--tools` takes `SendMessage` and `ListAgents`. In `dontAsk` mode, a
+  `Bash(<command>)` rule ran exactly that command and nothing else; an
+  `Edit(//<path>)` rule allowed writing that file only, while a
+  `Write(//<path>)` rule is ignored with a warning;
+  `blockReadsOutsideWorkingDirectories` denied a `cat` outside.
+- A `claude -p` session in `dontAsk` mode messaged another one by the name
+  given with `--name`; the receiver quoted the message after its running
+  Bash call ended. Claude Code refuses a bare `sleep 30` as a Bash call, and
+  a `-p` run waits for a standard input left open.
+- End to end, with the real prefix holding a scratch session's Bash call:
+  `watch` wrote `admission_wait` 8 s into the wait, as configured, and
+  started a run that messaged that session, which quoted the message.
+  Reading the state itself, command by command, a Haiku run took 9 to 12
+  turns and 33 to 48 s, on a configuration made absurd on purpose (a margin
+  of 31 GB). Briefed by `watch`, on the same scenario, tokens summed over
+  the run:
+
+  | Run | Model | Turns | Time | Input | From cache | Output |
+  | :- | :- | -: | -: | -: | -: | -: |
+  | `admission_wait` | Sonnet 5.5 | 3 | 8 s | 10,703 | 9,938 | 697 |
+  | `admission_wait` | Haiku | 3 | 18 s | 14,185 | 12,547 | 1,656 |
+  | `admission_wait`, after a setup conversation | Sonnet 5.5 | 3 | 8 s | 5,662 | 15,806 | 833 |
+
+  Both left the absurd thresholds alone and noted what they would change.
+- A setup conversation, Sonnet 5.5, opened with `orchestrator coordinator`
+  without a configuration and answered in plain words: it introduced
+  orchestrator, summarised the machine from its briefing, asked about
+  waking, the model, the priorities, and proposed thresholds with a reason
+  each (1,500 MB heavy, 2,000 MB margin, 90 s). Asked for a 40 GB margin on
+  31 GB, it declined; told to try anyway, it ran `orchestrator config
+  admission`, which refused, explained the refusal and proposed values the
+  command accepts. About 9 turns of 3 to 5 s each; usage per conversation
+  could not be read, since an interactive session working under Claude
+  Code's own temporary directory kept no transcript.
+- With a French locale, the setup conversation opened with "Je continue en
+  français ; dites-moi si vous préférez une autre langue", switched to
+  English when asked, and wrote `language: en` with the other coordinator
+  settings. The next `watch` run replied, noted and messaged in English,
+  though the account's organization instructions are in French.
+- Organization instructions set for the account still reach a coordinator,
+  whatever `--setting-sources`; before the language was stated, one run
+  replied in their language.
+- An interactive coordinator under a terminal started `orchestrator
+  coordinator next` in the background and went idle; when `watch` queued an
+  event, the command ended, the session woke and handled it, and started the
+  command again, which marked the event done. While it was open, `watch`
+  started no run; after it closed, `watch` started one for the next event.
+  Leaving it asks for confirmation, since a background task runs. Its
+  transcript held no usage figures to measure.
+- Allowed to write the thresholds during an event run, Haiku rewrote them
+  after one call (a heavy threshold of 60 MB on 31 GB of memory); an
+  interactive one did so unasked. Hence writes in the setup conversation
+  only, or asked of the user.
+
+- The user's instructions as a symlink into one directory, importing a
+  file from another: an event run began its journal note with the word the
+  first file asked for and ended its message with the words the imported
+  one asked for; the interactive coordinator did the same, and, told a new
+  priority, proposed adding it under "Priorities" in the imported file,
+  asked, and wrote that file only, after a permission prompt.
 
 ## Known gaps
 
@@ -502,6 +675,14 @@ Coordinator spike, Claude Code 2.1.291, Haiku, October 2026:
   on demand in the cgroup of whatever started it, and hosts every background
   session there. Unless `processWrapper` routes it through `orchestrator
   launch`, those sessions are not orchestrated.
+- **A run's answers**: a coordinator run ends with its reply, so a session
+  cannot answer it; the next run checks the effect in the state instead.
+  Only an interactive coordinator gets answers.
+- **A run outlives a restarted `watch`**: the new `watch` waits for it to
+  end, but no longer enforces its time limit.
+- **The coordinator's bounds are Claude Code's**: what it may run rests on
+  Claude Code's permission rules, not on a sandbox; organization
+  instructions reach it too.
 
 ## Open questions
 
@@ -532,11 +713,10 @@ Coordinator spike, Claude Code 2.1.291, Haiku, October 2026:
   earlier on `PATH`. A launcher must print nothing before it replaces itself:
   `orchestrator launch` prints only its fallback warning, or that it replaces
   another `CLAUDE_CODE_SHELL_PREFIX`.
-- Coordinator: what wakes it (which events, and the admission's long waits,
-  which emit none yet), the actions `orchestrator` exposes to it, what its
-  journal holds, and a spending limit.
-- `memory.reclaim` on a frozen job, and the coordinator waiting through a
-  background command: not tested yet.
+- Coordinator: a spending policy across runs, from the quota the status line
+  reports rather than dollars; whether orphans wake it; whether a run should
+  message only sessions orchestrated by `orchestrator launch`.
+- `memory.reclaim` on a frozen job: not tested yet.
 
 ## Inspirations
 

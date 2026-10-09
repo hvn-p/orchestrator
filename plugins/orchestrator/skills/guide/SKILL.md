@@ -4,17 +4,21 @@ description: >-
   Use when the user asks about orchestrator, the tool that keeps the Claude
   Code sessions running in parallel on one Linux machine within its memory:
   installing it; starting a session through `orchestrator launch`; running
-  `orchestrator watch`; writing its `config.json`; what a line of
-  `events.jsonl` or `measurements.jsonl`, or an admission notice
-  ("orchestrator: waiting for memory before running …"), means; what
-  `orchestrator peaks` or `orchestrator sessions` shows; why a session or a
-  command is not orchestrated, nothing waits or nothing is learned; whether
-  orchestrator works with the installed Claude Code. Also on "how do I set up
-  orchestrator", "why is this Bash call waiting for memory", "orchestrator
-  learns no peak", "what does this memory_pressure event mean", "comment
-  installer orchestrator", "pourquoi cette commande attend de la mémoire", "ma
-  session n'est pas orchestrée", "que veut dire cet événement". Answers from
-  orchestrator's reference, checked against the machine.
+  `orchestrator watch`; `orchestrator setup` and `config.json`; the
+  coordinator (`orchestrator coordinator`, the runs `watch` starts, its
+  messages to sessions, `runs.jsonl`, its journal, its `CLAUDE.md`); what a
+  line of `events.jsonl` or `measurements.jsonl`, an `admission_wait` event,
+  or an admission notice ("orchestrator: waiting for memory before running
+  …") means; what `orchestrator peaks`, `sessions`, `admission` or `machine`
+  shows; why a session or a command is not orchestrated, nothing waits,
+  nothing is learned or no coordinator starts; whether orchestrator works
+  with the installed Claude Code. Also on "how do I set up orchestrator",
+  "why is this Bash call waiting for memory", "orchestrator learns no peak",
+  "what does this memory_pressure event mean", "why didn't the coordinator
+  run", "comment installer orchestrator", "pourquoi cette commande attend de
+  la mémoire", "ma session n'est pas orchestrée", "le coordinateur ne s'est
+  pas lancé". Answers from orchestrator's reference, checked against the
+  machine.
 ---
 
 # orchestrator guide
@@ -30,6 +34,15 @@ describes the `main` branch of <https://github.com/hvn-p/orchestrator>.
   every Bash call, learned per repository and command), admission (a Bash
   call learned as memory-hungry waits for memory before it runs),
   `orchestrator sessions` and `orchestrator peaks`.
+- `orchestrator admission` and `orchestrator machine`, which show the waiting
+  calls and reservations, and the machine's facts.
+- The coordinator, a Claude Code session orchestrator starts with a role of
+  its own: a setup conversation that writes the configuration
+  (`orchestrator setup`), runs `watch` starts for memory pressure and long
+  admission waits once the user agreed (`wake`), and an interactive
+  coordinator (`orchestrator coordinator`). It reads the state, messages
+  sessions and keeps a journal; it never stops, pauses, slows down or kills
+  anything.
 - Anything this guide does not describe, orchestrator does not do. Say so
   plainly; never infer a feature from elsewhere.
 
@@ -64,6 +77,13 @@ describes the `main` branch of <https://github.com/hvn-p/orchestrator>.
      measured;
    - an admission error: the call runs at once, unreserved, still measured
      and learned.
+6. With `"wake": true` in the configuration, `watch` queues each
+   `memory_pressure` event, and an `admission_wait` event for each call held
+   back `wait_secs`, and starts a coordinator run, one at a time, briefed
+   with the state it gathers. The run may run orchestrator's read commands,
+   message the sessions concerned and note in its journal, nothing more. Every coordinator also reads the
+   user's `<config>/CLAUDE.md`, next to `config.json`
+   (`$XDG_CONFIG_HOME/orchestrator`, else `~/.config/orchestrator`).
 
 ## How to answer
 
@@ -79,18 +99,26 @@ describes the `main` branch of <https://github.com/hvn-p/orchestrator>.
   heads or text Claude wrote; `orchestrator sessions` shows the start of real
   command lines, and `/proc/<pid>/cmdline` or `environ` all of them. Quote
   those only as far as the question needs.
-- `config.json` changes what every orchestrated session's next Bash call does:
-  show the values and ask before writing it. Same for Claude Code settings.
+- `config.json` changes what every orchestrated session's next Bash call does,
+  and `"wake": true` lets coordinators spend the account's tokens without
+  asking: show the values and ask before writing them, through the
+  `orchestrator config` commands, which check them. Same for the
+  coordinators' `CLAUDE.md` and Claude Code settings.
 
 ## References
 
 Read the one the question needs:
 
 - [reference/commands.md](reference/commands.md): installing, then each
-  command (`launch`, the prefix, `watch`, `sessions`, `peaks`): options,
-  behaviour, output.
+  command (`launch`, the prefix, `watch`, `sessions`, `peaks`, `admission`,
+  `machine`, `config`, `setup`, `coordinator`): options, behaviour, output.
+- [reference/coordinator.md](reference/coordinator.md): the setup
+  conversation, event runs and what they may do, the queue and its statuses,
+  `runs.jsonl`, the interactive coordinator, the coordinators' `CLAUDE.md`,
+  the language and the journal.
 - [reference/configuration.md](reference/configuration.md): `config.json` and
-  its fields, choosing values, the environment variables that matter.
+  its fields (admission and coordinator), choosing values, the environment
+  variables that matter.
 - [reference/events.md](reference/events.md): `events.jsonl`,
   `measurements.jsonl`, admission notices, and the messages each command and
   the prefix print.

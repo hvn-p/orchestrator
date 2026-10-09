@@ -25,9 +25,14 @@ Early. What exists:
   memory peak of each finished Bash call of an orchestrated session, learns it
   per repository and command, then removes the call's empty group.
 - `orchestrator peaks` prints the peaks learned so far.
+- A first coordinator, once enabled: a Claude Code session that `watch`
+  starts when memory runs short or admission holds a call back long. It asks
+  sessions to free memory, or tells them why a call waits; it pulls no
+  lever. `orchestrator setup` is a conversation with it that ends with the
+  configuration written.
 
-Everything else is design (throttling, the coordinator): see
-[docs/design.md](docs/design.md).
+Everything else is design (throttling, priorities between waiting calls):
+see [docs/design.md](docs/design.md).
 
 ## Requirements
 
@@ -80,6 +85,15 @@ it ran in. `--help` lists every option.
 orchestrator peaks
 ```
 
+```sh
+orchestrator admission
+orchestrator machine
+```
+
+`admission` prints the Bash calls waiting for memory and the memory reserved
+by heavy calls running; `machine` prints memory, swap, CPUs and what the
+systemd user manager delegates.
+
 Learned peaks live in `$XDG_STATE_HOME/orchestrator/peaks/` (by default
 `~/.local/state/orchestrator/peaks/`) unless `--state-dir` says otherwise, for
 `watch` as for `peaks`. A command is stored under a hash, with a label for
@@ -89,12 +103,32 @@ wrote land there; see "Recognising a command" in
 
 ## Configuration
 
-Without a configuration, nothing waits. Admission reads
-`$XDG_CONFIG_HOME/orchestrator/config.json`, by default
+Without a configuration, nothing waits and nothing spends tokens. Admission
+reads `$XDG_CONFIG_HOME/orchestrator/config.json`, by default
 `~/.config/orchestrator/config.json`, and knows only the peaks `orchestrator
-watch` has learned. The coordinator is meant to write this file, adapted to
-the machine; until it exists, write it by hand. For a machine with about 30 GB
-of RAM:
+watch` has learned.
+
+```sh
+orchestrator setup
+```
+
+`setup` opens a conversation with the coordinator (Claude Code, `claude` on
+the `PATH`), in the system's language, taken from the locale (`LC_ALL`, then
+`LC_MESSAGES`, then `LANG`; English without one), which it offers to change.
+It says what orchestrator does, looks at the machine, then asks you, in
+plain words, whether it may be woken automatically, with which model (it
+proposes claude-sonnet-5-5), what your priorities are, and proposes
+admission thresholds from the machine's facts, adjusted to your answers. It
+writes each part once you agree, through the commands below, which refuse
+values that make no sense on the machine, and ends by saying what it wrote.
+Run it again to review the configuration; `orchestrator coordinator` starts
+the same conversation when there is no configuration yet.
+
+`orchestrator config` prints the file. The commands setup uses also work by
+hand: `orchestrator config admission --heavy-mb … --margin-mb …
+--max-wait-secs …` sets the thresholds, and `orchestrator config
+coordinator --wake yes --model … --language …` the coordinator. Written by hand, for a
+machine with about 30 GB of RAM:
 
 ```json
 {
@@ -120,6 +154,77 @@ label, its expected peak and the memory it needs, then a second one when it
 runs. Remove the file, or its `admission` section, to turn admission off. A
 file that cannot be read, an unknown field included, also turns it off, and
 the error goes to `$XDG_RUNTIME_DIR/orchestrator/prefix.log`.
+
+### The coordinator
+
+```json
+{
+  "coordinator": {
+    "wake": true,
+    "model": "claude-sonnet-5-5",
+    "max_minutes": 5,
+    "wait_secs": 20,
+    "language": "en"
+  }
+}
+```
+
+`wake` is your consent: with it, `orchestrator watch` starts a coordinator by
+itself, one at a time, for each batch of `memory_pressure` events and calls
+that admission has held back `wait_secs`, each run with `model` and stopped
+past `max_minutes`, a guard against a stuck run. Without it, nothing spends
+tokens unless you open a coordinator. `language`, a tag such as `fr`, `en` or
+`pt-BR` (two or three lowercase letters, then subtags joined by `-`), is the
+language every coordinator writes in: replies, journal notes and messages to
+sessions. When it is unset, the runs `watch` starts write in English, and
+setup and the interactive coordinator in the system's language, from the
+locale. What orchestrator itself prints, admission's
+notices included, stays in English. Nothing caps a run's spending unless
+you add `"max_budget_usd"`, above 0, which Claude Code checks against its
+estimate at API list price, not against a subscription's quota.
+
+`watch` gathers the state a run needs (the machine, the sessions, the calls
+waiting for memory and the reservations, the heavy commands learned, the
+latest lines of the journal) and puts it in the run's prompt,
+so the run only decides, messages sessions and notes what it did. Each queued
+event is pending, in progress, then done; a run that fails gives its events
+back for the next one, and gives up on an event after three failed runs. A
+run may read more of the state, note in its journal
+(`orchestrator coordinator note`) and message sessions, nothing else; it
+messages under the name `orchestrator-coordinator`.
+
+```sh
+orchestrator coordinator
+```
+
+opens an interactive coordinator, after the setup conversation when there is
+no configuration yet: you talk to it, and it receives the events for as long
+as it stays open; meanwhile `watch` starts no run. Events it took
+but did not handle when it closes go back to the next run. Tell it a
+priority or a lasting instruction, and it offers to write it in your
+instructions for coordinators (below). It remembers what it did in a
+journal under
+`$XDG_STATE_HOME/orchestrator/coordinator/`. Each run is summarised in
+`$XDG_RUNTIME_DIR/orchestrator/coordinator/runs.jsonl`: turns, seconds and
+tokens first, then its reply, and Claude Code's dollar estimate at list
+price, which a subscription does not pay.
+
+### Instructions for coordinators
+
+`$XDG_CONFIG_HOME/orchestrator/CLAUDE.md`, by default
+`~/.config/orchestrator/CLAUDE.md`, is a CLAUDE.md for coordinators only:
+every coordinator reads it (runs, setup, the interactive one), no other
+session does. Your priorities go there, with anything else coordinators
+should know of your machine and habits; setup offers to create it.
+
+It may import other files with `@path` lines, by Claude Code's rules: an
+absolute path, `~/` for the home directory, or a path relative to the
+importing file, outside code spans and fenced blocks, `\ ` for a space, four
+hops deep at most. A symlinked file is followed, and its relative imports
+resolve from the real file. orchestrator resolves the imports itself and hands the
+result, verbatim, to each coordinator it starts, so an edit applies to the
+next one. A file imported twice, or in a cycle, is read once; a file over
+128 KiB, or past 256 KiB in all, is left out and the coordinator is told.
 
 ## Guide for Claude Code
 
@@ -149,9 +254,10 @@ installed Claude Code:
 cargo test --test claude_code -- --ignored --nocapture
 ```
 
-This starts a real headless session through `orchestrator launch`, so it
-needs a signed-in `claude`, a systemd user manager with cgroup v2, and spends
-about a cent of tokens. It never runs in CI.
+This starts a real headless session through `orchestrator launch`, then a
+coordinator, so it needs a signed-in `claude`, a systemd user manager with
+cgroup v2, and spends a few tens of thousands of tokens, most read from the
+prompt cache. It never runs in CI.
 
 ## Continuous integration
 

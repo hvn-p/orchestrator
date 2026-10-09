@@ -3,14 +3,16 @@
 //! per session, found through inotify on the sessions directory), or a change
 //! in the job groups of orchestrated sessions (inotify). Slow sweeps of jobs
 //! and orphans catch what these signals cannot show. Each measured Bash call
-//! teaches its peak to the learned peaks.
+//! teaches its peak to the learned peaks. Once the configuration enables the
+//! coordinator, the events that need judgment go to it (see `coordinator`).
 
 use crate::attribution::{self, Attribution};
+use crate::coordinator::{self, service::Service, service::Wake};
 use crate::events::{self, Event};
 use crate::exits::Exits;
 use crate::jobs::{self, Tracker};
 use crate::pressure::Trigger;
-use crate::{cgroup, memory, peaks, prefix, procfs, runtime, sessions};
+use crate::{admission, cgroup, memory, peaks, prefix, procfs, runtime, sessions};
 use anyhow::{Context, Result};
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use rustix::io::Errno;
@@ -40,6 +42,9 @@ pub struct Config {
     pub runtime_dir: PathBuf,
     /// Where learned peaks are kept, across reboots.
     pub state_dir: PathBuf,
+    /// The configuration file: whether the coordinator is enabled, and its
+    /// bounds.
+    pub config_path: PathBuf,
     /// Between two orphan scans when no session ends.
     pub orphan_interval: Duration,
     pub thresholds: Thresholds,
@@ -140,6 +145,7 @@ enum Signal {
     JobsChanged,
     /// The claude process of a session exited.
     Exited(u32),
+    Coordinator(Wake),
 }
 
 pub fn run(cfg: &Config) -> Result<()> {
@@ -162,15 +168,25 @@ pub fn run(cfg: &Config) -> Result<()> {
     }
     let mut src = sources(cfg, job_paths.as_ref());
     let mut watcher = Watcher::new(cfg.thresholds);
+    let mut coordinator = coordinator_service(cfg, &meminfo, &events_path);
+    coordinator.start();
     let mut next_orphan_scan = Instant::now();
     let mut next_job_sweep = Instant::now() + JOB_SWEEP;
     loop {
-        let deadline = if job_paths.is_some() {
+        let mut deadline = if job_paths.is_some() {
             next_orphan_scan.min(next_job_sweep)
         } else {
             next_orphan_scan
         };
-        let signals = match wait(&src, deadline.saturating_duration_since(Instant::now())) {
+        if let Some(d) = coordinator.deadline() {
+            deadline = deadline.min(d);
+        }
+        let waited = wait(
+            &src,
+            &coordinator,
+            deadline.saturating_duration_since(Instant::now()),
+        );
+        let signals = match waited {
             Ok(signals) => signals,
             Err(e) => {
                 // Never spin on a failing wait.
@@ -181,7 +197,12 @@ pub fn run(cfg: &Config) -> Result<()> {
         };
         for signal in signals {
             match signal {
-                Signal::Pressure => log(on_pressure(cfg, &meminfo, &events_path, &mut watcher)),
+                Signal::Pressure => match on_pressure(cfg, &meminfo, &events_path, &mut watcher) {
+                    Ok(Some((at, event))) => coordinator.enqueue(at, &event),
+                    Ok(None) => {}
+                    Err(e) => eprintln!("orchestrator: {e:#}"),
+                },
+                Signal::Coordinator(wake) => coordinator.on_wake(wake),
                 Signal::TriggerBroken => {
                     eprintln!(
                         "orchestrator: the memory pressure trigger broke; no more pressure events"
@@ -214,6 +235,7 @@ pub fn run(cfg: &Config) -> Result<()> {
                 }
             }
         }
+        coordinator.on_time();
         let now = Instant::now();
         if let Some(p) = job_paths.as_ref().filter(|_| now >= next_job_sweep) {
             log(sweep_jobs(p));
@@ -229,6 +251,22 @@ pub fn run(cfg: &Config) -> Result<()> {
             next_orphan_scan = now + cfg.orphan_interval;
         }
     }
+}
+
+/// The coordinator as `watch` drives it, with `watch`'s own places.
+fn coordinator_service(cfg: &Config, meminfo: &Path, events_path: &Path) -> Service {
+    let places = coordinator::state::Places {
+        proc_root: cfg.proc_root.clone(),
+        sessions_dir: cfg.sessions_dir.clone(),
+        admission: admission::Paths {
+            cgroup_root: PathBuf::from(cgroup::ROOT),
+            meminfo: meminfo.to_path_buf(),
+            runtime: cfg.runtime_dir.clone(),
+        },
+        state_dir: cfg.state_dir.clone(),
+        config: cfg.config_path.clone(),
+    };
+    Service::new(places, events_path.to_path_buf())
 }
 
 /// Sets up each kernel signal, reporting the ones that cannot be.
@@ -257,9 +295,13 @@ fn sources(cfg: &Config, job_paths: Option<&JobPaths>) -> Sources {
 }
 
 /// Sleeps until a source has something to report or `timeout` runs out.
-fn wait(src: &Sources, timeout: Duration) -> std::io::Result<Vec<Signal>> {
+fn wait(src: &Sources, coordinator: &Service, timeout: Duration) -> std::io::Result<Vec<Signal>> {
     let mut fds = Vec::new();
     let mut which = Vec::new();
+    for (fd, wake) in coordinator.fds() {
+        fds.push(PollFd::from_borrowed_fd(fd, PollFlags::IN));
+        which.push(Signal::Coordinator(wake));
+    }
     if let Some(t) = &src.trigger {
         fds.push(PollFd::new(t, PollFlags::PRI));
         which.push(Signal::Pressure);
@@ -297,20 +339,20 @@ fn wait(src: &Sources, timeout: Duration) -> std::io::Result<Vec<Signal>> {
     Ok(signals.collect())
 }
 
+/// Writes a memory pressure event when one is due, and returns it.
 fn on_pressure(
     cfg: &Config,
     meminfo: &Path,
     events_path: &Path,
     watcher: &mut Watcher,
-) -> Result<()> {
+) -> Result<Option<(u64, Event)>> {
     let now = now_secs();
     let available = memory::available_mb(meminfo)?;
-    if let Some(event) =
-        watcher.on_pressure(available, now, || scan(&cfg.proc_root, &cfg.sessions_dir))?
-    {
-        events::append(events_path, now, &event)?;
+    let event = watcher.on_pressure(available, now, || scan(&cfg.proc_root, &cfg.sessions_dir))?;
+    if let Some(event) = &event {
+        events::append(events_path, now, event)?;
     }
-    Ok(())
+    Ok(event.map(|e| (now, e)))
 }
 
 fn scan_orphans(cfg: &Config, events_path: &Path, watcher: &mut Watcher) -> Result<()> {

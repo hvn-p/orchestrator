@@ -23,8 +23,10 @@ Last verified: Claude Code 2.1.292, 2026-10-07.
 - **Integration test**: `cargo test --test claude_code -- --ignored` runs a
   real headless session of the installed Claude Code through
   `orchestrator launch` and checks every contract it can see from outside.
-  It is manual: it needs a signed-in `claude`, a systemd user manager with
-  cgroup v2, and spends about a cent of tokens. Never in CI.
+  It also starts a coordinator as `watch` would. It is manual: it needs a
+  signed-in `claude`, a systemd user manager with cgroup v2, and spends a
+  few tens of thousands of tokens, most read from the prompt cache. Never in
+  CI.
 - **A new Claude Code version**: the project skill `claude-code-compatibility` reads
   the changelog since the version above, runs the integration test, then
   updates the line above or drafts an issue.
@@ -34,7 +36,13 @@ changes, and how it is verified: by the integration test (the test function
 named after the contract), by measurement, or by Claude Code's documentation
 ([env-vars](https://code.claude.com/docs/en/env-vars),
 [tools-reference](https://code.claude.com/docs/en/tools-reference),
-[hooks](https://code.claude.com/docs/en/hooks)).
+[hooks](https://code.claude.com/docs/en/hooks),
+[cli-reference](https://code.claude.com/docs/en/cli-reference),
+[permissions](https://code.claude.com/docs/en/permissions),
+[permission-modes](https://code.claude.com/docs/en/permission-modes),
+[cross-session-messaging](https://code.claude.com/docs/en/cross-session-messaging),
+[memory](https://code.claude.com/docs/en/memory),
+[headless](https://code.claude.com/docs/en/headless)).
 
 ## Contracts
 
@@ -210,3 +218,135 @@ from its own environment, so `watch` needs the value the sessions run with.
 - Verified: documentation (env-vars, `CLAUDE_CONFIG_DIR`); that the sessions
   directory follows it is inferred, not tested. The integration test checks
   the resolved directory only.
+
+### coordinator-session
+
+A coordinator is `claude` started with these options, in print mode for a
+run `watch` starts, interactively for the setup conversation and the
+interactive coordinator, and Claude Code honours them: `--name` names the
+session; `--append-system-prompt-file` appends a file to the default system
+prompt, in print mode and interactively; `--setting-sources project` leaves
+out the user's settings, hooks, plugins and CLAUDE.md, and the project's
+`settings.local.json` and `CLAUDE.local.md`, though not the organization's
+instructions; `--settings` takes inline JSON (`autoMemoryEnabled`,
+`permissions.blockReadsOutsideWorkingDirectories`, and `claudeMdExcludes`,
+whose `/**` leaves out every `CLAUDE.md`, `.claude/rules/` file and
+`AGENTS.md` that Claude Code would load from the working directory and the
+directories above it, the home directory's `.claude/CLAUDE.md` included,
+but not an organization's managed CLAUDE.md, and `disableAgentView`, which
+turns off `/background`, `--bg` and moving the session to the background on
+leaving for that session only, without stopping a running supervisor or
+its background sessions, and leaves background Bash commands and messages
+working);
+`--strict-mcp-config` without `--mcp-config` starts no MCP server; the
+CLAUDE.md of a directory given with `--add-dir` is not loaded unless
+`CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD` is set, which orchestrator
+removes, since it hands the user's instructions for coordinators over
+itself, imports resolved; `--` ends the options before the prompt. In print mode (`-p`), `--model` picks
+the model and takes a full model id (`claude-sonnet-5-5`, the default) as
+well as an alias, `--max-budget-usd`, passed only when the user configures
+one, stops the run once its estimated spend at list price reaches the
+amount, `--no-session-persistence` keeps no transcript, and a standard input
+left open is waited for.
+
+- Code: `src/coordinator/run.rs` (`args`, `command`).
+- If it changes: a coordinator starts without its role, with the user's
+  settings and hooks, or without its bounds; an unknown option makes every
+  run fail at once, which `runs.jsonl` and `last-run.err` show.
+- Verified: integration test (the reply quotes the role's first line and the
+  session's name, and not the marker of a CLAUDE.md above the coordinator's
+  directory). Measured on 2.1.291: with `--setting-sources project`, a run's
+  context was 4,000 tokens instead of 12,000 and held none of the user's
+  CLAUDE.md; `--model claude-sonnet-5-5` ran that model. Measured on
+  2.1.292: without `claudeMdExcludes`, a run loaded a `CLAUDE.md` and a
+  `.claude/rules/` file from a parent directory (an `InstructionsLoaded` hook
+  logged them as project files), an `AGENTS.md` from a parent directory, and,
+  with its working directory under the home directory, `~/.claude/CLAUDE.md`
+  as a project file; with it, none of them. The integration test's marker
+  check fails without it and passes with it. `CLAUDE.local.md` and
+  `.claude/settings.local.json` were not loaded either way. Measured on
+  2.1.292 with `disableAgentView`, in a scratch interactive coordinator: its
+  background `coordinator next` ran, and its end on a queued event woke the
+  session; `SendMessage` reached a scratch `-p` peer; `/exit` offered only
+  `Exit and stop tasks` and `Stay`; a supervisor started beforehand kept its
+  pid and its background session throughout. `Move to background and exit`
+  never showed on this machine, with or without the setting, so its removal
+  rests on the documentation. Documentation: cli-reference, memory,
+  agent-view ("Turn off agent view"), settings-reference.
+
+### coordinator-permissions
+
+`--tools` takes the names of built-in tools, `SendMessage` and `ListAgents`
+among them, and leaves the others out. `--allowedTools` takes rules:
+`Bash(<command>)` matches that command exactly, `Bash(<command> *)` that
+command with any arguments, and `Edit(//<path>)` every file-editing tool,
+Write included, on that one absolute path (a `Write(...)` rule is ignored,
+with a warning). With `--permission-mode dontAsk`, any call no rule allows
+is denied without asking; with `default`, it is asked.
+`--add-dir` makes a directory readable; with
+`blockReadsOutsideWorkingDirectories`, read-only commands such as `cat` are
+denied outside the working directories.
+
+- Code: `src/coordinator/run.rs` (`args`).
+- If it changes: a coordinator cannot read the state or note in its
+  journal, or, worse, may run what it was not given.
+- Verified: integration test (`orchestrator machine` and the journal note
+  run; a `touch` and a read outside, by `cat` or by Read, are denied).
+  Measured on 2.1.291: in
+  the setup conversation, the `Edit(//<path>)` rule on a file let the Write
+  tool create it without asking; in `default` mode, an edit in an
+  `--add-dir` directory asked first. Documentation: permissions,
+  permission-modes.
+
+### cross-session-message
+
+`SendMessage` delivers a message to a session of this machine addressed by
+its name, which is the `name` of its session file (see `session-file`), set
+by `--name` when it is given. It needs no permission. A sender in a mode
+that prompts for permissions (`default`, `dontAsk`, `auto`, `acceptEdits`)
+has its messages delivered to a receiver in such a mode, and held for
+approval by a receiver that skips permission prompts. A `claude -p` session
+has an inbox too. The receiver reads the message between tool calls, or in a
+new turn when idle. `ListAgents` lists the reachable sessions, its first line
+naming the session itself.
+
+- Code: `src/coordinator/run.rs` (`args`), `src/coordinator/service.rs`
+  (`check_waits`), `src/report.rs` (`sessions`, `session_label`).
+- If it changes: the coordinator's messages do not arrive, arrive held, or
+  go to another session of the same name.
+- Verified: integration test (`ListAgents` runs and names the session; the
+  test never sends). Measured on 2.1.291: a `claude -p` session in `dontAsk`
+  mode messaged another one, started with `--name`, which quoted the message
+  after its Bash call ended. Documentation: cross-session-messaging.
+
+### print-json-result
+
+`claude -p --output-format json` prints one JSON object when the run ends:
+`result` holds the final reply, `num_turns` the turns, `usage` the tokens
+summed over the run (`input_tokens`, `cache_creation_input_tokens`,
+`cache_read_input_tokens`, `output_tokens`), `is_error` whether it failed,
+`permission_denials` the calls denied, and `total_cost_usd` the estimated
+spend at API list price, which a subscription does not pay.
+
+- Code: `src/coordinator/run.rs` (`RunRecord::new`).
+- If it changes: `runs.jsonl` and `orchestrator setup` lose the tokens and
+  the reply of each run. A run that exits successfully still counts as
+  having handled its events; one whose `is_error` reads true does not.
+- Verified: integration test (the fields are present). Documentation:
+  headless (`result`, `total_cost_usd`, `permission_denials`); the other
+  fields measured on 2.1.291.
+
+### background-command-wake
+
+In an interactive session, a Bash call started with `run_in_background` runs
+with no time limit, and when it ends, an idle session starts a turn with its
+output.
+
+- Code: `src/coordinator/run.rs` (`NEXT`).
+- If it changes: an interactive coordinator no longer wakes for events; they
+  wait in the queue until it closes and `watch` takes them.
+- Verified: measured on 2.1.291 with a background session (claude --bg),
+  woken 3.5 to 6 s after its command ended; on 2.1.292 in a scratch
+  interactive coordinator with `disableAgentView`. Documentation:
+  tools-reference, "Time limit for background commands". The integration
+  test cannot see it.
