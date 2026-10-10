@@ -193,9 +193,17 @@ pub fn run_unexpected(args: &[OsString]) -> Option<anyhow::Error> {
 /// hook or the status line must not show orchestrator's troubles. Only
 /// admission's notices go there.
 fn log_failure(e: &anyhow::Error) {
-    let Ok(dir) = runtime::default_dir() else {
+    if let Ok(dir) = runtime::default_dir() {
+        append_failure(&dir, e);
+    }
+}
+
+/// Creates the runtime directory when it is missing: the prefix may run
+/// before `watch` or any job record has created it.
+fn append_failure(dir: &Path, e: &anyhow::Error) {
+    if fs::create_dir_all(dir).is_err() {
         return;
-    };
+    }
     if let Ok(mut log) = OpenOptions::new()
         .create(true)
         .append(true)
@@ -241,5 +249,16 @@ mod tests {
         let back: JobRecord =
             serde_json::from_slice(&fs::read(dir.join("job-bash-7-1.json")).unwrap()).unwrap();
         assert_eq!(back, record);
+    }
+
+    #[test]
+    fn failures_are_logged_before_the_runtime_directory_exists() {
+        let parent = tempfile::tempdir().unwrap();
+        let dir = parent.path().join("orchestrator");
+        append_failure(&dir, &anyhow::anyhow!("first"));
+        append_failure(&dir, &anyhow::anyhow!("second"));
+        let log = fs::read_to_string(dir.join("prefix.log")).unwrap();
+        let errors: Vec<_> = log.lines().map(|l| l.split_once(' ').unwrap().1).collect();
+        assert_eq!(errors, ["first", "second"]);
     }
 }

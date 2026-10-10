@@ -177,8 +177,9 @@ without a first line (`refused … at once:`).
 ### The prefix, in prefix.log
 
 `$XDG_RUNTIME_DIR/orchestrator/prefix.log`, one line per failure:
-`<ms since the epoch> <error>`. Lines are written only once the runtime
-directory exists. The command ran anyway; the line says which step it lost:
+`<ms since the epoch> <error>`. The prefix creates the runtime directory
+when it does not exist yet. The command ran anyway; the line says which step
+it lost:
 
 - `reading …/config.json: …`, `neither XDG_CONFIG_HOME nor HOME is set`, or
   `neither XDG_STATE_HOME nor HOME is set`: no admission.

@@ -32,7 +32,7 @@ writes nothing into a repository it works in.
 | `<runtime>/coordinator/runs.jsonl` | `watch` | a human | One line per coordinator run. See coordinator.md. Grows until `<runtime>` is removed. |
 | `<runtime>/coordinator/last-run.json`, `last-run.err` | `watch` | a human | What the latest run printed on its standard output and error. |
 | `<runtime>/api.sock` | `watch` | the read commands, `config admission`, `setup`, `coordinator`, any client | The local API's socket, only its owner can connect (api.md). Replaced by the next `watch` when the one that made it has ended. |
-| `<runtime>/prefix.log` | the prefix | a human | One line per failure the prefix let pass, once the runtime directory exists (`watch` creates it, as does an orchestrated Bash call writing its job record). See events.md. Grows until `<runtime>` is removed. |
+| `<runtime>/prefix.log` | the prefix | a human | One line per failure the prefix let pass; the prefix creates `<runtime>` if needed. See events.md. Grows until `<runtime>` is removed. |
 
 `watch --runtime-dir` and `--state-dir` move the `<runtime>/coordinator/`
 and `<state>/coordinator/` files of the runs it starts, the journal its runs
