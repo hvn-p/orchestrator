@@ -335,6 +335,13 @@ fn hex(bytes: &[u8]) -> String {
     s
 }
 
+/// What events call the Bash call `invocation`, run from `cwd`: the label
+/// of its first command. None when the call cannot be parsed.
+pub fn call_label(invocation: &str, cwd: &Path, home: Option<&Path>) -> Option<String> {
+    let script = claude_code::invocation::written(invocation)?;
+    recognise::commands(&script, cwd, home)?.first().map(label)
+}
+
 /// What `orchestrator peaks` shows of a command: its words on one line, a
 /// mark rather than its input, at most `LABEL_MAX` characters.
 fn label(command: &Command) -> String {
@@ -516,6 +523,17 @@ mod tests {
             .collect();
         labels.sort();
         labels
+    }
+
+    #[test]
+    fn a_call_goes_by_its_first_command() {
+        let s = store();
+        let m = measured("cd web && pnpm exec vitest run | tail -1", &s.repo, 1, 1);
+        assert_eq!(
+            call_label(&m.command, &s.repo, None).as_deref(),
+            Some("pnpm exec vitest run")
+        );
+        assert_eq!(call_label("not a call", &s.repo, None), None);
     }
 
     #[test]

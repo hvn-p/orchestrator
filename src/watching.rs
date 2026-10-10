@@ -1,33 +1,42 @@
 //! The watch loop. It sleeps until the kernel reports something: memory
-//! pressure (a PSI trigger), the end of a Claude session's process (a pidfd
-//! per session, found through inotify on the sessions directory), or a change
-//! in the job groups of orchestrated sessions (inotify). Slow sweeps of jobs
-//! and orphans catch what these signals cannot show. Each measured Bash call
-//! teaches its peak to the learned peaks. Once the configuration enables the
-//! coordinator, the events that need judgment go to it (see `coordinator`).
+//! pressure on the machine or in a job (a PSI trigger each), the end of a
+//! Claude session's process (a pidfd per session, found through inotify on
+//! the sessions directory), or a change in the job groups of orchestrated
+//! sessions (inotify), a process killed for lack of memory included. Slow
+//! sweeps of jobs and orphans catch what these signals cannot show. Each
+//! measured Bash call teaches its peak to the learned peaks. Once the
+//! configuration enables the coordinator, the events that need judgment go
+//! to it (see `coordinator`).
+//!
+//! What a job uses is read only when an event names it (`watch::usage`): a
+//! job stalls, or the machine does and the event lists the jobs using the
+//! most. Between events, watching reads nothing.
 
 use anyhow::{Context, Result};
+use claude_code::sessions;
 use coordinator::{self, service::Service, service::Wake};
 use learning::peaks;
 use prefix::admission;
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use rustix::io::Errno;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use system::cgroup;
 use system::memory;
 use system::pressure::Trigger;
+use system::procfs::ProcInfo;
 use system::runtime;
-use watch::Places;
 use watch::api;
 use watch::attribution::Attribution;
 use watch::events::Hub;
-use watch::events::{self, Event};
+use watch::events::{self, Event, JobUsage};
 use watch::exits::Exits;
-use watch::jobs::{self, Tracker};
+use watch::jobs::{self, Killed, Tracker};
 use watch::report::Local;
+use watch::usage::Reader;
+use watch::{Places, Snapshot};
 
 /// Between two sweeps of the job groups while the tracker runs.
 const JOB_SWEEP: Duration = Duration::from_secs(60);
@@ -36,6 +45,8 @@ const JOB_SWEEP_UNTRACKED: Duration = Duration::from_secs(2);
 /// Time a session's processes get to exit after the session ends, before what
 /// is left counts as orphaned.
 const ORPHAN_GRACE: Duration = Duration::from_secs(5);
+/// Jobs a memory pressure event lists, using the most first.
+const LARGEST_JOBS: usize = 3;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Thresholds {
@@ -62,6 +73,8 @@ pub struct Options {
 pub struct Watcher {
     thresholds: Thresholds,
     last_pressure: Option<u64>,
+    /// When each job last made a pressure event, by session scope and job.
+    last_job_pressure: HashMap<(String, String), u64>,
     /// Orphan groups already reported, by root (pid, start time).
     reported: HashSet<(u32, u64)>,
 }
@@ -71,17 +84,18 @@ impl Watcher {
         Watcher {
             thresholds,
             last_pressure: None,
+            last_job_pressure: HashMap::new(),
             reported: HashSet::new(),
         }
     }
 
     /// The kernel reported memory pressure. `scan` runs only when an event is
-    /// due.
+    /// due, and gives the sessions and the jobs using the most.
     pub fn on_pressure(
         &mut self,
         available_mb: u64,
         now: u64,
-        scan: impl FnOnce() -> Result<Attribution>,
+        scan: impl FnOnce() -> Result<(Attribution, Vec<JobUsage>)>,
     ) -> Result<Option<Event>> {
         let cooled = self
             .last_pressure
@@ -89,13 +103,34 @@ impl Watcher {
         if !cooled {
             return Ok(None);
         }
-        let att = scan()?;
+        let (att, jobs) = scan()?;
         self.last_pressure = Some(now);
         Ok(Some(Event::memory_pressure(
             available_mb,
             self.thresholds.stall_ms,
             &att,
+            jobs,
         )))
+    }
+
+    /// The kernel reported the job `job` of the session scope `scope`
+    /// stalling: whether an event is due, at most one per job per cooldown.
+    pub fn on_job_pressure(&mut self, scope: &str, job: &str, now: u64) -> bool {
+        let cooldown = self.thresholds.cooldown_secs;
+        self.last_job_pressure
+            .retain(|_, t| now.saturating_sub(*t) < cooldown);
+        let key = (scope.to_string(), job.to_string());
+        if self.last_job_pressure.contains_key(&key) {
+            return false;
+        }
+        self.last_job_pressure.insert(key, now);
+        true
+    }
+
+    /// The event `on_job_pressure` allowed was not written.
+    pub fn retract_job_pressure(&mut self, scope: &str, job: &str) {
+        self.last_job_pressure
+            .remove(&(scope.to_string(), job.to_string()));
     }
 
     /// Reports each orphan group once, for as long as it lives.
@@ -138,6 +173,12 @@ enum Signal {
     TriggerBroken,
     SessionsChanged,
     JobsChanged,
+    /// The trigger of a job, by its id in the tracker, fired.
+    JobStalled(u64),
+    /// The trigger of a job reported something other than a stall.
+    JobTriggerBroken(u64),
+    /// The Bash call of a job, by its id in the tracker, ended.
+    CallEnded(u64),
     /// The claude process of a session exited.
     Exited(u32),
     Coordinator(Wake),
@@ -158,7 +199,8 @@ pub fn run(cfg: &Options) -> Result<()> {
         hub.clone(),
     );
     let job_paths = job_paths(cfg);
-    let mut src = sources(cfg, job_paths.as_ref());
+    let jp = job_paths.as_ref();
+    let mut src = sources(cfg, jp);
     let mut watcher = Watcher::new(cfg.thresholds);
     let mut coordinator = Service::new(places(cfg, &meminfo), events_path.clone(), hub.clone());
     coordinator.start();
@@ -189,11 +231,14 @@ pub fn run(cfg: &Options) -> Result<()> {
         };
         for signal in signals {
             match signal {
-                Signal::Pressure => {
-                    match on_pressure(cfg, &meminfo, &events_path, &hub, &mut watcher) {
-                        Ok(Some((at, event))) => coordinator.enqueue(at, &event),
-                        Ok(None) => {}
-                        Err(e) => eprintln!("orchestrator: {e:#}"),
+                Signal::Pressure => queue(
+                    &mut coordinator,
+                    on_pressure(cfg, &meminfo, jp, &events_path, &hub, &mut watcher),
+                ),
+                Signal::JobStalled(_) | Signal::JobTriggerBroken(_) | Signal::CallEnded(_) => {
+                    if let (Some(tracker), Some(p)) = (src.tracker.as_mut(), jp) {
+                        let out = (events_path.as_path(), &hub, &mut coordinator);
+                        on_job_signal(signal, cfg, p, tracker, &mut watcher, out);
                     }
                 }
                 Signal::Coordinator(wake) => coordinator.on_wake(wake),
@@ -215,30 +260,18 @@ pub fn run(cfg: &Options) -> Result<()> {
                     next_orphan_scan = next_orphan_scan.min(Instant::now() + ORPHAN_GRACE);
                 }
                 Signal::JobsChanged => {
-                    if let (Some(tracker), Some(p)) = (src.tracker.as_mut(), job_paths.as_ref()) {
-                        match tracker.read_ready() {
-                            Ok(measured) => keep(p, &measured),
-                            Err(e) => {
-                                eprintln!(
-                                    "orchestrator: job tracking stopped, sweeping instead: {e}"
-                                );
-                                src.tracker = None;
-                            }
-                        }
+                    if let Some(p) = jp {
+                        let out = (events_path.as_path(), &hub, &mut coordinator);
+                        jobs_changed(cfg, p, &mut src.tracker, out);
                     }
                 }
             }
         }
         coordinator.on_time();
         let now = Instant::now();
-        if let Some(p) = job_paths.as_ref().filter(|_| now >= next_job_sweep) {
-            log(sweep_jobs(p));
-            let every = if src.tracker.is_some() {
-                JOB_SWEEP
-            } else {
-                JOB_SWEEP_UNTRACKED
-            };
-            next_job_sweep = now + every;
+        if let Some(p) = jp.filter(|_| now >= next_job_sweep) {
+            let out = (events_path.as_path(), &hub, &mut coordinator);
+            next_job_sweep = now + sweep_jobs(cfg, p, src.tracker.as_mut(), out);
         }
         if now >= next_orphan_scan {
             log(scan_orphans(cfg, &events_path, &hub, &mut watcher));
@@ -296,7 +329,12 @@ fn sources(cfg: &Options, job_paths: Option<&JobPaths>) -> Sources {
         tracker: job_paths.and_then(|p| {
             let (tracker, measured) = report(
                 "job ends",
-                Tracker::new(p.slice.clone(), p.records.clone(), remove_group),
+                Tracker::new(
+                    p.slice.clone(),
+                    p.records.clone(),
+                    Duration::from_millis(cfg.thresholds.stall_ms),
+                    remove_group,
+                ),
             )?;
             keep(p, &measured);
             Some(tracker)
@@ -319,6 +357,14 @@ fn wait(src: &Sources, coordinator: &Service, timeout: Duration) -> std::io::Res
     if let Some(t) = &src.tracker {
         fds.push(PollFd::from_borrowed_fd(t.fd(), PollFlags::IN));
         which.push(Signal::JobsChanged);
+        for (id, fd) in t.triggers() {
+            fds.push(PollFd::from_borrowed_fd(fd, PollFlags::PRI));
+            which.push(Signal::JobStalled(id));
+        }
+        for (id, fd) in t.shells() {
+            fds.push(PollFd::from_borrowed_fd(fd, PollFlags::IN));
+            which.push(Signal::CallEnded(id));
+        }
     }
     if let Some(e) = &src.exits {
         fds.push(PollFd::from_borrowed_fd(e.sessions_fd(), PollFlags::IN));
@@ -343,6 +389,11 @@ fn wait(src: &Sources, coordinator: &Service, timeout: Duration) -> std::io::Res
             _ if revents.is_empty() => None,
             // A trigger only ever reports priority data; anything else is an error.
             Signal::Pressure if !revents.contains(PollFlags::PRI) => Some(Signal::TriggerBroken),
+            // A job's group gone, its trigger reports priority data and an
+            // error, at every wait: taken for a stall, it would spin (#24).
+            Signal::JobStalled(id) if revents != PollFlags::PRI => {
+                Some(Signal::JobTriggerBroken(id))
+            }
             signal => Some(signal),
         }
     });
@@ -353,6 +404,7 @@ fn wait(src: &Sources, coordinator: &Service, timeout: Duration) -> std::io::Res
 fn on_pressure(
     cfg: &Options,
     meminfo: &Path,
+    job_paths: Option<&JobPaths>,
     events_path: &Path,
     hub: &Hub,
     watcher: &mut Watcher,
@@ -360,12 +412,143 @@ fn on_pressure(
     let now = now_secs();
     let available = memory::available_mb(meminfo)?;
     let event = watcher.on_pressure(available, now, || {
-        watch::scan(&cfg.proc_root, &cfg.sessions_dir)
+        // One read of processes and sessions serves both rankings.
+        let snapshot = Snapshot::read(&cfg.proc_root, &cfg.sessions_dir)?;
+        let jobs = job_paths.map_or_else(Vec::new, |p| {
+            let home = home();
+            reader(cfg, p, &snapshot.procs, &snapshot.sessions, home.as_deref())
+                .largest_jobs(LARGEST_JOBS)
+        });
+        Ok((snapshot.attribute(), jobs))
     })?;
     if let Some(event) = &event {
         events::emit(events_path, hub, now, event)?;
     }
     Ok(event.map(|e| (now, e)))
+}
+
+/// Handles what a job's own descriptors report: its trigger, or the end of
+/// its Bash call.
+fn on_job_signal(
+    signal: Signal,
+    cfg: &Options,
+    p: &JobPaths,
+    tracker: &mut Tracker,
+    watcher: &mut Watcher,
+    out: Out<'_>,
+) {
+    match signal {
+        Signal::JobStalled(id) => {
+            let (events_path, hub, coordinator) = out;
+            let written = on_job_pressure(cfg, p, tracker, id, watcher, events_path, hub);
+            queue(coordinator, written);
+        }
+        Signal::JobTriggerBroken(id) => tracker.disarm(id),
+        Signal::CallEnded(id) => {
+            tracker.call_ended(id);
+            report_kills(cfg, p, tracker, out);
+        }
+        _ => {}
+    }
+}
+
+/// Writes a job pressure event for the trigger `id` when one is due, and
+/// returns it.
+fn on_job_pressure(
+    cfg: &Options,
+    p: &JobPaths,
+    tracker: &Tracker,
+    id: u64,
+    watcher: &mut Watcher,
+    events_path: &Path,
+    hub: &Hub,
+) -> Result<Option<(u64, Event)>> {
+    let now = now_secs();
+    let Some((scope, job)) = tracker.stalled(id) else {
+        return Ok(None);
+    };
+    if !watcher.on_job_pressure(scope, job, now) {
+        return Ok(None);
+    }
+    let (sessions, home) = (read_sessions(cfg), home());
+    let Some(usage) = reader(cfg, p, &[], &sessions, home.as_deref()).job(scope, job) else {
+        // No event: the job's next stall gets one.
+        watcher.retract_job_pressure(scope, job);
+        return Ok(None);
+    };
+    let event = Event::JobPressure(events::JobPressure {
+        job: usage,
+        stall_ms: cfg.thresholds.stall_ms,
+    });
+    events::emit(events_path, hub, now, &event)?;
+    Ok(Some((now, event)))
+}
+
+/// Hands an event just written to the coordinator, which queues it if it
+/// needs judgment.
+fn queue(coordinator: &mut Service, written: Result<Option<(u64, Event)>>) {
+    match written {
+        Ok(Some((at, event))) => coordinator.enqueue(at, &event),
+        Ok(None) => {}
+        Err(e) => eprintln!("orchestrator: {e:#}"),
+    }
+}
+
+/// Where events go: the events file, the API's streams, the coordinator.
+type Out<'a> = (&'a Path, &'a Hub, &'a mut Service);
+
+/// Writes an event for each kill the tracker read, and hands it to the
+/// coordinator.
+fn report_kills(cfg: &Options, p: &JobPaths, tracker: &mut Tracker, out: Out<'_>) {
+    let (events_path, hub, coordinator) = out;
+    let killed: Vec<Killed> = tracker.take_kills();
+    if killed.is_empty() {
+        return;
+    }
+    let now = now_secs();
+    let (sessions, home) = (read_sessions(cfg), home());
+    let reader = reader(cfg, p, &[], &sessions, home.as_deref());
+    for k in killed {
+        let session = reader.session(&k.session);
+        let event = Event::OomKill(events::OomKill {
+            session: session.map(|s| claude_code::messages::address(s).to_string()),
+            session_id: session.map(|s| s.session_id.clone()),
+            command: k.record.as_ref().and_then(|r| reader.label_of(r)),
+            job: k.job,
+            killed: k.killed,
+            call_running: k.call_running,
+        });
+        match events::emit(events_path, hub, now, &event) {
+            Ok(()) => coordinator.enqueue(now, &event),
+            Err(e) => eprintln!("orchestrator: {e:#}"),
+        }
+    }
+}
+
+fn reader<'a>(
+    cfg: &'a Options,
+    p: &'a JobPaths,
+    procs: &'a [ProcInfo],
+    sessions: &'a [sessions::ClaudeSession],
+    home: Option<&'a Path>,
+) -> Reader<'a> {
+    Reader {
+        slice: &p.slice,
+        records: &p.records,
+        proc_root: &cfg.proc_root,
+        procs,
+        sessions,
+        home,
+    }
+}
+
+/// The sessions to name jobs by; none when they cannot be read.
+fn read_sessions(cfg: &Options) -> Vec<sessions::ClaudeSession> {
+    sessions::read_sessions(&cfg.sessions_dir).unwrap_or_default()
+}
+
+fn home() -> Option<PathBuf> {
+    std::env::var_os("HOME").map(PathBuf::from)
 }
 
 fn scan_orphans(cfg: &Options, events_path: &Path, hub: &Hub, watcher: &mut Watcher) -> Result<()> {
@@ -376,11 +559,49 @@ fn scan_orphans(cfg: &Options, events_path: &Path, hub: &Hub, watcher: &mut Watc
     Ok(())
 }
 
-fn sweep_jobs(p: &JobPaths) -> Result<()> {
-    let measured = jobs::collect(&p.slice, &p.records, runtime::now_ms(), remove_group)
-        .with_context(|| format!("sweeping jobs in {}", p.slice.display()))?;
-    keep(p, &measured);
-    Ok(())
+/// Handles what the tracker reports; stops it on an error, leaving the jobs
+/// to the sweeps.
+fn jobs_changed(cfg: &Options, p: &JobPaths, tracker: &mut Option<Tracker>, out: Out<'_>) {
+    let Some(t) = tracker.as_mut() else {
+        return;
+    };
+    match t.read_ready() {
+        Ok(measured) => {
+            keep(p, &measured);
+            report_kills(cfg, p, t, out);
+        }
+        Err(e) => {
+            eprintln!("orchestrator: job tracking stopped, sweeping instead: {e}");
+            *tracker = None;
+        }
+    }
+}
+
+/// Sweeps the jobs, through the tracker when there is one, so that it reads
+/// the kills of the jobs the sweep removes. Returns when the next sweep is
+/// due.
+fn sweep_jobs(
+    cfg: &Options,
+    p: &JobPaths,
+    tracker: Option<&mut Tracker>,
+    out: Out<'_>,
+) -> Duration {
+    let (measured, every) = match tracker {
+        Some(t) => {
+            let measured = t.sweep();
+            report_kills(cfg, p, t, out);
+            (measured, JOB_SWEEP)
+        }
+        None => (
+            jobs::collect(&p.slice, &p.records, runtime::now_ms(), remove_group),
+            JOB_SWEEP_UNTRACKED,
+        ),
+    };
+    match measured {
+        Ok(measured) => keep(p, &measured),
+        Err(e) => eprintln!("orchestrator: sweeping jobs in {}: {e}", p.slice.display()),
+    }
+    every
 }
 
 fn remove_group(dir: &Path) -> std::io::Result<()> {
@@ -390,7 +611,7 @@ fn remove_group(dir: &Path) -> std::io::Result<()> {
 /// Writes each measurement down and learns from it. A failure is reported,
 /// never fatal.
 fn keep(p: &JobPaths, measured: &[learning::peaks::Measurement]) {
-    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let home = home();
     for m in measured {
         if let Err(e) = events::append_line(&p.measurements, m) {
             eprintln!("orchestrator: {e:#}");
@@ -455,16 +676,28 @@ mod tests {
     #[test]
     fn memory_pressure_respects_the_cooldown() {
         let mut w = Watcher::new(T);
-        let empty = || Ok(Attribution::default());
+        let empty = || Ok((Attribution::default(), Vec::new()));
         assert!(w.on_pressure(2000, 10, empty).unwrap().is_some());
         assert!(w.on_pressure(2000, 69, empty).unwrap().is_none());
         assert!(w.on_pressure(2000, 70, empty).unwrap().is_some());
     }
 
     #[test]
+    fn each_job_has_its_own_cooldown() {
+        let mut w = Watcher::new(T);
+        assert!(w.on_job_pressure("s.scope", "job-bash-1-1", 10));
+        assert!(!w.on_job_pressure("s.scope", "job-bash-1-1", 69));
+        assert!(w.on_job_pressure("s.scope", "job-bash-2-1", 69));
+        assert!(w.on_job_pressure("s.scope", "job-bash-1-1", 70));
+        // An event not written spends no cooldown.
+        w.retract_job_pressure("s.scope", "job-bash-1-1");
+        assert!(w.on_job_pressure("s.scope", "job-bash-1-1", 71));
+    }
+
+    #[test]
     fn no_scan_during_the_cooldown() {
         let mut w = Watcher::new(T);
-        let empty = || Ok(Attribution::default());
+        let empty = || Ok((Attribution::default(), Vec::new()));
         assert!(w.on_pressure(2000, 0, empty).unwrap().is_some());
         let event = w
             .on_pressure(2000, 1, || anyhow::bail!("scan must not run"))

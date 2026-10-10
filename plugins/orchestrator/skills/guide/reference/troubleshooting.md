@@ -184,6 +184,22 @@ working bash binary (commands.md, "orchestrator-prefix").
 - No task stalled on memory for `--stall-ms` within 2 s, or an event fired
   less than `--cooldown-secs` ago.
 
+## No job_pressure or oom_kill event
+
+- The command did not run in a job group: the session is not orchestrated,
+  or the prefix could not place it (see "Is this session orchestrated?").
+- `watch` is not told of job ends (`no kernel signal for job ends` when it
+  started, or `job tracking stopped`): it holds no trigger and reads no
+  `memory.events`, so neither event comes until it restarts.
+- For `job_pressure`: the job's trigger could not be set up, which `watch`
+  does not report (Linux older than 6.4 refuses it); or the job's tasks did
+  not stall for `--stall-ms` within 2 s; or the job made one less than
+  `--cooldown-secs` ago. A job waiting on memory the whole machine lacks
+  stalls too, and the machine-wide `memory_pressure` usually comes with it.
+- For `oom_kill`: the process was not killed by the kernel's OOM killer, but
+  by a signal from elsewhere, systemd-oomd included, or it ended on its own.
+  `watch` started after the kill does not report it.
+
 ## Sessions or orphans not seen
 
 - `watch` reads another sessions directory than the sessions write, and

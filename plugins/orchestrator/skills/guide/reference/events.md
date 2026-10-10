@@ -10,8 +10,9 @@ up.
 JSON object per line, appended by `watch`. The file is opened per event, so a
 reader may truncate it between two. Nothing in orchestrator reads the file.
 With `"wake": true` in the configuration, `watch` also queues each
-`memory_pressure` and `admission_wait` event for a coordinator run
-(coordinator.md); otherwise events only report.
+`memory_pressure` and `admission_wait` event, and each `oom_kill` its session
+cannot see, for a coordinator run (coordinator.md); otherwise events only
+report.
 
 A process is never named by its full command line, which can hold
 credentials: an event gives its pid, its `comm` (the kernel's name for the
@@ -25,7 +26,7 @@ itself fails that test.
 ### memory_pressure
 
 ```json
-{"at":1791356865,"kind":"memory_pressure","available_mb":812,"stall_ms":200,"largest":{"session":"api refactor","session_id":"6f1c2d9e-3b4a-4c5d-8e7f-0a1b2c3d4e5f","rss_mb":6120,"process_pid":41237,"process_rss_mb":3890,"process_comm":"node","process_command":"node tsc"},"next":[{"session":"docs","rss_mb":1450}]}
+{"at":1791356865,"kind":"memory_pressure","available_mb":812,"stall_ms":200,"largest":{"session":"api refactor","session_id":"6f1c2d9e-3b4a-4c5d-8e7f-0a1b2c3d4e5f","rss_mb":6120,"process_pid":41237,"process_rss_mb":3890,"process_comm":"node","process_command":"node tsc"},"next":[{"session":"docs","rss_mb":1450}],"jobs":[{"session":"api refactor","session_id":"6f1c2d9e-3b4a-4c5d-8e7f-0a1b2c3d4e5f","job":"job-bash-41230-1791356850123","command":"pnpm typecheck","memory_mb":4012,"largest":{"pid":41237,"rss_mb":3890,"comm":"node","command":"node tsc"}}]}
 ```
 
 Written when some task stalled on memory for at least `--stall-ms` within a
@@ -40,9 +41,61 @@ Written when some task stalled on memory for at least `--stall-ms` within a
 | `largest.rss_mb` | The resident memory of all its processes. |
 | `largest.process_pid`, `process_rss_mb`, `process_comm`, `process_command` | Its largest process: pid, resident memory, `comm`, command head. |
 | `next` | Up to two next sessions by memory: `session`, `rss_mb`. |
+| `jobs` | Up to three live jobs of orchestrated sessions, across sessions, using the most memory, most first; each as in `job_pressure` below. Empty when no job runs, or when `watch` collects no jobs. |
 
 With `wake` on, it is queued for a coordinator run; a pending one merges
 with it. Otherwise it only reports.
+
+### job_pressure
+
+```json
+{"at":1791356866,"kind":"job_pressure","session":"api refactor","session_id":"6f1c2d9e-3b4a-4c5d-8e7f-0a1b2c3d4e5f","job":"job-bash-41230-1791356850123","command":"pnpm typecheck","memory_mb":4012,"largest":{"pid":41237,"rss_mb":3890,"comm":"node","command":"node tsc"},"stall_ms":200}
+```
+
+Written when some task of one job stalled on memory for at least
+`--stall-ms` within a 2 s window (a PSI trigger on the job's group), at most
+once per job per `--cooldown-secs`. A job that stalls is not always the one
+using the memory: when the whole machine is short, a small job waits for the
+large job of another session. The job allocating the most tends to stall the
+most, since it has to reclaim memory before it can allocate; `memory_mb` and
+the `jobs` of `memory_pressure` show who uses the memory. A job stalling also
+makes the machine stall, so a `memory_pressure` usually comes with it.
+
+| Field | Meaning |
+| :- | :- |
+| `session`, `session_id` | The job's session, from the session file of its scope's claude process; `null` when there is none. |
+| `job` | The job group. |
+| `command` | For a Bash call, the label of its first command, as `orchestrator peaks` shows labels; an admission notice may name another command of the same call, its first heavy one. `null` for a hook, the status line or an MCP server, and for a call that cannot be parsed. |
+| `memory_mb` | The memory the job's group is charged now (`memory.current`): its processes, children included, and the page cache they brought in. |
+| `largest` | The job's process using the most resident memory: `pid`, `rss_mb`, `comm`, `command` (its command head); `null` when the job has no process left. |
+| `stall_ms` | The threshold that fired, `--stall-ms`. |
+
+It never wakes the coordinator, whatever `wake` says: it comes while memory
+is short, when a coordinator run would add to the shortage and act late.
+
+### oom_kill
+
+```json
+{"at":1791356900,"kind":"oom_kill","session":"api refactor","session_id":"6f1c2d9e-3b4a-4c5d-8e7f-0a1b2c3d4e5f","job":"job-bash-41390-1791356880123","command":"pnpm dev","killed":1,"call_running":false}
+```
+
+Written when processes of a job, or of a session's `main/` leaf, were killed
+for lack of memory, by the kernel's OOM killer, the machine-wide one
+included. A process killed this way exits on `SIGKILL`; with
+`OOMPolicy=continue`, the default of the scopes `launch` creates, the rest of
+the session keeps running.
+
+| Field | Meaning |
+| :- | :- |
+| `session`, `session_id` | As in `job_pressure`. |
+| `job` | The job group, or `main` for the session's claude process and the tools it runs itself. |
+| `command` | As in `job_pressure`. |
+| `killed` | Processes killed since `watch` last read the job. |
+| `call_running` | `true` when the Bash call that started the job was still running: its result shows the kill to its session (exit code 137, or what its command printed). `false` for a process the call left running after it ended, such as a server started with `&` or `nohup`, for a hook, the status line or an MCP server, and for `main`. |
+
+With `wake` on, it is queued for a coordinator run when its session cannot
+see it: `call_running` is `false` and `job` is not `main`. Kills in one job
+merge while pending, their `killed` added up.
 
 ### orphans
 

@@ -1,6 +1,7 @@
-//! `memory_pressure`: tasks stalled on memory, with the sessions using the
-//! most.
+//! `memory_pressure`: tasks stalled on memory, with the sessions and the jobs
+//! using the most.
 
+use super::JobUsage;
 use crate::attribution::{Attribution, SessionUsage};
 use serde::Serialize;
 
@@ -15,6 +16,8 @@ pub struct MemoryPressure {
     pub stall_ms: u64,
     pub largest: Option<SessionSummary>,
     pub next: Vec<SessionBrief>,
+    /// The live jobs using the most memory, across sessions, most first.
+    pub jobs: Vec<JobUsage>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -36,7 +39,7 @@ pub struct SessionBrief {
 }
 
 impl MemoryPressure {
-    pub fn new(available_mb: u64, stall_ms: u64, att: &Attribution) -> Self {
+    pub fn new(available_mb: u64, stall_ms: u64, att: &Attribution, jobs: Vec<JobUsage>) -> Self {
         MemoryPressure {
             available_mb,
             stall_ms,
@@ -51,6 +54,7 @@ impl MemoryPressure {
                     rss_mb: s.rss_kb / 1024,
                 })
                 .collect(),
+            jobs,
         }
     }
 }

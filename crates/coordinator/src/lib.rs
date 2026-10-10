@@ -362,6 +362,7 @@ mod tests {
             stall_ms: 200,
             largest: None,
             next: vec![],
+            jobs: vec![],
         })
     }
 

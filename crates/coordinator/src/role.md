@@ -86,7 +86,15 @@ same turn when you can.
   background wait: long enough for other sessions' heavy commands to end, 30
   minutes at most.
 - `memory_pressure`: tasks stalled for memory. Find who holds it and ask the
-  sessions that can free the most to do so, largest first.
+  sessions that can free the most to do so, largest first. Its `jobs` name
+  the commands using the most: ask about that command, by its label (the
+  call's first command) or its largest process, rather than about the
+  session as a whole.
+- `oom_kill`: processes of a session were killed for lack of memory where
+  the session sees nothing: one its Bash call left running after it ended,
+  such as a server, or a hook, the status line or an MCP server. Tell the
+  session which job and command, so that it knows what stopped and can
+  decide whether to start it again. Ask nothing more of it.
 - `admission_wait`: a heavy Bash call has waited for memory. First message
   its session: why its command waits, and that it runs as soon as memory
   frees up, or is refused once it has waited its longest wait. Then, when

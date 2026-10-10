@@ -18,10 +18,10 @@ pub struct WatchArgs {
     /// Where events and measurements are written and job records read [default: `$XDG_RUNTIME_DIR/orchestrator`, else `/run/user/<uid>/orchestrator`]. The prefix always writes its job records to the default: with another directory, no Bash call is measured.
     #[arg(long)]
     runtime_dir: Option<PathBuf>,
-    /// Memory stall, within a 2 s window, that makes a pressure event, in ms.
+    /// Memory stall, within a 2 s window, that makes a pressure event, of the machine or of a job, in ms.
     #[arg(long, default_value_t = 200, value_parser = clap::value_parser!(u64).range(1..=2000))]
     stall_ms: u64,
-    /// Minimum seconds between two memory pressure events.
+    /// Minimum seconds between two memory pressure events, and between two job pressure events of one job.
     #[arg(long, default_value_t = 60)]
     cooldown_secs: u64,
     /// Seconds between two orphan scans when no session ends; 0 counts as 1.

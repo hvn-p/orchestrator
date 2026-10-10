@@ -49,8 +49,13 @@ pub struct Queued {
 impl Queued {
     /// The event `watch` wrote at `at`, if it needs judgment. Memory pressure
     /// events all merge, the latest one standing for the others; an
-    /// admission wait is reported once per call. Orphans are not the
-    /// coordinator's yet.
+    /// admission wait is reported once per call. A kill is queued only when
+    /// its session cannot see it: not while the Bash call that started the
+    /// job runs, whose result shows it, nor in `main/`, where either claude
+    /// itself died or a tool it runs reports the failure; kills in a job
+    /// merge. Orphans are not the coordinator's yet, nor is a job stalling,
+    /// which happens while memory is short, when a coordinator costs the
+    /// most and acts too late (#46).
     pub fn new(at: u64, event: &Event) -> Result<Option<Queued>> {
         let key = match event {
             Event::MemoryPressure(watch::events::MemoryPressure { .. }) => {
@@ -59,7 +64,12 @@ impl Queued {
             Event::AdmissionWait(watch::events::AdmissionWait { job, .. }) => {
                 format!("admission_wait {job}")
             }
-            Event::Orphans(watch::events::Orphans { .. }) => return Ok(None),
+            Event::OomKill(k) if !k.call_running && k.job != watch::jobs::MAIN => {
+                format!("oom_kill {}", k.job)
+            }
+            Event::OomKill(_)
+            | Event::JobPressure(_)
+            | Event::Orphans(watch::events::Orphans { .. }) => return Ok(None),
         };
         Ok(Some(Queued {
             key,
@@ -91,7 +101,8 @@ impl Queued {
 }
 
 /// Adds `new` to `queue`: a pending event of the same key takes its content
-/// and keeps its place. An event already taken is not changed.
+/// and keeps its place; the processes kills merged report add up. An event
+/// already taken is not changed.
 pub fn merge(queue: &mut Vec<Queued>, new: Queued) {
     let same = queue
         .iter_mut()
@@ -100,7 +111,14 @@ pub fn merge(queue: &mut Vec<Queued>, new: Queued) {
         Some(q) => {
             q.count = q.count.saturating_add(new.count);
             q.first_at = q.first_at.min(new.first_at);
+            let killed = q.event["killed"]
+                .as_u64()
+                .zip(new.event["killed"].as_u64())
+                .map(|(before, now)| before.saturating_add(now));
             q.event = new.event;
+            if let (Some(killed), Value::Object(fields)) = (killed, &mut q.event) {
+                fields.insert("killed".into(), killed.into());
+            }
         }
         None => queue.push(new),
     }
@@ -183,6 +201,7 @@ mod tests {
                 session: "alpha".into(),
                 rss_mb: 4000,
             }],
+            jobs: vec![],
         })
     }
 
@@ -235,6 +254,45 @@ mod tests {
     fn orphans_are_not_queued() {
         let orphans = Event::Orphans(watch::events::Orphans { orphans: vec![] });
         assert_eq!(Queued::new(1, &orphans).unwrap(), None);
+    }
+
+    #[test]
+    fn only_a_kill_its_session_cannot_see_is_queued() {
+        let kill = |job: &str, call_running: bool| {
+            Event::OomKill(watch::events::OomKill {
+                session: Some("alpha".into()),
+                session_id: Some("a".into()),
+                job: job.into(),
+                command: None,
+                killed: 1,
+                call_running,
+            })
+        };
+        let detached = Queued::new(1, &kill("job-bash-7-1", false)).unwrap();
+        assert_eq!(
+            detached.as_ref().map(|q| q.key.as_str()),
+            Some("oom_kill job-bash-7-1")
+        );
+        // Kills merged while pending add up.
+        let mut queue = vec![detached.unwrap()];
+        merge(&mut queue, queued(2, &kill("job-bash-7-1", false)));
+        assert_eq!(queue.len(), 1);
+        assert_eq!(queue[0].count, 2);
+        assert_eq!(queue[0].event["killed"], 2);
+        assert_eq!(Queued::new(1, &kill("job-bash-7-1", true)).unwrap(), None);
+        assert_eq!(Queued::new(1, &kill("main", false)).unwrap(), None);
+        let stalled = Event::JobPressure(watch::events::JobPressure {
+            job: watch::events::JobUsage {
+                session: None,
+                session_id: None,
+                job: "job-bash-7-1".into(),
+                command: None,
+                memory_mb: 1,
+                largest: None,
+            },
+            stall_ms: 200,
+        });
+        assert_eq!(Queued::new(1, &stalled).unwrap(), None);
     }
 
     #[test]

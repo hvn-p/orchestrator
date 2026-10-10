@@ -65,7 +65,7 @@ For example, for a machine with about 30 GB of RAM:
 
 | Field | Meaning |
 | :- | :- |
-| `coordinator.wake` | `true`: `watch` starts coordinator runs by itself for `memory_pressure` and `admission_wait` events, using tokens of the account without asking. `false`: it starts none and queues nothing. |
+| `coordinator.wake` | `true`: `watch` starts coordinator runs by itself for `memory_pressure` and `admission_wait` events, and `oom_kill` events their session cannot see, using tokens of the account without asking. `false`: it starts none and queues nothing. |
 | `coordinator.model` | The model of those runs, as `claude --model` takes it. The setup conversation proposes `claude-sonnet-5-5`. |
 | `coordinator.max_minutes` | The longest a run lasts; then `watch` stops it. 5 when `config coordinator` creates the section. |
 | `coordinator.wait_secs` | How long admission holds a Bash call back before `watch` writes an `admission_wait` event for it. 20 when `config coordinator` creates the section. At or above `admission.max_wait_secs`, only calls waiting in the background are reported; at or above `admission.max_background_wait_secs`, none is. |

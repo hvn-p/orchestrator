@@ -137,23 +137,23 @@ fn admit(root: &Path, job: &admission::Job, command: &OsStr) -> Result<admission
     admission::admit(&paths, &cfg, job, &call, background, &mut call::notices())
 }
 
-/// The pid names the job for a human; the time keeps the name unique when a
-/// pid comes back before the service has removed the old group.
+/// The pid, the prefix's own, names the job for a human, and holds a Bash
+/// call (see `claude_code::invocation::hold_call`); the time keeps the name
+/// unique when a pid comes back before the service has removed the old group.
 pub fn job_name(kind: Kind, pid: u32, ms: u128) -> String {
     format!("job-{}-{pid}-{ms}", kind_name(kind))
 }
 
-/// Kind and start time of a job, from a name made by `job_name`.
-pub fn parse_job_name(name: &str) -> Option<(Kind, u128)> {
+/// Kind, pid and start time of a job, from a name made by `job_name`.
+pub fn parse_job_name(name: &str) -> Option<(Kind, u32, u128)> {
     let (rest, ms) = name.strip_prefix("job-")?.rsplit_once('-')?;
     let (kind, pid) = rest.rsplit_once('-')?;
-    pid.parse::<u32>().ok()?;
     let kind = match kind {
         "bash" => Kind::Bash,
         "other" => Kind::Other,
         _ => return None,
     };
-    Some((kind, ms.parse().ok()?))
+    Some((kind, pid.parse().ok()?, ms.parse().ok()?))
 }
 
 /// Where job records live: `<runtime>/jobs/`, one directory per session scope.
@@ -228,8 +228,11 @@ mod tests {
 
     #[test]
     fn job_names_parse_back() {
-        assert_eq!(parse_job_name("job-bash-7-1234"), Some((Kind::Bash, 1234)));
-        assert_eq!(parse_job_name("job-other-8-5"), Some((Kind::Other, 5)));
+        assert_eq!(
+            parse_job_name("job-bash-7-1234"),
+            Some((Kind::Bash, 7, 1234))
+        );
+        assert_eq!(parse_job_name("job-other-8-5"), Some((Kind::Other, 8, 5)));
         assert_eq!(parse_job_name("job-bash-7"), None);
         assert_eq!(parse_job_name("job-cron-7-5"), None);
         assert_eq!(parse_job_name("main"), None);

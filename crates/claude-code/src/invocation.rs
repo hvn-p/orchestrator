@@ -15,7 +15,9 @@ use brush_parser::ast::Command as ShellCommand;
 use brush_parser::ast::{CommandPrefixOrSuffixItem, Pipeline, Program, SimpleCommand};
 use brush_parser::word::{self, TildeExpr, WordPiece, WordPieceWithSource};
 use brush_parser::{Parser, ParserOptions};
+use rustix::process::{Pid, PidfdFlags, pidfd_open};
 use std::ffi::{OsStr, OsString};
+use std::os::fd::OwnedFd;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -55,6 +57,16 @@ pub fn shell(invocation: &OsStr) -> Command {
     let mut cmd = Command::new("bash");
     cmd.arg("-c").arg(invocation);
     cmd
+}
+
+/// Holds the Bash call whose prefix ran as `pid`: a descriptor that becomes
+/// readable when the call ends. The prefix replaces itself with the call's
+/// shell (`shell`), keeping its pid, and Claude Code, which started it,
+/// ends the call when that process exits. None once it has exited.
+// claude-code: bash-call-shell
+pub fn hold_call(pid: u32) -> Option<OwnedFd> {
+    let pid = Pid::from_raw(i32::try_from(pid).ok()?)?;
+    pidfd_open(pid, PidfdFlags::empty()).ok()
 }
 
 /// The directory a Bash call runs in: Claude Code starts the prefix there.

@@ -509,6 +509,7 @@ printf '{"type":"result","is_error":false,"num_turns":1,"usage":{"input_tokens":
             stall_ms: 200,
             largest: None,
             next: vec![],
+            jobs: vec![],
         })
     }
 
