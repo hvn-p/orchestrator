@@ -5,20 +5,29 @@
 //! session's command. Any failure on the way leaves the session
 //! unorchestrated, never prevents it: the command runs unchanged, after one
 //! warning.
+//!
+//! It asks over the user bus with `busctl`, which ships with systemd:
+//! `busctl` cannot use the manager's own socket
+//! (`$XDG_RUNTIME_DIR/systemd/private`), which rejects the bus's `Hello`.
+//!
+//! A scope granted past the bound comes too late: the session has started
+//! unorchestrated, and systemd still moves it into the scope, where it runs
+//! without `main/` nor the prefix. Background sessions run in the cgroup of
+//! whatever started Claude Code's supervisor (`claude daemon`): they are
+//! orchestrated only when Claude Code's `processWrapper` routes them through
+//! `orchestrator launch`.
 
-use crate::cgroup;
 use anyhow::{Context, Result, anyhow, bail, ensure};
+use claude_code::launch::PREFIX_VAR;
 use std::ffi::OsString;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use system::cgroup;
 
 /// The shell prefix binary, installed next to `orchestrator`.
-// claude-code: shell-prefix-variable
 pub const PREFIX_BIN: &str = "orchestrator-prefix";
-// claude-code: shell-prefix-variable
-const PREFIX_VAR: &str = "CLAUDE_CODE_SHELL_PREFIX";
 
 /// The longest the scope may take, from asking for it to being in it. A
 /// launcher has to replace itself with its command within about 3 s.

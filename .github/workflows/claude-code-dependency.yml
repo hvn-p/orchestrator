@@ -1,6 +1,6 @@
 name: Claude Code dependency
 
-# The merge guard of docs/claude-code-dependency.md. It runs again when a
+# The merge guard of crates/claude-code/claude-code-dependency.md. It runs again when a
 # label is added or removed, so that the label's verdict replaces the last one.
 on:
   pull_request:
@@ -17,7 +17,7 @@ jobs:
         with:
           # The guard compares the pull request with its merge base.
           fetch-depth: 0
-      - name: Check that docs/claude-code-dependency.md follows the code
+      - name: Check that crates/claude-code/claude-code-dependency.md follows the code
         env:
           BASE: ${{ github.event.pull_request.base.sha }}
           HEAD: ${{ github.event.pull_request.head.sha }}

@@ -1,6 +1,6 @@
-//! The code and docs/claude-code-dependency.md agree on what orchestrator
-//! relies on in Claude Code. Each marker comment names a contract the
-//! document lists, each contract has a marker, and each contract's Code line
+//! The code and crates/claude-code/claude-code-dependency.md agree on what
+//! orchestrator relies on in Claude Code. Each marker comment, all in the
+//! claude-code crate, names a contract the document lists, each contract has a marker, and each contract's Code line
 //! lists exactly the files holding its markers. See the document's "Keeping
 //! it current".
 
@@ -11,9 +11,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const DOC: &str = "docs/claude-code-dependency.md";
-/// Where markers live, from the crate root.
-const SOURCES: [&str; 2] = ["src", "tests"];
+const DOC: &str = "crates/claude-code/claude-code-dependency.md";
+/// The one crate that relies on Claude Code.
+const HOST: &str = "crates/claude-code/";
+/// Where markers live, from the workspace root.
+const SOURCES: [&str; 3] = ["src", "crates", "tests"];
 /// What a marker comment starts with, the contract's id following.
 const MARKER: &str = "// claude-code: ";
 /// What a comment that means to be a marker holds.
@@ -81,6 +83,12 @@ fn markers(root: &Path, problems: &mut Vec<String>) -> Places {
         for (n, line) in text.lines().enumerate() {
             let line = line.trim();
             if let Some(id) = line.strip_prefix(MARKER).filter(|id| is_id(id)) {
+                if !name.starts_with(HOST) {
+                    problems.push(format!(
+                        "{name}:{}: relies on Claude Code outside {HOST}: move it there",
+                        n + 1
+                    ));
+                }
                 found.entry(id.into()).or_default().insert(name.clone());
             } else if line.starts_with("//") && line.contains(MARKER_WORD) {
                 problems.push(format!(

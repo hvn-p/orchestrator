@@ -3,26 +3,29 @@
 Keeps the Claude Code sessions running in parallel on one Linux machine working
 within its finite resources without refusing their work. Today it measures
 what each command uses and holds a memory-hungry Bash call back until memory
-covers it; planned work is in the GitHub issues. `docs/design.md` describes
-what exists and why: the design, its decisions, what has been measured and the
-known gaps. Start there.
+covers it; planned work is in the GitHub issues. The documentation at the top
+of `src/main.rs` describes the components and the principles: start there.
 
-- Planned features and open questions are GitHub issues, one per piece of
-  work, never in the design. Implementing one moves what it settles into the
-  design. Each issue carries exactly one type label (`type: feature`,
-  `type: bug`, `type: task`), its area labels, and `needs decision` or
-  `proposal` when it applies.
-- `src/`: the Rust binary (`orchestrator sessions`, `orchestrator watch`). Done
-  means `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` and
-  `cargo test` all pass.
+- An issue carries a piece of work from start to end: its intent, the options
+  weighed, the decision, what was measured and in which context, dated notes.
+  Once closed it is history and is never updated: read it to learn what
+  happened, never to learn what the code does. Each issue carries exactly one
+  type label (`type: feature`, `type: bug`, `type: task`), its area labels,
+  and `needs decision` or `proposal` when it applies.
+- The code and the doc comments at the top of each crate and module say what
+  it does and why, as of now. A pull request that changes a behaviour updates
+  them. When a decision or a measurement explains the current code, that doc
+  states what the code relies on or rules out, and links the issue it comes
+  from.
+- A Cargo workspace, one crate per component under `crates/`; the root
+  package holds the two binaries, `orchestrator` and `orchestrator-prefix`.
+  Done means `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`
+  and `cargo test` all pass; run from the root, they cover every crate.
 - Code, comments and docs are in English; the repository is public, so nothing
   specific to one person's machine, accounts or setup goes in.
-- What orchestrator relies on in Claude Code is listed in
-  `docs/claude-code-dependency.md`. Code relying on a contract carries a
-  `// claude-code: <id>` line; a pull request changing such a file must update
-  that document, or carry the label `claude-code-dependency-unchanged` (CI
-  guard). `cargo test --test claude_code -- --ignored` checks the installed
-  Claude Code against it, by hand only.
+- Everything orchestrator relies on in Claude Code lives in
+  `crates/claude-code/`; other crates go through its API. Its `CLAUDE.md`
+  says how to change it.
 - `plugins/orchestrator/` is the guide, a Claude Code plugin: a user manual
   for the code it ships with, only what exists, never what is planned. The
   project skill `guide-writing` says how to write it. Every pull request

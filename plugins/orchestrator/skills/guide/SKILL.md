@@ -10,7 +10,8 @@ description: >-
   line of `events.jsonl` or `measurements.jsonl`, an `admission_wait` event,
   or an admission notice ("orchestrator: waiting for memory before running
   …") means; what `orchestrator peaks`, `sessions`, `admission` or `machine`
-  shows; why a session or a command is not orchestrated, nothing waits,
+  shows; "orchestrator watch is not running"; the local API and its event
+  stream; why a session or a command is not orchestrated, nothing waits,
   nothing is learned or no coordinator starts; whether orchestrator works
   with the installed Claude Code. Also on "how do I set up orchestrator",
   "why is this Bash call waiting for memory", "orchestrator learns no peak",
@@ -36,6 +37,9 @@ describes the `main` branch of <https://github.com/hvn-p/orchestrator>.
   `orchestrator sessions` and `orchestrator peaks`.
 - `orchestrator admission` and `orchestrator machine`, which show the waiting
   calls and reservations, and the machine's facts.
+- A local API: `watch` serves the state and pushes the events, over HTTP on
+  a Unix socket. Every read of the state goes through it, the commands'
+  included: without a running `watch`, they stop with an error.
 - The coordinator, a Claude Code session orchestrator starts with a role of
   its own: a setup conversation that writes the configuration
   (`orchestrator setup`), runs `watch` starts for memory pressure and long
@@ -122,6 +126,8 @@ Read the one the question needs:
 - [reference/events.md](reference/events.md): `events.jsonl`,
   `measurements.jsonl`, admission notices, and the messages each command and
   the prefix print.
+- [reference/api.md](reference/api.md): the local API `watch` serves, its
+  socket, requests and event stream.
 - [reference/files.md](reference/files.md): every file and directory
   orchestrator reads or writes, who writes it, how long it lives.
 - [reference/troubleshooting.md](reference/troubleshooting.md): from a symptom
@@ -129,7 +135,7 @@ Read the one the question needs:
 
 Claude Code compatibility: orchestrator relies on Claude Code only through the
 contracts listed in
-[docs/claude-code-dependency.md](https://github.com/hvn-p/orchestrator/blob/main/docs/claude-code-dependency.md)
-(under `docs/` in a clone of the repository), whose "Last verified" line names
+[crates/claude-code/claude-code-dependency.md](https://github.com/hvn-p/orchestrator/blob/main/crates/claude-code/claude-code-dependency.md)
+(under `crates/claude-code/` in a clone of the repository), whose "Last verified" line names
 the Claude Code version they were checked on. Read the version there, never
 from memory.

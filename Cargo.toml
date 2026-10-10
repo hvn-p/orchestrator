@@ -1,34 +1,69 @@
-[package]
-name = "orchestrator"
+[workspace]
+members = ["crates/system", "crates/claude-code", "crates/config", "crates/learning", "crates/prefix", "crates/watch", "crates/coordinator"]
+default-members = [".", "crates/system", "crates/claude-code", "crates/config", "crates/learning", "crates/prefix", "crates/watch", "crates/coordinator"]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
-description = "Keeps parallel Claude Code sessions working within the finite resources of one Linux machine"
 license = "GPL-3.0-or-later"
 repository = "https://github.com/hvn-p/orchestrator"
-readme = "README.md"
 
-[dependencies]
+[workspace.dependencies]
 anyhow = "1.0.104"
 brush-parser = "0.4.0"
 clap = { version = "4.6.7", features = ["derive"] }
+httparse = "1.10.1"
 inotify = { version = "0.11.5", default-features = false }
 rustix = { version = "1.1.5", features = ["event", "fs", "process"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 sha2 = { version = "0.11.0", default-features = false }
-
-[dev-dependencies]
 tempfile = "3.27.0"
+system = { package = "orchestrator-system", path = "crates/system" }
+claude-code = { package = "orchestrator-claude-code", path = "crates/claude-code" }
+config = { package = "orchestrator-config", path = "crates/config" }
+learning = { package = "orchestrator-learning", path = "crates/learning" }
+prefix = { package = "orchestrator-prefix", path = "crates/prefix" }
+watch = { package = "orchestrator-watch", path = "crates/watch" }
+coordinator = { package = "orchestrator-coordinator", path = "crates/coordinator" }
 
-[lints.rust]
+[workspace.lints.rust]
 unsafe_code = "forbid"
 
-[lints.clippy]
+[workspace.lints.clippy]
 pedantic = { level = "warn", priority = -1 }
 unwrap_used = "deny"
 expect_used = "deny"
 # pid and ppid are the domain's own names.
 similar_names = "allow"
-# The library only serves this crate's two binaries; it is not a public API.
+# The libraries only serve this workspace's two binaries; they are not a public API.
 missing_errors_doc = "allow"
 must_use_candidate = "allow"
+
+[package]
+name = "orchestrator"
+description = "Keeps parallel Claude Code sessions working within the finite resources of one Linux machine"
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+rustix.workspace = true
+serde_json.workspace = true
+system.workspace = true
+claude-code.workspace = true
+config.workspace = true
+learning.workspace = true
+prefix.workspace = true
+watch.workspace = true
+coordinator.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

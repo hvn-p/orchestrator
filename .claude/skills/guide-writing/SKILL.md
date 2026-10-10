@@ -40,7 +40,7 @@ it to install or use the tool.
 
 ## What stays out
 
-- Plans, open questions, the design document, measurements kept for
+- Plans, open questions, design decisions, measurements kept for
   developers.
 - Personal configuration practices: how one user organises their files is
   theirs. State the tool's behaviour as plain facts; never recommend a

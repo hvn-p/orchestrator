@@ -1,0 +1,23 @@
+[package]
+name = "orchestrator-learning"
+description = "Recognising a command and learning its memory peak, per repository."
+publish = false
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+brush-parser.workspace = true
+claude-code.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+system.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

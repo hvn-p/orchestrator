@@ -1,5 +1,5 @@
 //! Checks the installed Claude Code against the contracts orchestrator relies
-//! on, listed by id in docs/claude-code-dependency.md. Manual only: it starts
+//! on, listed by id in crates/claude-code/claude-code-dependency.md. Manual only: it starts
 //! real headless sessions, which need a signed-in `claude` on the `PATH`, a
 //! systemd user manager with cgroup v2, and spend a few tens of thousands of
 //! tokens, most read from the prompt cache.
@@ -21,16 +21,21 @@
 // Clippy exempts only `#[test]` functions; every function here is test code.
 #![allow(clippy::expect_used)]
 
-use orchestrator::config::Coordinator;
-use orchestrator::coordinator::{self, run};
-use orchestrator::prefix::{JobRecord, Kind};
-use orchestrator::{cgroup, prefix, procfs, recognise, sessions};
+use claude_code::agent;
+use claude_code::invocation::Kind;
+use claude_code::sessions;
+use config::Coordinator;
+use coordinator::{self, run};
+use learning::recognise;
+use prefix::JobRecord;
 use serde_json::Value;
 use std::ffi::OsString;
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
+use system::cgroup;
+use system::procfs;
 
 /// The longest the session may take; it takes about ten seconds.
 const TIMEOUT: Duration = Duration::from_secs(180);
@@ -71,7 +76,7 @@ fn the_installed_claude_code_keeps_every_contract() {
     eprintln!("Claude Code {}\n{report}", s.version);
     assert!(
         broken == 0,
-        "Claude Code {} broke {broken} contract(s) of docs/claude-code-dependency.md. They are \
+        "Claude Code {} broke {broken} contract(s) of crates/claude-code/claude-code-dependency.md. They are \
          listed in dependency order: a broken one may break those after it.\n{report}",
         s.version
     );
@@ -119,7 +124,7 @@ fn the_installed_claude_code_runs_a_coordinator() {
     );
     assert!(
         broken == 0,
-        "Claude Code {} broke {broken} contract(s) of docs/claude-code-dependency.md while \
+        "Claude Code {} broke {broken} contract(s) of crates/claude-code/claude-code-dependency.md while \
          running a coordinator.\n{report}\nIts reply: {:?}",
         c.version,
         c.reply()
@@ -168,12 +173,13 @@ impl CoordinatorRun {
              every call, even one you expect to be denied. 1) Run `orchestrator machine` with \
              the Bash tool. 2) Run `orchestrator coordinator note \
              checked` with the Bash tool. 3) Run `touch {}` with the Bash tool. 4) Run `cat {}` \
-             with the Bash tool. 5) Call ListAgents once. Then reply with exactly four lines: \
-             the first line `orchestrator machine` printed, the first line of the ListAgents \
-             result, the first line of the role appended to your system prompt, and the \
+             with the Bash tool. 5) Call {list} once. Then reply with exactly four lines: \
+             the first line `orchestrator machine` printed, the line of the {list} result \
+             that starts with `This session is`, the first line of the role appended to your system prompt, and the \
              marker word a CLAUDE.md gives you, or NONE.",
             paths.home.join("other.md").display(),
             outside.display(),
+            list = agent::LIST_TOOL,
         );
         let bin = Path::new(env!("CARGO_BIN_EXE_orchestrator"))
             .parent()
@@ -187,9 +193,10 @@ impl CoordinatorRun {
         let built = run::command(&run::Mode::Batch(&[]), &cfg, &paths, bin, &prompt);
         let mut args: Vec<OsString> = built.get_args().map(ToOwned::to_owned).collect();
         // Never message the user's sessions from a test.
+        let message_tool = format!("{},", agent::MESSAGE_TOOL);
         for a in &mut args {
-            if a.to_string_lossy().contains("SendMessage,") {
-                *a = a.to_string_lossy().replace("SendMessage,", "").into();
+            if a.to_string_lossy().contains(&message_tool) {
+                *a = a.to_string_lossy().replace(&message_tool, "").into();
             }
         }
         let stdout = base.join("stdout");
@@ -208,6 +215,9 @@ impl CoordinatorRun {
                 cmd.env(key, value);
             }
         }
+        // The read commands ask `watch`: one serves this test's runtime
+        // directory while the coordinator runs.
+        let _watch = Watch::start(&base);
         let mut child = cmd.spawn().expect("starting claude");
         let start = Instant::now();
         let status = loop {
@@ -257,6 +267,39 @@ impl CoordinatorRun {
                     .collect()
             })
             .unwrap_or_default()
+    }
+}
+
+/// An `orchestrator watch` serving a test's directories, stopped when
+/// dropped.
+struct Watch(Child);
+
+impl Watch {
+    fn start(base: &Path) -> Watch {
+        let child = Command::new(env!("CARGO_BIN_EXE_orchestrator"))
+            .arg("watch")
+            .env("XDG_RUNTIME_DIR", base.join("run"))
+            .env("XDG_STATE_HOME", base.join("state"))
+            .env("XDG_CONFIG_HOME", base.join("config"))
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("starting orchestrator watch");
+        let socket = base.join("run/orchestrator/api.sock");
+        let start = Instant::now();
+        while !socket.exists() && start.elapsed() < Duration::from_secs(10) {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(socket.exists(), "orchestrator watch did not start serving");
+        Watch(child)
+    }
+}
+
+impl Drop for Watch {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
     }
 }
 
@@ -575,7 +618,7 @@ fn bash_call_signature(s: &Session) -> Check {
 
 fn bash_call_eval(s: &Session) -> Check {
     let record = s.record()?;
-    let script = recognise::written(&record.command)
+    let script = claude_code::invocation::written(&record.command)
         .ok_or("no command found in the invocation (see the record)")?;
     let home = std::env::var_os("HOME").map(PathBuf::from);
     let commands = recognise::commands(&script, &s.repo, home.as_deref())

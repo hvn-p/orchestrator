@@ -3,6 +3,21 @@
 Observe first. Most questions are settled by where a command runs, by
 orchestrator's files (files.md) and by the messages it printed (events.md).
 
+## A command says watch is not running
+
+`Error: orchestrator watch is not running: start it with `orchestrator watch`
+(no answer at <socket>)`: the read commands, `config admission`, `setup` and
+`coordinator` ask `watch`, and none answers at the socket they name.
+
+- No `watch` runs: start one (commands.md, "Starting watch").
+- A `watch` runs with another runtime directory: started with
+  `--runtime-dir`, or with another `XDG_RUNTIME_DIR` than the shell asking,
+  as a user service with the manager's environment can be. `ls
+  <runtime>/api.sock` in each tells; the commands ask the one in their
+  default runtime directory.
+- The `watch` that served it has ended, leaving its socket: the next `watch`
+  replaces it.
+
 ## Is this session orchestrated?
 
 Run these as Bash calls of the session in question:
@@ -90,7 +105,8 @@ Measured, not learned:
   (the `cd` into it failed).
 - `watch` runs with another state directory than the prefix's default
   (`--state-dir`, or another `XDG_STATE_HOME`): it learns there, where
-  admission never reads. `orchestrator peaks --state-dir <dir>` shows it.
+  admission never reads. `orchestrator peaks` shows what that `watch`
+  learned.
 - It was learned under another repository: peaks are per repository (its git
   common directory) and per exact command (configuration.md, "Recognising a
   command").
@@ -151,8 +167,9 @@ working bash binary (commands.md, "orchestrator-prefix").
 
 ## Sessions or orphans not seen
 
-- `watch` or `sessions` reads another sessions directory than the sessions
-  write: `CLAUDE_CONFIG_DIR` differs, or pass `--sessions-dir`. A `watch`
+- `watch` reads another sessions directory than the sessions write, and
+  `sessions` shows what `watch` reads: `CLAUDE_CONFIG_DIR` differs, or pass
+  `watch --sessions-dir`. A `watch`
   started as a service with `systemd-run --user` does not get the shell's
   `CLAUDE_CONFIG_DIR` (commands.md, "Starting watch"). With a wrong or
   missing sessions directory, the processes of live sessions also show up as
@@ -308,7 +325,7 @@ special to `sh` breaks every hook. Install where the path is plain.
 ## After a Claude Code update
 
 orchestrator relies on Claude Code through the contracts of
-[docs/claude-code-dependency.md](https://github.com/hvn-p/orchestrator/blob/main/docs/claude-code-dependency.md),
+[crates/claude-code/claude-code-dependency.md](https://github.com/hvn-p/orchestrator/blob/main/crates/claude-code/claude-code-dependency.md),
 whose "Last verified" line names the version they were checked on. A broken
 contract costs orchestration, not the command: commands no longer in job
 groups, Bash calls in `job-other-*`, no admission notice reaching Claude,

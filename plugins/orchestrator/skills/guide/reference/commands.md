@@ -141,13 +141,17 @@ something:
   coordinator run, which `watch` starts as soon as no coordinator is running
   (coordinator.md). It reads the configuration at each event, so a change
   needs no restart.
+- It serves the state and the events over a local API, at
+  `<runtime>/api.sock` (api.md). The read commands, `config admission`,
+  `setup` and `coordinator` ask it: without a `watch`, they stop with an
+  error.
 
 | Option | Default | What it sets |
 | :- | :- | :- |
 | `--proc-root <dir>` | `/proc` | The proc file system to read: processes, `meminfo`, `pressure/memory`, and `watch`'s own cgroup (`self/cgroup`), which decides whether jobs are collected |
 | `--sessions-dir <dir>` | `$CLAUDE_CONFIG_DIR/sessions`, else `~/.claude/sessions` | Claude Code's sessions directory |
 | `--state-dir <dir>` | `$XDG_STATE_HOME/orchestrator`, else `~/.local/state/orchestrator` | Where learned peaks are kept, and the coordinator's working directory and journal for the runs it starts |
-| `--runtime-dir <dir>` | `$XDG_RUNTIME_DIR/orchestrator`, else `/run/user/<uid>/orchestrator` | Where events and measurements are written and job records read, and the coordinator's queue, holder, role and runs |
+| `--runtime-dir <dir>` | `$XDG_RUNTIME_DIR/orchestrator`, else `/run/user/<uid>/orchestrator` | Where events and measurements are written, job records read and the API's socket listens, and the coordinator's queue, holder, role and runs |
 | `--stall-ms <ms>` | 200 (1 to 2000) | Memory stall within 2 s that makes a pressure event |
 | `--cooldown-secs <s>` | 60 | Minimum time between two memory pressure events |
 | `--orphan-interval-secs <s>` | 300 (0 counts as 1) | Time between two orphan scans when no session ends |
@@ -182,7 +186,8 @@ Facts that matter when starting it:
   from the session's environment. A `watch` given other `--runtime-dir` or
   `--state-dir` values, or started with another `XDG_RUNTIME_DIR` or
   `XDG_STATE_HOME`, does not find the prefix's job records, or learns peaks
-  admission never reads. `setup`, `coordinator` and `coordinator note`, a
+  admission never reads. The commands ask the `watch` serving the default
+  runtime directory: one started with another does not answer them. `setup`, `coordinator` and `coordinator note`, a
   run's own notes included, also keep to the default directories: they do
   not see that `watch`'s queue and holder, and a run's notes go to the
   default journal, not the one its next runs are briefed with.
@@ -190,8 +195,8 @@ Facts that matter when starting it:
   `--sessions-dir` must point at their sessions directory. When that
   directory does not exist yet as `watch` starts, session ends are found only
   by the periodic scan until `watch` restarts.
-- Nothing stops a second `watch`: it would append every event twice. Run one
-  per user.
+- One `watch` serves a runtime directory: a second one stops at start with
+  `Error: another orchestrator watch answers at <runtime>/api.sock`.
 - systemd removes a session's job groups when the session ends: a Bash call
   that ended while no `watch` ran may be lost to learning. Admission keeps
   working meanwhile, from the peaks already learned.
@@ -201,7 +206,7 @@ Facts that matter when starting it:
 ## orchestrator sessions
 
 ```sh
-orchestrator sessions [--proc-root <dir>] [--sessions-dir <dir>] [--heads]
+orchestrator sessions [--heads]
 ```
 
 Prints, for a human, the available memory, then each live Claude Code session
@@ -210,8 +215,8 @@ largest process, then the orphaned processes, largest first in both lists. A
 process belongs to the live session whose claude process it descends from,
 else to the live session named by its `CLAUDE_CODE_SESSION_ID`. Orphans are
 processes carrying a `CLAUDE_CODE_SESSION_ID` whose session is no longer live,
-folded into their topmost orphaned ancestor. The options and their defaults
-are `watch`'s.
+folded into their topmost orphaned ancestor. It shows what `watch` reads,
+with `watch`'s proc root and sessions directory.
 
 ```
 Available memory: <MB> MB
@@ -229,21 +234,20 @@ of the process's real command line, which can hold credentials. With
 (events.md), never its arguments: what coordinators read. The session
 name is the one Claude Code records in its session file. With a wrong or
 missing sessions directory, it shows no session, and the processes of live
-sessions as orphans. It exits with `Error: …` and status 1 when it cannot
-read the available memory, the processes or the sessions directory, or
-resolve the default sessions directory; see events.md.
+sessions as orphans. It exits with `Error: …` and status 1 when no `watch`
+answers, or when `watch` cannot read the available memory, the processes or
+the sessions directory; see events.md.
 
 ## orchestrator peaks
 
 ```sh
-orchestrator peaks [--state-dir <dir>]
+orchestrator peaks
 ```
 
 Prints what `watch` has learned, per repository, heaviest command first, or
-`No peak learned yet.` `--state-dir` defaults to
-`$XDG_STATE_HOME/orchestrator`, else `~/.local/state/orchestrator`, as for
-`watch`. It exits with `Error: …` and status 1 when it cannot resolve that
-default or read the peaks; see events.md.
+`No peak learned yet.`, from `watch`'s state directory. It exits with
+`Error: …` and status 1 when no `watch` answers or `watch` cannot read the
+peaks; see events.md.
 
 ```
 /home/u/project/.git
@@ -299,8 +303,9 @@ RESERVED BY RUNNING HEAVY CALLS
 - A waiting call is the one the prefix records while it waits. Reading takes
   no lock: what it shows may be a check behind.
 
-It reads the default runtime directory and configuration, and exits with
-`Error: …` when it cannot read `/proc/meminfo` or resolve them.
+It shows what `watch` reads in its runtime directory and configuration, and
+exits with `Error: …` when no `watch` answers or `watch` cannot read
+`/proc/meminfo`.
 
 ## orchestrator machine
 
@@ -308,7 +313,8 @@ It reads the default runtime directory and configuration, and exits with
 orchestrator machine
 ```
 
-Prints what admission thresholds are chosen from:
+Prints what admission thresholds are chosen from, as `watch` reads it, or
+exits with `Error: …` when no `watch` answers:
 
 ```
 Memory: 31264 MB total, 5578 MB available
@@ -319,13 +325,13 @@ Controllers the systemd user manager delegates: cpu memory pids
 orchestrator.slice: present
 ```
 
-- `CPUs` counts the CPUs this process may run on.
+- `CPUs` counts the CPUs `watch` may run on.
 - The PSI line reads `missing, so watch reports no memory pressure` without
   `/proc/pressure/memory`.
 - The controllers line adds `(missing <controllers>: sessions cannot be
   measured or slowed down by it)` when one of `cpu`, `memory`, `pids` is
-  not delegated, and reads `unknown, this process runs outside it` when the
-  command runs outside the user's systemd manager.
+  not delegated, and reads `unknown, this process runs outside it` when
+  `watch` runs outside the user's systemd manager.
 - `orchestrator.slice: absent, no session launched since boot` until a first
   `launch`.
 
@@ -339,7 +345,9 @@ orchestrator config coordinator [--wake <yes|no>] [--model <model>] [--max-minut
 
 `orchestrator config` prints the path of `config.json` and its content, or
 `No configuration at <path>.`, then `The coordinators' instructions: <path>`
-when that file exists.
+when that file exists, as `watch` reads them. `config admission` checks the
+values against the machine's memory as `watch` reads it. Both exit with
+`Error: …` when no `watch` answers; `config coordinator` does not need one.
 
 The two subcommands write one section of `config.json` (configuration.md),
 keeping the rest, once the values make sense; otherwise they print

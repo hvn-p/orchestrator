@@ -1,0 +1,25 @@
+[package]
+name = "orchestrator-prefix"
+description = "The shell prefix Claude Code runs every command through, and admission."
+publish = false
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+claude-code.workspace = true
+anyhow.workspace = true
+config.workspace = true
+inotify.workspace = true
+learning.workspace = true
+rustix.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+system.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

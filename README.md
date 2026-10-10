@@ -33,8 +33,9 @@ Early. What exists:
   lever. `orchestrator setup` is a conversation with it that ends with the
   configuration written.
 
-[docs/design.md](docs/design.md) describes what exists and why. Planned work,
-such as slowing down or pausing jobs and ordering waiting calls, is in the
+The documentation at the top of [src/main.rs](src/main.rs), and of each
+crate and module, describes what exists and why. Planned work, such as slowing down or
+pausing jobs and ordering waiting calls, is in the
 [issues](https://github.com/hvn-p/orchestrator/issues).
 
 ## Requirements
@@ -84,6 +85,11 @@ the call's peak, with its command, to `measurements.jsonl` in the same
 directory, and learns the peak of each command of the call in the repository
 it ran in. `--help` lists every option.
 
+The read commands below, `sessions` above, and `config`, `setup` and
+`coordinator` ask the running `watch` over its local API, an HTTP server on
+`$XDG_RUNTIME_DIR/orchestrator/api.sock` that also streams the events as
+server-sent events. Without a `watch`, they stop with an error saying so.
+
 ```sh
 orchestrator peaks
 ```
@@ -98,11 +104,12 @@ by heavy calls running; `machine` prints memory, swap, CPUs and what the
 systemd user manager delegates.
 
 Learned peaks live in `$XDG_STATE_HOME/orchestrator/peaks/` (by default
-`~/.local/state/orchestrator/peaks/`) unless `--state-dir` says otherwise, for
-`watch` as for `peaks`. A command is stored under a hash, with a label for
+`~/.local/state/orchestrator/peaks/`) unless `watch --state-dir` says
+otherwise; `peaks` shows what `watch` learned. A command is stored under a hash, with a label for
 display: the command as recognised, cut to 60 characters. Only commands Claude
-wrote land there; see "Recognising a command" in
-[docs/design.md](docs/design.md).
+wrote land there; see
+[crates/learning/src/recognise.rs](crates/learning/src/recognise.rs) and
+[crates/learning/src/peaks.rs](crates/learning/src/peaks.rs).
 
 ## Configuration
 
@@ -249,7 +256,7 @@ orchestrator@orchestrator` fetches the latest guide.
 ## Claude Code dependency
 
 orchestrator relies on Claude Code only through the contracts listed in
-[docs/claude-code-dependency.md](docs/claude-code-dependency.md), with the
+[crates/claude-code/claude-code-dependency.md](crates/claude-code/claude-code-dependency.md), with the
 Claude Code version they were last verified on. To check them against the
 installed Claude Code:
 
@@ -267,7 +274,7 @@ prompt cache. It never runs in CI.
 Every pull request and every push to `main` runs `cargo fmt --check`,
 `cargo clippy --all-targets -- -D warnings`, `cargo test`, and a build with
 Rust 1.88. A pull request that changes code relying on Claude Code must also
-update `docs/claude-code-dependency.md`, unless it carries the label
+update `crates/claude-code/claude-code-dependency.md`, unless it carries the label
 `claude-code-dependency-unchanged`; `scripts/claude-code-guard.sh <base>
 <head>` runs that check locally. A pull request that changes anything outside
 the guide, `plugins/orchestrator/`, must update the guide too, or hold in its

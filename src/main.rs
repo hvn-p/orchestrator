@@ -1,19 +1,91 @@
-//! orchestrator: schedules the work of the Claude Code sessions running in
-//! parallel on one machine, so development keeps going. See docs/design.md.
+//! orchestrator keeps the Claude Code sessions running in parallel on one
+//! Linux machine working within its finite resources. It schedules their
+//! work rather than refusing it: a job may take longer, it is not prevented.
+//!
+//! Anything that can be decided without judgment is done by code and spends
+//! no tokens. Judgment (priorities, exceptions, negotiating with a session)
+//! is left to the coordinator, a Claude Code session that reads
+//! orchestrator's events. Rust was chosen for a strict compiler, a start
+//! time around a millisecond (the shell prefix runs before every command of
+//! every session) and a resident `watch` of a few MB.
+//!
+//! # Components
+//!
+//! A Cargo workspace. This crate holds the two binaries, `orchestrator` and
+//! `orchestrator-prefix`, installed side by side; each component is a crate
+//! of `crates/`, which the compiler keeps from reaching into the others.
+//!
+//! - `system`: cgroups, `/proc`, memory and memory pressure, and where
+//!   orchestrator keeps its files. It knows nothing of Claude Code.
+//! - `claude-code`: everything orchestrator relies on in Claude Code, in
+//!   orchestrator's terms. No other crate reads or writes a Claude Code
+//!   format.
+//! - `config`: the configuration, a section per feature.
+//! - `learning`: recognising a command and learning its memory peak, per
+//!   repository.
+//! - `prefix`: the shell prefix every command of a session goes through, and
+//!   admission, which holds a heavy Bash call back until memory covers it.
+//! - `watch`: observing sessions and jobs, the events, the reports, and the
+//!   local API serving them.
+//! - `coordinator`: a fresh Claude Code session for each batch of events
+//!   that need judgment.
+//! - This crate: a module per subcommand (`commands`), `launch`, which
+//!   starts a session in a cgroup of its own, and the loop of
+//!   `orchestrator watch` (`watching`), which ties observation to the
+//!   coordinator.
+//!
+//! A session's cgroup tree:
+//!
+//! ```text
+//! orchestrator-<pid>-<ms>.scope   a delegated systemd user scope
+//! ├─ main/                        claude itself
+//! ├─ job-bash-<pid>-<ms>/         one Bash call, with every process it starts
+//! └─ job-other-<pid>-<ms>/        one hook, status line refresh or MCP server
+//! ```
+//!
+//! The prefix talks to the rest through files in the runtime directory: it
+//! writes job records, reservations and waiting calls, and reads the learned
+//! peaks and the configuration, so that a command never waits on another
+//! process. `orchestrator watch` owns the state: it measures and learns,
+//! writes the events, and serves the state and the events over a local API
+//! (`watch::api`). Every other read of the state goes through it: without a
+//! `watch`, nothing answers. A coordinator acts through the commands it is
+//! allowed to run. Runtime data lives in `$XDG_RUNTIME_DIR/orchestrator/`,
+//! learned peaks in `$XDG_STATE_HOME/orchestrator/`, the configuration in
+//! `$XDG_CONFIG_HOME/orchestrator/`.
+//!
+//! # Principles
+//!
+//! - **Never block work by failing**: outside an orchestrated session,
+//!   without a configuration, or on any cgroup error, the prefix runs the
+//!   command unchanged. When `launch` cannot get the session its scope, the
+//!   session starts unorchestrated.
+//! - **Commands typed outside Claude Code never wait**: they run outside any
+//!   orchestrated session. A `!` command typed inside Claude Code is a Bash
+//!   call like any other.
+//! - **Hooks, the status line and MCP servers never queue**: they get a job
+//!   group of their own and start at once.
+//! - **Commands are known by what they used, never by name**: a hook or a
+//!   shim in `PATH` sees `pnpm typecheck`, not the `tsc` processes it
+//!   starts, and `node_modules/.bin` bypasses shims. The kernel puts every
+//!   descendant of a command in its job group, whatever its name, language
+//!   or depth.
+//! - **No full command line in an event**: arguments read from `/proc` can
+//!   hold credentials, and the coordinator hands what it reads to a model
+//!   (see `watch::events`).
+//! - **Claude Code is today's only host, in one crate**: `claude-code` lists
+//!   each contract orchestrator relies on, and holds the code relying on it.
+//!
+//! Decisions and measurements made before the GitHub issues held them are
+//! in the design document as it stood when it was removed:
+//! <https://github.com/hvn-p/orchestrator/blob/957d2f9f119c7d0fb59c4e13552aeb6ce8a2b1fc/docs/design.md>.
 
-use anyhow::{Context, Result, anyhow};
-use clap::{Args, Parser, Subcommand};
-use orchestrator::config::{self, Admission, Coordinator};
-use orchestrator::coordinator::state::{self as briefing, Places};
-use orchestrator::coordinator::{self, Holder, journal, run};
-use orchestrator::{cgroup, language, launch, machine, report, runtime, sessions, state, watch};
-use std::ffi::OsString;
-use std::os::unix::process::CommandExt;
-use std::path::{Path, PathBuf};
-use std::time::Duration;
+mod commands;
+mod launch;
+mod watching;
 
-/// Where this process's own and other processes' state is read.
-const PROC: &str = "/proc";
+use anyhow::Result;
+use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
 #[command(
@@ -28,345 +100,35 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Watch memory pressure, session ends and job ends, append events, and learn the memory peak of each Bash call.
-    Watch(WatchArgs),
+    Watch(commands::watch::WatchArgs),
     /// Print memory per Claude session and the orphaned processes.
-    Sessions(SessionsArgs),
+    Sessions(commands::sessions::SessionsArgs),
     /// Print the memory peaks learned per repository and command.
-    Peaks(StateDir),
+    Peaks,
     /// Print the Bash calls waiting for memory and the memory reserved by running ones.
     Admission,
     /// Print what the configuration is chosen from: memory, swap, CPUs, cgroup delegation.
     Machine,
     /// Print the configuration, or set a section of it.
-    Config(ConfigArgs),
+    Config(commands::config::ConfigArgs),
     /// Set orchestrator up in a conversation with the coordinator.
     Setup,
     /// Open an interactive coordinator, which receives the events while it stays open; without a configuration, set orchestrator up first.
-    Coordinator(CoordinatorArgs),
+    Coordinator(commands::coordinator::CoordinatorArgs),
     /// Start a command, normally `claude`, as an orchestrated session.
-    Launch(Launched),
-}
-
-#[derive(Args)]
-struct Launched {
-    /// The command and its arguments.
-    #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
-    command: Vec<OsString>,
-}
-
-#[derive(Args)]
-struct Sources {
-    /// The proc file system to read: processes and meminfo, and for `watch` also pressure/memory and its own cgroup.
-    #[arg(long, default_value = PROC)]
-    proc_root: PathBuf,
-    /// Claude Code's sessions directory [default: `$CLAUDE_CONFIG_DIR/sessions`, else `~/.claude/sessions`].
-    #[arg(long)]
-    sessions_dir: Option<PathBuf>,
-}
-
-#[derive(Args)]
-struct SessionsArgs {
-    #[command(flatten)]
-    sources: Sources,
-    /// Show each process by the head of its command line, as events do, never its arguments.
-    #[arg(long)]
-    heads: bool,
-}
-
-#[derive(Args)]
-struct StateDir {
-    /// Where learned peaks are kept [default: `$XDG_STATE_HOME/orchestrator`, else `~/.local/state/orchestrator`].
-    #[arg(long)]
-    state_dir: Option<PathBuf>,
-}
-
-#[derive(Args)]
-struct WatchArgs {
-    #[command(flatten)]
-    sources: Sources,
-    /// Where learned peaks are kept [default: `$XDG_STATE_HOME/orchestrator`, else `~/.local/state/orchestrator`]. The prefix always reads the default: with another directory, admission never sees what `watch` learns.
-    #[arg(long)]
-    state_dir: Option<PathBuf>,
-    /// Where events and measurements are written and job records read [default: `$XDG_RUNTIME_DIR/orchestrator`, else `/run/user/<uid>/orchestrator`]. The prefix always writes its job records to the default: with another directory, no Bash call is measured.
-    #[arg(long)]
-    runtime_dir: Option<PathBuf>,
-    /// Memory stall, within a 2 s window, that makes a pressure event, in ms.
-    #[arg(long, default_value_t = 200, value_parser = clap::value_parser!(u64).range(1..=2000))]
-    stall_ms: u64,
-    /// Minimum seconds between two memory pressure events.
-    #[arg(long, default_value_t = 60)]
-    cooldown_secs: u64,
-    /// Seconds between two orphan scans when no session ends; 0 counts as 1.
-    #[arg(long, default_value_t = 300)]
-    orphan_interval_secs: u64,
-}
-
-#[derive(Args)]
-struct ConfigArgs {
-    #[command(subcommand)]
-    command: Option<ConfigCommand>,
-}
-
-#[derive(Subcommand)]
-enum ConfigCommand {
-    /// Set the admission thresholds, once they make sense on this machine, keeping the rest.
-    Admission(AdmissionArgs),
-    /// Set the coordinator: whether `watch` may wake it, its model and bounds, keeping the rest.
-    Coordinator(CoordinatorConfigArgs),
-}
-
-#[derive(Args)]
-#[group(required = true, multiple = true)]
-struct CoordinatorConfigArgs {
-    /// Whether `watch` may start a coordinator by itself for events: yes or no (also y/n, true/false, t/f, on/off, 1/0).
-    #[arg(
-        long,
-        value_name = "yes|no",
-        hide_possible_values = true,
-        value_parser = clap::builder::BoolishValueParser::new()
-    )]
-    wake: Option<bool>,
-    /// The model of the runs `watch` starts.
-    #[arg(long)]
-    model: Option<String>,
-    /// The longest a run may last, in minutes.
-    #[arg(long)]
-    max_minutes: Option<u64>,
-    /// How long admission holds a call before it wakes the coordinator, in seconds.
-    #[arg(long)]
-    wait_secs: Option<u64>,
-    /// The language the coordinator writes in: a tag such as fr, en or pt-BR.
-    #[arg(long)]
-    language: Option<String>,
-}
-
-#[derive(Args)]
-struct AdmissionArgs {
-    /// A Bash call whose expected peak reaches this, in MB, waits for memory.
-    #[arg(long)]
-    heavy_mb: u64,
-    /// Free memory kept on top of a heavy call's expected peak, in MB.
-    #[arg(long)]
-    margin_mb: u64,
-    /// The longest a call waits before it runs anyway, in seconds.
-    #[arg(long)]
-    max_wait_secs: u64,
-}
-
-#[derive(Args)]
-struct CoordinatorArgs {
-    #[command(subcommand)]
-    command: Option<CoordinatorCommand>,
-}
-
-#[derive(Subcommand)]
-enum CoordinatorCommand {
-    /// Close the batch taken before, wait until events are pending, then print them with the state.
-    Next,
-    /// Add a line to the coordinator's journal.
-    Note {
-        /// What to note; each line becomes a line of the journal.
-        #[arg(required = true)]
-        text: Vec<String>,
-    },
+    Launch(commands::launch::Launched),
 }
 
 fn main() -> Result<()> {
     match Cli::parse().command {
-        Command::Watch(args) => watch::run(&watch::Config {
-            sessions_dir: sessions_dir(&args.sources)?,
-            proc_root: args.sources.proc_root,
-            runtime_dir: match args.runtime_dir {
-                Some(dir) => dir,
-                None => runtime::default_dir()?,
-            },
-            state_dir: state_dir(args.state_dir)?,
-            config_path: config::default_path()?,
-            orphan_interval: Duration::from_secs(args.orphan_interval_secs.max(1)),
-            thresholds: watch::Thresholds {
-                stall_ms: args.stall_ms,
-                cooldown_secs: args.cooldown_secs,
-            },
-        }),
-        Command::Sessions(args) => {
-            let dir = sessions_dir(&args.sources)?;
-            print!(
-                "{}",
-                report::sessions(&args.sources.proc_root, &dir, args.heads)?
-            );
-            Ok(())
-        }
-        Command::Peaks(dir) => {
-            print!("{}", report::peaks(&state_dir(dir.state_dir)?, None, None)?);
-            Ok(())
-        }
-        Command::Admission => {
-            let places = Places::from_env()?;
-            print!(
-                "{}",
-                report::admission(&places.admission, &places.config, &places.sessions_dir)?
-            );
-            Ok(())
-        }
-        Command::Machine => {
-            let m = machine::read(Path::new(PROC), Path::new(cgroup::ROOT))?;
-            print!("{}", machine::describe(&m));
-            Ok(())
-        }
-        Command::Config(args) => match args.command {
-            None => print_config(),
-            Some(ConfigCommand::Admission(a)) => set_admission(&a),
-            Some(ConfigCommand::Coordinator(c)) => set_coordinator(c),
-        },
-        Command::Setup => {
-            let configured = config::load(&config::default_path()?)?.is_some();
-            Err(become_coordinator(&run::Mode::Setup { configured }))
-        }
-        Command::Coordinator(args) => match args.command {
-            None => {
-                // A first-time user needs this one command: without a
-                // configuration, setting up comes first.
-                let mode = if config::load(&config::default_path()?)?.is_some() {
-                    run::Mode::Interactive
-                } else {
-                    run::Mode::Setup { configured: false }
-                };
-                Err(become_coordinator(&mode))
-            }
-            Some(CoordinatorCommand::Next) => next_events(),
-            Some(CoordinatorCommand::Note { text }) => {
-                let paths = coordinator::Paths::from_env()?;
-                journal::note(&paths.journal(), &text.join(" "), now_secs())
-            }
-        },
-        Command::Launch(l) => Err(launch::launch(&l.command)),
+        Command::Watch(args) => commands::watch::run(args),
+        Command::Sessions(args) => commands::sessions::run(&args),
+        Command::Peaks => commands::peaks::run(),
+        Command::Admission => commands::admission::run(),
+        Command::Machine => commands::machine::run(),
+        Command::Config(args) => commands::config::run(args),
+        Command::Setup => commands::setup::run(),
+        Command::Coordinator(args) => commands::coordinator::run(args),
+        Command::Launch(l) => Err(commands::launch::run(&l)),
     }
-}
-
-fn sessions_dir(sources: &Sources) -> Result<PathBuf> {
-    match &sources.sessions_dir {
-        Some(dir) => Ok(dir.clone()),
-        None => default_sessions_dir(),
-    }
-}
-
-fn default_sessions_dir() -> Result<PathBuf> {
-    sessions::default_dir().context("neither CLAUDE_CONFIG_DIR nor HOME is set")
-}
-
-fn state_dir(arg: Option<PathBuf>) -> Result<PathBuf> {
-    match arg {
-        Some(dir) => Ok(dir),
-        None => state::default_dir(),
-    }
-}
-
-fn print_config() -> Result<()> {
-    print!("{}", report::config(&config::default_path()?)?);
-    Ok(())
-}
-
-fn set_admission(a: &AdmissionArgs) -> Result<()> {
-    let total_mb = machine::read(Path::new(PROC), Path::new(cgroup::ROOT))?.mem_total_mb;
-    let path = config::default_path()?;
-    let admission = Admission {
-        heavy_mb: a.heavy_mb,
-        margin_mb: a.margin_mb,
-        max_wait_secs: a.max_wait_secs,
-    };
-    let config = config::set_admission(&path, admission, total_mb)?;
-    println!(
-        "Wrote {}\n{}",
-        path.display(),
-        serde_json::to_string_pretty(&config).context("serializing the configuration")?
-    );
-    Ok(())
-}
-
-fn set_coordinator(c: CoordinatorConfigArgs) -> Result<()> {
-    let path = config::default_path()?;
-    let config = config::set_coordinator(&path, |section| {
-        if let Some(wake) = c.wake {
-            section.wake = wake;
-        }
-        if let Some(model) = c.model {
-            section.model = model;
-        }
-        if let Some(minutes) = c.max_minutes {
-            section.max_minutes = minutes;
-        }
-        if let Some(secs) = c.wait_secs {
-            section.wait_secs = secs;
-        }
-        if let Some(tag) = c.language {
-            section.language = Some(tag);
-        }
-    })?;
-    println!(
-        "Wrote {}\n{}",
-        path.display(),
-        serde_json::to_string_pretty(&config).context("serializing the configuration")?
-    );
-    Ok(())
-}
-
-/// Opens a coordinator in `mode` for the user at this terminal: takes the
-/// coordinator, waiting for a running one to end, then replaces this
-/// process with `claude`. The holder's pid and start time stay this
-/// process's, so the coordinator frees itself when claude exits. Only
-/// returns on an error.
-fn become_coordinator(mode: &run::Mode<'_>) -> anyhow::Error {
-    let started = || -> Result<std::process::Command> {
-        let places = Places::from_env()?;
-        let paths = briefing::paths(&places);
-        let proc_root = Path::new(PROC);
-        let me =
-            Holder::of(proc_root, std::process::id()).context("reading this process's start")?;
-        coordinator::acquire(&paths, proc_root, me)?;
-        run::write_role(&paths, mode)?;
-        let prompt = run::prompt(
-            mode,
-            &paths,
-            now_secs(),
-            &briefing::briefing(&places, &paths, &system_language()),
-        );
-        // An interactive coordinator runs with the user's model.
-        let cfg = Coordinator::default();
-        Ok(run::command(mode, &cfg, &paths, &bin_dir()?, &prompt))
-    };
-    match started() {
-        Ok(mut cmd) => anyhow!(cmd.exec()).context("running claude"),
-        Err(e) => e,
-    }
-}
-
-/// The batch an interactive coordinator asks for, with the state now.
-fn next_events() -> Result<()> {
-    let places = Places::from_env()?;
-    let paths = briefing::paths(&places);
-    let taken = coordinator::next(&paths, &places.admission)?;
-    println!("## Events\n");
-    for q in &taken {
-        println!("{}", q.line());
-    }
-    print!("\n## State now\n\n{}", briefing::gather(&places));
-    Ok(())
-}
-
-/// This binary's directory, first on a coordinator's `PATH`.
-fn bin_dir() -> Result<PathBuf> {
-    Ok(std::env::current_exe()
-        .context("locating orchestrator")?
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_default())
-}
-
-/// The language of the user at this terminal, from the locale.
-fn system_language() -> String {
-    language::of_system(|name| std::env::var(name).ok())
-}
-
-fn now_secs() -> u64 {
-    u64::try_from(runtime::now_ms() / 1000).unwrap_or(u64::MAX)
 }
