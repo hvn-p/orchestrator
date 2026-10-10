@@ -144,7 +144,8 @@ first, each an object with:
 - `key`: `memory_pressure`, `admission_wait <job>`, or `oom_kill <job>`;
 - `count`: how many events merged into it;
 - `first_at`: when the first of them came, in seconds since the epoch;
-- `event`: the latest of them, as `events.jsonl` holds it;
+- `event`: the latest of them, as `events.jsonl` holds it; for `oom_kill`,
+  its `killed` is the sum of theirs;
 - `status`: `pending`, `in_progress` or `done`;
 - `failures`: how many failed runs took it.
 

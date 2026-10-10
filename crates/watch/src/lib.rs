@@ -46,15 +46,34 @@ impl Places {
     }
 }
 
-/// Reads processes and sessions, then attributes. A missing sessions
-/// directory means no Claude session has run yet.
+/// Every process and every Claude session, as read at one moment.
+pub struct Snapshot {
+    pub procs: Vec<procfs::ProcInfo>,
+    pub sessions: Vec<sessions::ClaudeSession>,
+}
+
+impl Snapshot {
+    /// Reads processes and sessions. A missing sessions directory means no
+    /// Claude session has run yet.
+    pub fn read(proc_root: &Path, sessions_dir: &Path) -> Result<Snapshot> {
+        let procs = procfs::read_processes(proc_root, sessions::ID_VAR)
+            .with_context(|| format!("reading {}", proc_root.display()))?;
+        let sessions = match sessions::read_sessions(sessions_dir) {
+            Ok(s) => s,
+            Err(e) if e.kind() == ErrorKind::NotFound => Vec::new(),
+            Err(e) => {
+                return Err(e).with_context(|| format!("reading {}", sessions_dir.display()));
+            }
+        };
+        Ok(Snapshot { procs, sessions })
+    }
+
+    pub fn attribute(&self) -> Attribution {
+        attribution::attribute(&self.procs, &self.sessions)
+    }
+}
+
+/// Reads processes and sessions, then attributes.
 pub fn scan(proc_root: &Path, sessions_dir: &Path) -> Result<Attribution> {
-    let procs = procfs::read_processes(proc_root, sessions::ID_VAR)
-        .with_context(|| format!("reading {}", proc_root.display()))?;
-    let sessions = match sessions::read_sessions(sessions_dir) {
-        Ok(s) => s,
-        Err(e) if e.kind() == ErrorKind::NotFound => Vec::new(),
-        Err(e) => return Err(e).with_context(|| format!("reading {}", sessions_dir.display())),
-    };
-    Ok(attribution::attribute(&procs, &sessions))
+    Ok(Snapshot::read(proc_root, sessions_dir)?.attribute())
 }

@@ -87,8 +87,9 @@ same turn when you can.
   minutes at most.
 - `memory_pressure`: tasks stalled for memory. Find who holds it and ask the
   sessions that can free the most to do so, largest first. Its `jobs` name
-  the commands using the most: ask about that command, by its label or its
-  largest process, rather than about the session as a whole.
+  the commands using the most: ask about that command, by its label (the
+  call's first command) or its largest process, rather than about the
+  session as a whole.
 - `oom_kill`: processes of a session were killed for lack of memory where
   the session sees nothing: one its Bash call left running after it ended,
   such as a server, or a hook, the status line or an MCP server. Tell the

@@ -17,8 +17,8 @@ pub struct JobUsage {
     pub session: Option<String>,
     pub session_id: Option<String>,
     pub job: String,
-    /// A Bash call's label; None for another job, or a call that cannot be
-    /// parsed.
+    /// The label of a Bash call's first command; None for another job, or a
+    /// call that cannot be parsed.
     pub command: Option<String>,
     /// The memory its group is charged, `memory.current`.
     pub memory_mb: u64,
@@ -51,7 +51,7 @@ pub struct OomKill {
     /// The job group, or `main` for the session's claude process and the
     /// tools it runs itself.
     pub job: String,
-    /// A Bash call's label.
+    /// The label of a Bash call's first command.
     pub command: Option<String>,
     /// Processes killed since the job was last read.
     pub killed: u64,

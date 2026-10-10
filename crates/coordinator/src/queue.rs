@@ -101,7 +101,8 @@ impl Queued {
 }
 
 /// Adds `new` to `queue`: a pending event of the same key takes its content
-/// and keeps its place. An event already taken is not changed.
+/// and keeps its place; the processes kills merged report add up. An event
+/// already taken is not changed.
 pub fn merge(queue: &mut Vec<Queued>, new: Queued) {
     let same = queue
         .iter_mut()
@@ -110,7 +111,14 @@ pub fn merge(queue: &mut Vec<Queued>, new: Queued) {
         Some(q) => {
             q.count = q.count.saturating_add(new.count);
             q.first_at = q.first_at.min(new.first_at);
+            let killed = q.event["killed"]
+                .as_u64()
+                .zip(new.event["killed"].as_u64())
+                .map(|(before, now)| before.saturating_add(now));
             q.event = new.event;
+            if let (Some(killed), Value::Object(fields)) = (killed, &mut q.event) {
+                fields.insert("killed".into(), killed.into());
+            }
         }
         None => queue.push(new),
     }
@@ -262,9 +270,15 @@ mod tests {
         };
         let detached = Queued::new(1, &kill("job-bash-7-1", false)).unwrap();
         assert_eq!(
-            detached.map(|q| q.key).as_deref(),
+            detached.as_ref().map(|q| q.key.as_str()),
             Some("oom_kill job-bash-7-1")
         );
+        // Kills merged while pending add up.
+        let mut queue = vec![detached.unwrap()];
+        merge(&mut queue, queued(2, &kill("job-bash-7-1", false)));
+        assert_eq!(queue.len(), 1);
+        assert_eq!(queue[0].count, 2);
+        assert_eq!(queue[0].event["killed"], 2);
         assert_eq!(Queued::new(1, &kill("job-bash-7-1", true)).unwrap(), None);
         assert_eq!(Queued::new(1, &kill("main", false)).unwrap(), None);
         let stalled = Event::JobPressure(watch::events::JobPressure {

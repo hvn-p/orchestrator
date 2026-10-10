@@ -53,13 +53,14 @@ const PRIORITY_JOB: &str = "job-bash-1-1";
 #[ignore = "manual: starts a real Claude Code session; run with --ignored"]
 fn the_installed_claude_code_keeps_every_contract() {
     let s = Session::run();
-    let checks: [(&str, Checker); 10] = [
+    let checks: [(&str, Checker); 11] = [
         ("shell-prefix-variable", shell_prefix_variable),
         ("shell-prefix-argument", shell_prefix_argument),
         ("shell-prefix-coverage", shell_prefix_coverage),
         ("bash-call-signature", bash_call_signature),
         ("bash-call-eval", bash_call_eval),
         ("bash-call-cwd", bash_call_cwd),
+        ("bash-call-shell", bash_call_shell),
         ("bash-call-output", bash_call_output),
         ("session-file", session_file),
         ("session-file-fields", session_file_fields),
@@ -663,7 +664,7 @@ fn bash_call_signature(s: &Session) -> Check {
         ("mcp", Kind::Other),
     ] {
         let (_, job) = s.job(who)?;
-        if prefix::parse_job_name(&job).map(|(k, _)| k) != Some(kind) {
+        if prefix::parse_job_name(&job).map(|(k, _, _)| k) != Some(kind) {
             return Err(format!(
                 "{} ran in {job}, taken for a {kind:?} job",
                 name(who)
@@ -699,6 +700,33 @@ fn bash_call_cwd(s: &Session) -> Check {
             "the prefix started in {:?} and the command ran in {:?}, not in {repo:?}",
             record.cwd,
             probe_cwd.trim_end()
+        ));
+    }
+    Ok(())
+}
+
+/// The probe's parent, the call's shell, is the pid in the job's name, and
+/// a child of the session's claude process.
+fn bash_call_shell(s: &Session) -> Check {
+    let (_, job) = s.job("bash")?;
+    let (_, named, _) = prefix::parse_job_name(&job).ok_or("unreadable job name")?;
+    let number = |what: &str| -> Result<u32, String> {
+        s.read(what)?
+            .trim()
+            .parse()
+            .map_err(|_| format!("`{what}` holds no pid"))
+    };
+    let shell = number("bash-shell")?;
+    if shell != named {
+        return Err(format!(
+            "the call's shell is {shell}, not {named}, the pid {job} is named by"
+        ));
+    }
+    let (claude, _) = s.session_file()?;
+    let parent = number("bash-shell-parent")?;
+    if parent != claude {
+        return Err(format!(
+            "the call's shell is a child of {parent}, not of claude ({claude})"
         ));
     }
     Ok(())
@@ -813,6 +841,8 @@ sessions={sessions}
 cat /proc/self/cgroup > "$out/bash-cgroup"
 printf %s "${{CLAUDE_CODE_SESSION_ID-}}" > "$out/bash-session-id"
 pwd -P > "$out/bash-cwd"
+echo "$PPID" > "$out/bash-shell"
+sed -n 's/^PPid:[[:space:]]*//p' "/proc/$PPID/status" > "$out/bash-shell-parent"
 echo "orchestrator-probe-stderr-$((6 * 7))" >&2
 pid=$$
 while [ "${{pid:-0}}" -gt 1 ]; do

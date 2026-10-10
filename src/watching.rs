@@ -26,8 +26,8 @@ use std::time::{Duration, Instant};
 use system::cgroup;
 use system::memory;
 use system::pressure::Trigger;
+use system::procfs::ProcInfo;
 use system::runtime;
-use watch::Places;
 use watch::api;
 use watch::attribution::Attribution;
 use watch::events::Hub;
@@ -36,6 +36,7 @@ use watch::exits::Exits;
 use watch::jobs::{self, Killed, Tracker};
 use watch::report::Local;
 use watch::usage::Reader;
+use watch::{Places, Snapshot};
 
 /// Between two sweeps of the job groups while the tracker runs.
 const JOB_SWEEP: Duration = Duration::from_secs(60);
@@ -124,6 +125,12 @@ impl Watcher {
         }
         self.last_job_pressure.insert(key, now);
         true
+    }
+
+    /// The event `on_job_pressure` allowed was not written.
+    pub fn retract_job_pressure(&mut self, scope: &str, job: &str) {
+        self.last_job_pressure
+            .remove(&(scope.to_string(), job.to_string()));
     }
 
     /// Reports each orphan group once, for as long as it lives.
@@ -405,12 +412,14 @@ fn on_pressure(
     let now = now_secs();
     let available = memory::available_mb(meminfo)?;
     let event = watcher.on_pressure(available, now, || {
-        let att = watch::scan(&cfg.proc_root, &cfg.sessions_dir)?;
+        // One read of processes and sessions serves both rankings.
+        let snapshot = Snapshot::read(&cfg.proc_root, &cfg.sessions_dir)?;
         let jobs = job_paths.map_or_else(Vec::new, |p| {
-            let (sessions, home) = (read_sessions(cfg), home());
-            reader(cfg, p, &sessions, home.as_deref()).largest_jobs(LARGEST_JOBS)
+            let home = home();
+            reader(cfg, p, &snapshot.procs, &snapshot.sessions, home.as_deref())
+                .largest_jobs(LARGEST_JOBS)
         });
-        Ok((att, jobs))
+        Ok((snapshot.attribute(), jobs))
     })?;
     if let Some(event) = &event {
         events::emit(events_path, hub, now, event)?;
@@ -462,7 +471,9 @@ fn on_job_pressure(
         return Ok(None);
     }
     let (sessions, home) = (read_sessions(cfg), home());
-    let Some(usage) = reader(cfg, p, &sessions, home.as_deref()).job(scope, job) else {
+    let Some(usage) = reader(cfg, p, &[], &sessions, home.as_deref()).job(scope, job) else {
+        // No event: the job's next stall gets one.
+        watcher.retract_job_pressure(scope, job);
         return Ok(None);
     };
     let event = Event::JobPressure(events::JobPressure {
@@ -496,7 +507,7 @@ fn report_kills(cfg: &Options, p: &JobPaths, tracker: &mut Tracker, out: Out<'_>
     }
     let now = now_secs();
     let (sessions, home) = (read_sessions(cfg), home());
-    let reader = reader(cfg, p, &sessions, home.as_deref());
+    let reader = reader(cfg, p, &[], &sessions, home.as_deref());
     for k in killed {
         let session = reader.session(&k.session);
         let event = Event::OomKill(events::OomKill {
@@ -517,6 +528,7 @@ fn report_kills(cfg: &Options, p: &JobPaths, tracker: &mut Tracker, out: Out<'_>
 fn reader<'a>(
     cfg: &'a Options,
     p: &'a JobPaths,
+    procs: &'a [ProcInfo],
     sessions: &'a [sessions::ClaudeSession],
     home: Option<&'a Path>,
 ) -> Reader<'a> {
@@ -524,6 +536,7 @@ fn reader<'a>(
         slice: &p.slice,
         records: &p.records,
         proc_root: &cfg.proc_root,
+        procs,
         sessions,
         home,
     }
@@ -676,6 +689,9 @@ mod tests {
         assert!(!w.on_job_pressure("s.scope", "job-bash-1-1", 69));
         assert!(w.on_job_pressure("s.scope", "job-bash-2-1", 69));
         assert!(w.on_job_pressure("s.scope", "job-bash-1-1", 70));
+        // An event not written spends no cooldown.
+        w.retract_job_pressure("s.scope", "job-bash-1-1");
+        assert!(w.on_job_pressure("s.scope", "job-bash-1-1", 71));
     }
 
     #[test]

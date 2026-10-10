@@ -21,21 +21,23 @@
 //! `memory.events` of each session's `main/`. The count is read once more
 //! just before a group is removed, so a kill right before the end is not
 //! lost. A sweep alone holds neither signal: without the tracker, no job
-//! stall nor kill is reported.
+//! stall nor kill is reported. A group found once `watch` runs counts every
+//! kill it holds, even one before `watch` saw the group, which it may see
+//! late under memory pressure; only the groups found at start count from
+//! what they hold then, which is history.
 //!
 //! A kill during a Bash call shows in the call's result; one after it, in a
-//! process the call left running, shows nowhere. So the tracker also holds a
-//! pidfd on the shell of each Bash call, which becomes readable when the
+//! process the call left running, shows nowhere. So the tracker also holds
+//! each Bash call (`invocation::hold_call`), which becomes readable when the
 //! call ends: kills counted by then belong to the call, later ones do not.
 //! Asking whether the shell still lives when a kill is read instead would
 //! misfile a kill right before the call's end whenever `watch` reads it
 //! late, which memory pressure makes likely.
 
-use claude_code::invocation::Kind;
+use claude_code::invocation::{self, Kind};
 use inotify::{EventMask, Events, Inotify, WatchDescriptor, WatchMask};
 use learning::peaks::Measurement;
 use prefix::{self, JobRecord};
-use rustix::process::{Pid, PidfdFlags, pidfd_open};
 use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, DirEntry};
@@ -112,7 +114,7 @@ fn finish(
     ended: bool,
     remove: Remove,
 ) -> Option<Measurement> {
-    let (kind, started) = prefix::parse_job_name(name)?;
+    let (kind, _, started) = prefix::parse_job_name(name)?;
     let old = now_ms.saturating_sub(started) >= MIN_AGE_MS;
     if !(ended || old) || !unpopulated(dir) {
         return None;
@@ -165,7 +167,7 @@ struct Live {
     /// The pid of a Bash call's shell, until `shell` holds it: the prefix
     /// enters the group a moment after creating it.
     shell_pid: Option<u32>,
-    /// A pidfd on a Bash call's shell, until the call ends.
+    /// The Bash call held (`invocation::hold_call`), until it ends.
     shell: Option<OwnedFd>,
     /// The watches on its files, removed with it.
     watches: Vec<WatchDescriptor>,
@@ -212,8 +214,13 @@ pub struct Tracker {
     scopes: HashMap<String, Scope>,
     /// By session scope and job name.
     live: HashMap<(String, String), Live>,
+    /// The key of each live job, by its id.
+    ids: HashMap<u64, (String, String)>,
     next_id: u64,
     kills: Vec<Killed>,
+    /// Whether the first sweep is over: the groups found after it count
+    /// every kill they hold.
+    started: bool,
 }
 
 impl Tracker {
@@ -233,10 +240,13 @@ impl Tracker {
             watched: HashMap::new(),
             scopes: HashMap::new(),
             live: HashMap::new(),
+            ids: HashMap::new(),
             next_id: 0,
             kills: Vec::new(),
+            started: false,
         };
         let measured = tracker.resync()?;
+        tracker.started = true;
         Ok((tracker, measured))
     }
 
@@ -255,16 +265,15 @@ impl Tracker {
 
     /// The job whose trigger `id` fired: its session scope and name.
     pub fn stalled(&self, id: u64) -> Option<(&str, &str)> {
-        self.live
-            .iter()
-            .find(|(_, l)| l.id == id)
-            .map(|((scope, name), _)| (scope.as_str(), name.as_str()))
+        self.ids
+            .get(&id)
+            .map(|(scope, name)| (scope.as_str(), name.as_str()))
     }
 
     /// Drops the trigger `id`, which reported something other than a stall:
     /// its group is going away.
     pub fn disarm(&mut self, id: u64) {
-        if let Some(l) = self.live.values_mut().find(|l| l.id == id) {
+        if let Some(l) = self.ids.get(&id).and_then(|key| self.live.get_mut(key)) {
             l.trigger = None;
         }
     }
@@ -280,12 +289,7 @@ impl Tracker {
     /// The Bash call of the job `id` ended: the kills counted by now were
     /// the call's, later ones are not.
     pub fn call_ended(&mut self, id: u64) {
-        let Some(key) = self
-            .live
-            .iter()
-            .find(|(_, l)| l.id == id)
-            .map(|(key, _)| key.clone())
-        else {
+        let Some(key) = self.ids.get(&id).cloned() else {
             return;
         };
         self.read_kills(&key.0, &key.1);
@@ -329,7 +333,9 @@ impl Tracker {
         let mut out = Vec::new();
         for (wd, mask, name) in events {
             if mask.contains(EventMask::Q_OVERFLOW) {
-                out.extend(self.resync()?);
+                // Through `sweep`, so that the kills of the groups it removes
+                // are read first.
+                out.extend(self.sweep()?);
             } else {
                 self.handle(&wd, mask, name.as_deref(), &mut out);
             }
@@ -457,7 +463,7 @@ impl Tracker {
             self.watch_main(session);
             return;
         }
-        let Some((kind, _)) = prefix::parse_job_name(name) else {
+        let Some((kind, pid, _)) = prefix::parse_job_name(name) else {
             return;
         };
         let key = (session.to_string(), name.to_string());
@@ -482,11 +488,12 @@ impl Tracker {
             let live = Live {
                 trigger: Trigger::new(&dir.join("memory.pressure"), self.stall).ok(),
                 id: self.next_id,
-                killed: read_oom_kill(&dir).unwrap_or(0),
-                shell_pid: prefix::job_pid(name).filter(|_| kind == Kind::Bash),
+                killed: self.baseline(&dir),
+                shell_pid: (kind == Kind::Bash).then_some(pid),
                 shell: None,
                 watches: watches.into_iter().flatten().collect(),
             };
+            self.ids.insert(self.next_id, key.clone());
             self.live.insert(key, live);
         }
         // The job may have ended before the watch was in place.
@@ -503,7 +510,7 @@ impl Tracker {
             job: MAIN.into(),
         };
         if let Ok(wd) = self.add(&dir.join("memory.events"), WatchMask::MODIFY, what) {
-            let killed = read_oom_kill(&dir).unwrap_or(0);
+            let killed = self.baseline(&dir);
             if let Some(scope) = self.scopes.get_mut(session) {
                 scope.killed = Some(killed);
                 scope.watches.push(wd);
@@ -542,10 +549,16 @@ impl Tracker {
             return;
         };
         l.shell_pid = None;
-        l.shell = i32::try_from(pid)
-            .ok()
-            .and_then(Pid::from_raw)
-            .and_then(|pid| pidfd_open(pid, PidfdFlags::empty()).ok());
+        l.shell = invocation::hold_call(pid);
+    }
+
+    /// The kills of the group `dir` already counted when it is found.
+    fn baseline(&self, dir: &Path) -> u64 {
+        if self.started {
+            0
+        } else {
+            read_oom_kill(dir).unwrap_or(0)
+        }
     }
 
     /// Keeps the processes of `job` killed since it was last read.
@@ -586,6 +599,7 @@ impl Tracker {
     /// Drops what the tracker holds on a job whose group is gone.
     fn forget(&mut self, key: &(String, String)) {
         if let Some(l) = self.live.remove(key) {
+            self.ids.remove(&l.id);
             for wd in l.watches {
                 self.unwatch(&wd);
             }
@@ -643,7 +657,7 @@ fn name_of(entry: &DirEntry) -> String {
     entry.file_name().to_string_lossy().into_owned()
 }
 
-fn is_scope(name: &str) -> bool {
+pub(crate) fn is_scope(name: &str) -> bool {
     Path::new(name).extension().is_some_and(|e| e == "scope")
 }
 
@@ -679,7 +693,7 @@ fn holds(dir: &Path, pid: u32) -> bool {
         .is_ok_and(|procs| procs.lines().any(|l| l.trim().parse() == Ok(pid)))
 }
 
-fn read_record(path: &Path) -> Option<JobRecord> {
+pub(crate) fn read_record(path: &Path) -> Option<JobRecord> {
     serde_json::from_slice(&fs::read(path).ok()?).ok()
 }
 
@@ -938,6 +952,24 @@ mod tests {
         set_populated(&dir, true);
         tracker.read_ready().unwrap();
         assert_eq!(tracker.shells().count(), 1);
+    }
+
+    #[test]
+    fn a_group_found_late_counts_the_kills_it_already_holds() {
+        let t = tree();
+        let old = job(&t, "s.scope", "job-other-7-99000", true, 1 << 20);
+        set_kills(&old, 3);
+        let (mut tracker, _) = track(&t);
+        // At start, what a group holds is history.
+        assert_eq!(tracker.take_kills(), Vec::new());
+        // Seen late, a group may hold a kill from before it was seen.
+        let name = prefix::job_name(Kind::Other, 8, runtime::now_ms());
+        let late = job(&t, "s.scope", &name, true, 1 << 20);
+        set_kills(&late, 1);
+        tracker.read_ready().unwrap();
+        let kills = tracker.take_kills();
+        assert_eq!(kills.len(), 1);
+        assert_eq!((kills[0].job.as_str(), kills[0].killed), (name.as_str(), 1));
     }
 
     #[test]

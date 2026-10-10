@@ -10,6 +10,7 @@ repository.workspace = true
 [dependencies]
 brush-parser.workspace = true
 inotify.workspace = true
+rustix.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 

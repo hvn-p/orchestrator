@@ -4,6 +4,7 @@
 //! job to rank them, then a few per process of the jobs an event names.
 
 use crate::events::{JobUsage, Process};
+use crate::jobs::{is_scope, read_record};
 use claude_code::invocation::Kind;
 use claude_code::messages;
 use claude_code::sessions::{self, ClaudeSession};
@@ -11,7 +12,8 @@ use learning::peaks;
 use prefix::JobRecord;
 use std::fs;
 use std::path::Path;
-use system::{cgroup, procfs};
+use system::cgroup;
+use system::procfs::{self, ProcInfo};
 
 /// Where jobs are read.
 pub struct Reader<'a> {
@@ -20,6 +22,8 @@ pub struct Reader<'a> {
     /// The root of the job records.
     pub records: &'a Path,
     pub proc_root: &'a Path,
+    /// Processes already read, looked up before `proc_root`; may be empty.
+    pub procs: &'a [ProcInfo],
     pub sessions: &'a [ClaudeSession],
     pub home: Option<&'a Path>,
 }
@@ -68,14 +72,13 @@ impl Reader<'_> {
         self.sessions.iter().find(|s| s.pid == pid)
     }
 
-    /// A Bash call's label, from its job record.
+    /// The label of a Bash call's first command, from its job record.
     pub fn label(&self, scope: &str, name: &str) -> Option<String> {
-        let (kind, _) = prefix::parse_job_name(name)?;
+        let (kind, _, _) = prefix::parse_job_name(name)?;
         if kind != Kind::Bash {
             return None;
         }
-        let path = self.records.join(scope).join(format!("{name}.json"));
-        let record: JobRecord = serde_json::from_slice(&fs::read(path).ok()?).ok()?;
+        let record = read_record(&self.records.join(scope).join(format!("{name}.json")))?;
         self.label_of(&record)
     }
 
@@ -88,7 +91,10 @@ impl Reader<'_> {
             .ok()?
             .lines()
             .filter_map(|l| l.trim().parse().ok())
-            .filter_map(|pid| procfs::read_one(self.proc_root, pid, sessions::ID_VAR))
+            .filter_map(|pid| match self.procs.iter().find(|p| p.pid == pid) {
+                Some(p) => Some(p.clone()),
+                None => procfs::read_one(self.proc_root, pid, sessions::ID_VAR),
+            })
             .max_by_key(|p| p.rss_kb)
             .map(|p| Process {
                 pid: p.pid,
@@ -106,10 +112,6 @@ fn names(dir: &Path) -> impl Iterator<Item = String> {
         .flatten()
         .flatten()
         .map(|e| e.file_name().to_string_lossy().into_owned())
-}
-
-fn is_scope(name: &str) -> bool {
-    Path::new(name).extension().is_some_and(|e| e == "scope")
 }
 
 fn read_number(path: &Path) -> Option<u64> {
@@ -149,6 +151,7 @@ mod tests {
             slice: &t.slice,
             records: &t.records,
             proc_root: Path::new("/proc"),
+            procs: &[],
             sessions: &[],
             home: None,
         }

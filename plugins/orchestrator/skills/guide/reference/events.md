@@ -65,7 +65,7 @@ makes the machine stall, so a `memory_pressure` usually comes with it.
 | :- | :- |
 | `session`, `session_id` | The job's session, from the session file of its scope's claude process; `null` when there is none. |
 | `job` | The job group. |
-| `command` | For a Bash call, its label, as admission notices name it; `null` for a hook, the status line or an MCP server, and for a call that cannot be parsed. |
+| `command` | For a Bash call, the label of its first command, as `orchestrator peaks` shows labels; an admission notice may name another command of the same call, its first heavy one. `null` for a hook, the status line or an MCP server, and for a call that cannot be parsed. |
 | `memory_mb` | The memory the job's group is charged now (`memory.current`): its processes, children included, and the page cache they brought in. |
 | `largest` | The job's process using the most resident memory: `pid`, `rss_mb`, `comm`, `command` (its command head); `null` when the job has no process left. |
 | `stall_ms` | The threshold that fired, `--stall-ms`. |
@@ -95,7 +95,7 @@ the session keeps running.
 
 With `wake` on, it is queued for a coordinator run when its session cannot
 see it: `call_running` is `false` and `job` is not `main`. Kills in one job
-merge while pending.
+merge while pending, their `killed` added up.
 
 ### orphans
 
