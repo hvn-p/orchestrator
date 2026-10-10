@@ -23,7 +23,7 @@ use anyhow::{Context, Result};
 use claude_code::agent::{self, Agent, Run, RunResult};
 use config::Coordinator;
 use serde::Serialize;
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsStr;
 use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -86,8 +86,8 @@ pub fn write_role(paths: &Paths, mode: &Mode<'_>) -> Result<()> {
         fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     }
     let mut role = match mode {
-        Mode::Setup { .. } => format!("{ROLE}\n{SETUP}"),
-        Mode::Batch(_) | Mode::Interactive => ROLE.to_string(),
+        Mode::Setup { .. } => agent::render(&format!("{ROLE}\n{SETUP}")),
+        Mode::Batch(_) | Mode::Interactive => agent::render(ROLE),
     };
     if let Some(user) = instructions::load(&paths.instructions, home().as_deref()) {
         let _ = write!(
@@ -160,27 +160,6 @@ pub fn command_of(
         cmd.stdin(Stdio::null());
     }
     cmd
-}
-
-/// The arguments of `claude` for a coordinator in `mode`, asked `prompt`,
-/// with `dirs` readable besides its own.
-pub fn args(
-    mode: &Mode<'_>,
-    cfg: &Coordinator,
-    paths: &Paths,
-    dirs: &[PathBuf],
-    prompt: &str,
-) -> Vec<OsString> {
-    let role = paths.role();
-    agent::args(&coordinator(
-        mode,
-        cfg,
-        paths,
-        &role,
-        Path::new(""),
-        dirs,
-        prompt,
-    ))
 }
 
 /// The agent a coordinator in `mode` is. It reads the state and notes in
@@ -262,7 +241,9 @@ pub fn prompt(mode: &Mode<'_>, paths: &Paths, now: u64, briefing: &Briefing) -> 
         Mode::Interactive => {
             let _ = writeln!(
                 prompt,
-                "The user opened you with `orchestrator coordinator` and is at this terminal. The state below was gathered just now. Run `{NEXT}` with the Bash tool in the background (run_in_background): it ends when events are pending and prints them, with the state at that moment. Each time it ends, handle the events following your role, then start it again: asking for the next batch tells orchestrator you handled the last one. Keep one running for as long as this session lasts; while you are open, no other coordinator starts. Between events, answer the user. When the user tells you a priority or a lasting instruction, propose the change and the file it belongs in, the instructions file or the one it imports that holds such things, and write it once they agree; change the thresholds only when the user asks you to. Sessions you message may answer while you are open."
+                "The user opened you with `orchestrator coordinator` and is at this terminal. The state below was gathered just now. Run `{NEXT}` with the {shell} tool in the background ({background}): it ends when events are pending and prints them, with the state at that moment. Each time it ends, handle the events following your role, then start it again: asking for the next batch tells orchestrator you handled the last one. Keep one running for as long as this session lasts; while you are open, no other coordinator starts. Between events, answer the user. When the user tells you a priority or a lasting instruction, propose the change and the file it belongs in, the instructions file or the one it imports that holds such things, and write it once they agree; change the thresholds only when the user asks you to. Sessions you message may answer while you are open.",
+                shell = agent::SHELL_TOOL,
+                background = agent::IN_BACKGROUND,
             );
         }
     }
@@ -392,22 +373,6 @@ mod tests {
         )
     }
 
-    fn strings(args: &[OsString]) -> Vec<String> {
-        args.iter()
-            .map(|a| a.to_string_lossy().into_owned())
-            .collect()
-    }
-
-    /// The values following `flag` up to the next flag.
-    fn values<'a>(args: &'a [String], flag: &str) -> Vec<&'a str> {
-        args.iter()
-            .skip_while(|a| *a != flag)
-            .skip(1)
-            .take_while(|a| !a.starts_with('-'))
-            .map(String::as_str)
-            .collect()
-    }
-
     fn batch() -> Vec<Queued> {
         let event = Event::MemoryPressure(watch::events::MemoryPressure {
             available_mb: 700,
@@ -429,71 +394,61 @@ mod tests {
         }
     }
 
+    fn described<'a>(
+        mode: &Mode<'_>,
+        cfg: &'a Coordinator,
+        paths: &'a Paths,
+        role: &'a Path,
+        dirs: &[PathBuf],
+    ) -> Agent<'a> {
+        coordinator(
+            mode,
+            cfg,
+            paths,
+            role,
+            Path::new("/bin"),
+            dirs,
+            "the prompt",
+        )
+    }
+
     #[test]
     fn a_run_reads_messages_and_notes_nothing_else() {
-        let cfg = Coordinator::default();
+        let (cfg, paths) = (Coordinator::default(), paths());
+        let role = paths.role();
         let batch = batch();
-        let args = strings(&args(
-            &Mode::Batch(&batch),
-            &cfg,
-            &paths(),
-            &[],
-            "the prompt",
-        ));
-        assert_eq!(values(&args, "--model"), ["claude-sonnet-5-5"]);
-        assert!(
-            !args.contains(&"--max-budget-usd".to_string()),
-            "no cap by default"
-        );
-        assert_eq!(values(&args, "--permission-mode"), ["dontAsk"]);
-        assert_eq!(values(&args, "--output-format"), ["json"]);
-        assert_eq!(values(&args, "--name"), [NAME]);
-        assert_eq!(values(&args, "--setting-sources"), ["project"]);
+        let agent = described(&Mode::Batch(&batch), &cfg, &paths, &role, &[]);
         assert_eq!(
-            values(&args, "--append-system-prompt-file"),
-            ["/run/user/1/orchestrator/coordinator/role.md"]
+            agent.run,
+            Run::Headless {
+                model: "claude-sonnet-5-5",
+                max_budget_usd: None
+            }
         );
+        assert_eq!(agent.name, NAME);
         assert_eq!(
-            values(&args, "--tools"),
-            ["Bash,Read,SendMessage,ListAgents"]
+            agent.role,
+            Path::new("/run/user/1/orchestrator/coordinator/role.md")
         );
+        assert_eq!(agent.commands, ALLOWED);
+        assert!(agent.messages && !agent.edits_files && agent.editable.is_empty());
+        assert_eq!(agent.waits_on, None);
         assert_eq!(
-            values(&args, "--allowedTools"),
-            [
-                "Bash(orchestrator sessions --heads)",
-                "Bash(orchestrator admission)",
-                "Bash(orchestrator peaks)",
-                "Bash(orchestrator machine)",
-                "Bash(orchestrator config)",
-                "Bash(orchestrator coordinator note *)",
-                "SendMessage",
-                "ListAgents",
-            ]
+            agent.readable,
+            [PathBuf::from("/home/u/.config/orchestrator")]
         );
-        assert_eq!(values(&args, "--add-dir"), ["/home/u/.config/orchestrator"]);
-        assert!(args.contains(&"-p".to_string()));
-        assert!(args.contains(&"--no-session-persistence".to_string()));
-        let settings: serde_json::Value =
-            serde_json::from_str(values(&args, "--settings")[0]).unwrap();
-        assert_eq!(
-            settings["permissions"]["blockReadsOutsideWorkingDirectories"],
-            true
-        );
-        assert_eq!(settings["claudeMdExcludes"], serde_json::json!(["/**"]));
-        assert_eq!(settings["disableAgentView"], true);
-        assert_eq!(args[args.len() - 2..], ["--", "the prompt"]);
         let capped = Coordinator {
             max_budget_usd: Some(0.5),
             ..cfg
         };
-        let capped = strings(&super::args(
-            &Mode::Batch(&batch),
-            &capped,
-            &paths(),
-            &[],
-            "p",
+        let agent = described(&Mode::Batch(&batch), &capped, &paths, &role, &[]);
+        assert!(matches!(
+            agent.run,
+            Run::Headless {
+                max_budget_usd: Some(_),
+                ..
+            }
         ));
-        assert_eq!(values(&capped, "--max-budget-usd"), ["0.5"]);
     }
 
     #[test]
@@ -522,26 +477,17 @@ mod tests {
     #[test]
     fn setup_is_a_conversation_that_writes_through_commands() {
         let setup = Mode::Setup { configured: false };
-        let args = strings(&args(&setup, &Coordinator::default(), &paths(), &[], "p"));
-        assert_eq!(values(&args, "--permission-mode"), ["default"]);
-        assert!(!args.contains(&"-p".to_string()), "interactive");
-        assert!(!args.contains(&"--model".to_string()), "the user's model");
-        assert_eq!(values(&args, "--tools"), ["Bash,Read,Edit,Write"]);
-        let allowed = values(&args, "--allowedTools");
-        for rule in [
-            "Bash(orchestrator config admission *)",
-            "Bash(orchestrator config coordinator *)",
-            "Edit(//home/u/.config/orchestrator/CLAUDE.md)",
-        ] {
-            assert!(allowed.contains(&rule), "{rule} in {allowed:?}");
+        let (cfg, paths) = (Coordinator::default(), paths());
+        let role = paths.role();
+        let agent = described(&setup, &cfg, &paths, &role, &[]);
+        assert_eq!(agent.run, Run::Interactive);
+        assert!(agent.edits_files && !agent.messages);
+        assert_eq!(agent.editable, std::slice::from_ref(&paths.instructions));
+        for command in WRITE_CONFIG {
+            assert!(agent.commands.iter().any(|c| c == command), "{command}");
         }
-        assert!(
-            !allowed
-                .iter()
-                .any(|r| r.contains("SendMessage") || r.contains("config.json")),
-            "{allowed:?}"
-        );
-        let prompt = prompt(&setup, &paths(), 0, &briefing());
+        assert!(!agent.commands.iter().any(|c| c.contains("config.json")));
+        let prompt = prompt(&setup, &paths, 0, &briefing());
         assert!(prompt.contains("first setup"), "{prompt}");
         assert!(prompt.contains("### Machine"), "{prompt}");
         let review = prompt_of(&Mode::Setup { configured: true });
@@ -549,7 +495,7 @@ mod tests {
         assert!(review.contains("Language: fr, as configured"), "{review}");
         let mut first = briefing();
         first.language.configured = false;
-        let prompt = super::prompt(&Mode::Setup { configured: false }, &paths(), 0, &first);
+        let prompt = super::prompt(&Mode::Setup { configured: false }, &paths, 0, &first);
         assert!(
             prompt.contains("The system's language, from its locale, is fr. Start the conversation in it, and in your first message offer to switch"),
             "{prompt}"
@@ -586,7 +532,7 @@ mod tests {
             .unwrap();
         write_role(&paths, &Mode::Batch(&[])).unwrap();
         let role = fs::read_to_string(paths.role()).unwrap();
-        assert!(role.starts_with(ROLE));
+        assert!(role.starts_with(&agent::render(ROLE)));
         assert!(role.contains("# The user's instructions for coordinators"));
         assert!(role.contains("Begin each note with KESTREL."));
         assert!(role.contains("Experiments can wait."));
@@ -603,50 +549,35 @@ mod tests {
         );
         write_role(&paths, &Mode::Setup { configured: false }).unwrap();
         let role = fs::read_to_string(paths.role()).unwrap();
-        assert!(role.starts_with(ROLE) && role.ends_with(SETUP));
+        assert!(role.starts_with(&agent::render(ROLE)) && role.ends_with(&agent::render(SETUP)));
         write_role(&paths, &Mode::Interactive).unwrap();
-        assert_eq!(fs::read_to_string(paths.role()).unwrap(), ROLE);
+        assert_eq!(
+            fs::read_to_string(paths.role()).unwrap(),
+            agent::render(ROLE)
+        );
     }
 
     #[test]
     fn an_interactive_coordinator_asks_its_user() {
-        let args = strings(&args(
-            &Mode::Interactive,
-            &Coordinator::default(),
-            &paths(),
-            &[PathBuf::from("/home/u/elsewhere/coordinator")],
-            "p",
-        ));
-        assert_eq!(values(&args, "--permission-mode"), ["default"]);
-        let added: Vec<&str> = args
-            .windows(2)
-            .filter(|w| w[0] == "--add-dir")
-            .map(|w| w[1].as_str())
-            .collect();
+        let (cfg, paths) = (Coordinator::default(), paths());
+        let role = paths.role();
+        let elsewhere = [PathBuf::from("/home/u/elsewhere/coordinator")];
+        let agent = described(&Mode::Interactive, &cfg, &paths, &role, &elsewhere);
+        assert_eq!(agent.run, Run::Interactive);
         assert_eq!(
-            added,
+            agent.readable,
             [
-                "/home/u/.config/orchestrator",
-                "/home/u/elsewhere/coordinator"
+                PathBuf::from("/home/u/.config/orchestrator"),
+                PathBuf::from("/home/u/elsewhere/coordinator")
             ]
         );
-        assert!(!args.contains(&"-p".to_string()));
-        assert!(!args.contains(&"--model".to_string()));
-        let allowed = values(&args, "--allowedTools");
-        assert!(allowed.contains(&"Bash(orchestrator coordinator next)"));
+        assert_eq!(agent.waits_on, Some(NEXT));
         // Asked of the user, not allowed beforehand.
-        assert!(!allowed.iter().any(|r| r.contains("config admission")));
-        assert!(
-            !allowed
-                .iter()
-                .any(|r| r.starts_with("Edit") || r.starts_with("Write"))
-        );
-        assert_eq!(
-            values(&args, "--tools"),
-            ["Bash,Read,Edit,Write,SendMessage,ListAgents"]
-        );
-        let prompt = prompt(&Mode::Interactive, &paths(), 0, &briefing());
-        assert!(prompt.contains("run_in_background"), "{prompt}");
+        assert_eq!(agent.commands, ALLOWED);
+        assert_eq!(agent.editable, Vec::<PathBuf>::new());
+        assert!(agent.edits_files && agent.messages);
+        let prompt = prompt(&Mode::Interactive, &paths, 0, &briefing());
+        assert!(prompt.contains(agent::IN_BACKGROUND), "{prompt}");
     }
 
     #[test]
@@ -657,6 +588,15 @@ mod tests {
             assert!(texts.contains(&format!("`{shown}")), "{shown}");
         }
         assert!(ROLE.contains(NAME));
+    }
+
+    #[test]
+    fn the_role_names_tools_through_claude_code() {
+        let texts = format!("{ROLE}{SETUP}");
+        for tool in [agent::MESSAGE_TOOL, agent::LIST_TOOL, agent::IN_BACKGROUND] {
+            assert!(!texts.contains(tool), "{tool} written in the role");
+        }
+        assert!(!agent::render(&texts).contains("{{"));
     }
 
     #[test]

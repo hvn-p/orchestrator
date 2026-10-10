@@ -6,7 +6,28 @@ use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+/// What a prompt calls the agent's tools, by what they do.
+pub const SHELL_TOOL: &str = "Bash";
+pub const READ_TOOL: &str = "Read";
+pub const EDIT_TOOL: &str = "Edit";
+pub const WRITE_TOOL: &str = "Write";
+pub const MESSAGE_TOOL: &str = "SendMessage";
+pub const LIST_TOOL: &str = "ListAgents";
+/// The shell tool's input that runs a command in the background.
+pub const IN_BACKGROUND: &str = "run_in_background";
+
+/// `text`, a prompt written for any agent, with each `{{shell_tool}}`,
+/// `{{message_tool}}`, `{{list_tool}}` and `{{in_background}}` replaced by
+/// what this agent calls it.
+pub fn render(text: &str) -> String {
+    text.replace("{{shell_tool}}", SHELL_TOOL)
+        .replace("{{message_tool}}", MESSAGE_TOOL)
+        .replace("{{list_tool}}", LIST_TOOL)
+        .replace("{{in_background}}", IN_BACKGROUND)
+}
+
 /// An agent to start, in orchestrator's terms.
+#[derive(Debug)]
 pub struct Agent<'a> {
     /// The name it goes by: sessions see its messages come from it.
     pub name: &'a str,
@@ -37,6 +58,7 @@ pub struct Agent<'a> {
 }
 
 /// How an agent runs.
+#[derive(Debug, PartialEq)]
 pub enum Run<'a> {
     /// With the user at the terminal, asking them for anything not allowed.
     Interactive,
@@ -79,27 +101,27 @@ fn search_path(bin: &Path) -> OsString {
 // claude-code: cross-session-message
 // claude-code: background-command-wake
 pub fn args(agent: &Agent<'_>) -> Vec<OsString> {
-    let mut tools = vec!["Bash", "Read"];
+    let mut tools = vec![SHELL_TOOL, READ_TOOL];
     let mut allowed: Vec<String> = agent
         .commands
         .iter()
-        .map(|c| format!("Bash({c})"))
+        .map(|c| format!("{SHELL_TOOL}({c})"))
         .collect();
     if agent.edits_files {
-        tools.extend(["Edit", "Write"]);
+        tools.extend([EDIT_TOOL, WRITE_TOOL]);
     }
     allowed.extend(
         agent
             .editable
             .iter()
-            .map(|path| format!("Edit(/{})", path.display())),
+            .map(|path| format!("{EDIT_TOOL}(/{})", path.display())),
     );
     if agent.messages {
-        tools.extend(["SendMessage", "ListAgents"]);
-        allowed.extend(["SendMessage".to_string(), "ListAgents".to_string()]);
+        tools.extend([MESSAGE_TOOL, LIST_TOOL]);
+        allowed.extend([MESSAGE_TOOL.to_string(), LIST_TOOL.to_string()]);
     }
     if let Some(command) = agent.waits_on {
-        allowed.push(format!("Bash({command})"));
+        allowed.push(format!("{SHELL_TOOL}({command})"));
     }
     // No CLAUDE.md, rules or AGENTS.md from its directory or those above
     // it, the home directory's `.claude/CLAUDE.md` among them: its role
@@ -199,5 +221,151 @@ impl RunResult {
             list_price_estimate_usd: result["total_cost_usd"].as_f64(),
             reply: result["result"].as_str().map(str::to_string),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn strings(args: &[OsString]) -> Vec<String> {
+        args.iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    /// The values following `flag` up to the next flag.
+    fn values<'a>(args: &'a [String], flag: &str) -> Vec<&'a str> {
+        args.iter()
+            .skip_while(|a| *a != flag)
+            .skip(1)
+            .take_while(|a| !a.starts_with('-'))
+            .map(String::as_str)
+            .collect()
+    }
+
+    fn headless(max_budget_usd: Option<f64>) -> Agent<'static> {
+        Agent {
+            name: "an-agent",
+            role: Path::new("/run/role.md"),
+            dir: Path::new("/state/agent"),
+            bin: Path::new("/opt/bin"),
+            readable: vec![PathBuf::from("/config")],
+            commands: vec!["tool read".into(), "tool note *".into()],
+            editable: Vec::new(),
+            edits_files: false,
+            messages: true,
+            waits_on: None,
+            run: Run::Headless {
+                model: "a-model",
+                max_budget_usd,
+            },
+            prompt: "the prompt",
+        }
+    }
+
+    #[test]
+    fn a_headless_agent_runs_its_commands_and_messages_nothing_else() {
+        let args = strings(&args(&headless(None)));
+        assert_eq!(values(&args, "--model"), ["a-model"]);
+        assert!(
+            !args.contains(&"--max-budget-usd".to_string()),
+            "no cap unless given"
+        );
+        assert_eq!(values(&args, "--permission-mode"), ["dontAsk"]);
+        assert_eq!(values(&args, "--output-format"), ["json"]);
+        assert_eq!(values(&args, "--name"), ["an-agent"]);
+        assert_eq!(values(&args, "--setting-sources"), ["project"]);
+        assert_eq!(
+            values(&args, "--append-system-prompt-file"),
+            ["/run/role.md"]
+        );
+        assert_eq!(
+            values(&args, "--tools"),
+            ["Bash,Read,SendMessage,ListAgents"]
+        );
+        assert_eq!(
+            values(&args, "--allowedTools"),
+            [
+                "Bash(tool read)",
+                "Bash(tool note *)",
+                "SendMessage",
+                "ListAgents"
+            ]
+        );
+        assert_eq!(values(&args, "--add-dir"), ["/config"]);
+        assert!(args.contains(&"-p".to_string()));
+        assert!(args.contains(&"--no-session-persistence".to_string()));
+        let settings: Value = serde_json::from_str(values(&args, "--settings")[0]).unwrap();
+        assert_eq!(
+            settings["permissions"]["blockReadsOutsideWorkingDirectories"],
+            true
+        );
+        assert_eq!(settings["claudeMdExcludes"], serde_json::json!(["/**"]));
+        assert_eq!(settings["disableAgentView"], true);
+        assert_eq!(args[args.len() - 2..], ["--", "the prompt"]);
+        let capped = strings(&super::args(&headless(Some(0.5))));
+        assert_eq!(values(&capped, "--max-budget-usd"), ["0.5"]);
+        let cmd = command(OsStr::new("claude"), &headless(None));
+        assert_eq!(cmd.get_current_dir(), Some(Path::new("/state/agent")));
+        let path = cmd
+            .get_envs()
+            .find(|(k, _)| *k == "PATH")
+            .and_then(|(_, v)| v)
+            .unwrap();
+        assert!(path.to_string_lossy().starts_with("/opt/bin"));
+    }
+
+    #[test]
+    fn an_interactive_agent_asks_its_user_for_the_rest() {
+        let agent = Agent {
+            readable: vec![PathBuf::from("/config"), PathBuf::from("/elsewhere")],
+            editable: vec![PathBuf::from("/config/CLAUDE.md")],
+            edits_files: true,
+            messages: false,
+            waits_on: Some("tool next"),
+            run: Run::Interactive,
+            ..headless(None)
+        };
+        let args = strings(&args(&agent));
+        assert_eq!(values(&args, "--permission-mode"), ["default"]);
+        assert!(!args.contains(&"-p".to_string()), "interactive");
+        assert!(!args.contains(&"--model".to_string()), "the user's model");
+        assert_eq!(values(&args, "--tools"), ["Bash,Read,Edit,Write"]);
+        let allowed = values(&args, "--allowedTools");
+        assert!(allowed.contains(&"Edit(//config/CLAUDE.md)"), "{allowed:?}");
+        assert!(allowed.contains(&"Bash(tool next)"), "{allowed:?}");
+        assert!(
+            !allowed.iter().any(|r| r.contains("SendMessage")),
+            "{allowed:?}"
+        );
+        let added: Vec<&str> = args
+            .windows(2)
+            .filter(|w| w[0] == "--add-dir")
+            .map(|w| w[1].as_str())
+            .collect();
+        assert_eq!(added, ["/config", "/elsewhere"]);
+    }
+
+    #[test]
+    fn a_prompt_names_tools_as_the_agent_calls_them() {
+        assert_eq!(
+            render("{{message_tool}} or {{list_tool}}; {{shell_tool}} with {{in_background}}"),
+            "SendMessage or ListAgents; Bash with run_in_background"
+        );
+    }
+
+    #[test]
+    fn a_result_reports_tokens_and_reply() {
+        let output = br#"{"type":"result","is_error":false,"num_turns":4,"total_cost_usd":0.012,"usage":{"input_tokens":10,"cache_creation_input_tokens":4000,"cache_read_input_tokens":9000,"output_tokens":300},"result":"Done."}"#;
+        let r = RunResult::parse(output);
+        assert_eq!(r.turns, Some(4));
+        assert_eq!(
+            (r.input_tokens, r.cache_read_tokens, r.output_tokens),
+            (Some(4010), Some(9000), Some(300))
+        );
+        assert_eq!(r.list_price_estimate_usd, Some(0.012));
+        assert_eq!(r.reply.as_deref(), Some("Done."));
+        assert_eq!(RunResult::parse(b""), RunResult::default());
     }
 }

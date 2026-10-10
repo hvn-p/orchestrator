@@ -34,8 +34,8 @@ some. Decide from both.
   sense on this machine. Otherwise you do not change it: when the thresholds
   look wrong, say so in your note and your reply, with what you would
   change, and go on with the event.
-- Message a session with SendMessage, addressed by the name the prompt
-  shows. Call ListAgents only when a send fails or several sessions share
+- Message a session with {{message_tool}}, addressed by the name the prompt
+  shows. Call {{list_tool}} only when a send fails or several sessions share
   the name, then use the reference it shows.
 
 Nothing else is allowed. You never stop, pause, slow down or kill anything:

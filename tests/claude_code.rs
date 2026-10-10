@@ -21,6 +21,7 @@
 // Clippy exempts only `#[test]` functions; every function here is test code.
 #![allow(clippy::expect_used)]
 
+use claude_code::agent;
 use claude_code::invocation::Kind;
 use claude_code::sessions;
 use config::Coordinator;
@@ -172,12 +173,13 @@ impl CoordinatorRun {
              every call, even one you expect to be denied. 1) Run `orchestrator machine` with \
              the Bash tool. 2) Run `orchestrator coordinator note \
              checked` with the Bash tool. 3) Run `touch {}` with the Bash tool. 4) Run `cat {}` \
-             with the Bash tool. 5) Call ListAgents once. Then reply with exactly four lines: \
-             the first line `orchestrator machine` printed, the line of the ListAgents result \
+             with the Bash tool. 5) Call {list} once. Then reply with exactly four lines: \
+             the first line `orchestrator machine` printed, the line of the {list} result \
              that starts with `This session is`, the first line of the role appended to your system prompt, and the \
              marker word a CLAUDE.md gives you, or NONE.",
             paths.home.join("other.md").display(),
             outside.display(),
+            list = agent::LIST_TOOL,
         );
         let bin = Path::new(env!("CARGO_BIN_EXE_orchestrator"))
             .parent()
@@ -191,9 +193,10 @@ impl CoordinatorRun {
         let built = run::command(&run::Mode::Batch(&[]), &cfg, &paths, bin, &prompt);
         let mut args: Vec<OsString> = built.get_args().map(ToOwned::to_owned).collect();
         // Never message the user's sessions from a test.
+        let message_tool = format!("{},", agent::MESSAGE_TOOL);
         for a in &mut args {
-            if a.to_string_lossy().contains("SendMessage,") {
-                *a = a.to_string_lossy().replace("SendMessage,", "").into();
+            if a.to_string_lossy().contains(&message_tool) {
+                *a = a.to_string_lossy().replace(&message_tool, "").into();
             }
         }
         let stdout = base.join("stdout");
