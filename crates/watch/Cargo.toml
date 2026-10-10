@@ -8,6 +8,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+httparse.workspace = true
 anyhow.workspace = true
 claude-code.workspace = true
 config.workspace = true

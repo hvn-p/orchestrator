@@ -222,8 +222,11 @@ exit status 127.
     event was not queued.
 
 `watch` stops at start, printing `Error: …` (with its cause under
-`Caused by:` when there is one) and exiting with status 1, when its runtime
-directory cannot be created, `<proc root>/meminfo` cannot be read or holds no
+`Caused by:` when there is one) and exiting with status 1, when another
+`watch` answers at its socket (`another orchestrator watch answers at
+<runtime>/api.sock`), when it cannot listen there (`listening at <path>`,
+with `path must be shorter than SUN_LEN` when the runtime directory's path is
+too long for a Unix socket), when its runtime directory cannot be created, `<proc root>/meminfo` cannot be read or holds no
 `MemAvailable` line (`no MemAvailable line in …`), or a default directory
 cannot be resolved (`neither CLAUDE_CONFIG_DIR nor HOME is set`,
 `neither XDG_STATE_HOME nor HOME is set`,
@@ -234,9 +237,9 @@ cannot be resolved (`neither CLAUDE_CONFIG_DIR nor HOME is set`,
 - `orchestrator: a coordinator is running (pid <pid>); waiting for it to
   end`: `setup` or `coordinator` waits for the holder to end.
 - `Error: running claude`, then the cause: `claude` could not be started.
-- `Error: reading <path>`, then `Caused by:` and the reason, from `setup`,
-  `coordinator`, `config` and its subcommands: `config.json` exists but
-  cannot be read. They stop before anything else, leaving the file alone;
+- `Error: reading <path>`, with the reason after it or under `Caused by:`,
+  from `setup`, `coordinator`, `config` and its subcommands: `config.json`
+  exists but cannot be read. They stop before anything else, leaving the file alone;
   the setup conversation cannot repair it, so fix or remove it by hand.
 - `config admission` and `config coordinator` print `Error: <why>` and exit
   with status 1 when a value makes no sense, leaving the file as it was:
@@ -253,14 +256,18 @@ cannot be resolved (`neither CLAUDE_CONFIG_DIR nor HOME is set`,
 - `config admission` checks the whole `coordinator` section too, so a
   hand-written mistake there makes it refuse.
 
-### sessions and peaks, on their standard error
+### The commands that ask watch, on their standard error
 
-Both print `Error: …` (with its cause under `Caused by:` when there is one)
-and exit with status 1 on an error:
+`sessions`, `peaks`, `admission`, `machine`, `config`, `config admission`,
+`setup`, `coordinator` and `coordinator next` print `Error: …` and exit with
+status 1:
 
-- `sessions`: `reading <proc root>/meminfo`, `no MemAvailable line in …`,
-  `neither CLAUDE_CONFIG_DIR nor HOME is set` (without `--sessions-dir`),
-  `reading <proc root>`, or `reading <sessions dir>` (a missing sessions
-  directory is no error: it shows no session).
-- `peaks`: `neither XDG_STATE_HOME nor HOME is set` (without `--state-dir`),
-  or `reading …` for a peaks directory or file it cannot read.
+- `orchestrator watch is not running: start it with `orchestrator watch` (no
+  answer at <runtime>/api.sock)`: no `watch` serves the default runtime
+  directory. They stop before anything else.
+- Otherwise, the error `watch` met reading what was asked, on one line:
+  - for `sessions`: `reading <proc root>/meminfo: …`, `no MemAvailable line
+    in …`, `reading <proc root>: …`, or `reading <sessions dir>: …` (a
+    missing sessions directory is no error: it shows no session);
+  - for `peaks`: `reading …` for a peaks directory or file it cannot read;
+  - for `config`: `reading <path>: …` when `config.json` cannot be read.

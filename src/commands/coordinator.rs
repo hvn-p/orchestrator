@@ -1,7 +1,7 @@
 //! `orchestrator coordinator`: open an interactive coordinator, wait for its
 //! next events, or note in its journal.
 
-use super::{PROC, now_secs};
+use super::{PROC, now_secs, watch_api};
 use anyhow::{Context, Result, anyhow};
 use clap::{Args, Subcommand};
 use config::Coordinator;
@@ -10,6 +10,7 @@ use coordinator::state::{self as briefing, Places};
 use coordinator::{Holder, journal, run};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
+use watch::report::State;
 
 #[derive(Args)]
 pub struct CoordinatorArgs {
@@ -34,7 +35,7 @@ pub fn run(args: CoordinatorArgs) -> Result<()> {
         None => {
             // A first-time user needs this one command: without a
             // configuration, setting up comes first.
-            let mode = if config::load(&config::default_path()?)?.is_some() {
+            let mode = if watch_api()?.config()?.config.is_some() {
                 run::Mode::Interactive
             } else {
                 run::Mode::Setup { configured: false }
@@ -56,6 +57,7 @@ pub fn run(args: CoordinatorArgs) -> Result<()> {
 /// returns on an error.
 pub fn become_coordinator(mode: &run::Mode<'_>) -> anyhow::Error {
     let started = || -> Result<std::process::Command> {
+        let state = watch_api()?;
         let places = Places::from_env()?;
         let paths = briefing::paths(&places);
         let proc_root = Path::new(PROC);
@@ -67,7 +69,7 @@ pub fn become_coordinator(mode: &run::Mode<'_>) -> anyhow::Error {
             mode,
             &paths,
             now_secs(),
-            &briefing::briefing(&places, &paths, &system_language()),
+            &briefing::briefing(&state, &paths, &system_language()),
         );
         // An interactive coordinator runs with the user's model.
         let cfg = Coordinator::default();
@@ -88,7 +90,7 @@ fn next_events() -> Result<()> {
     for q in &taken {
         println!("{}", q.line());
     }
-    print!("\n## State now\n\n{}", briefing::gather(&places));
+    print!("\n## State now\n\n{}", briefing::gather(&watch_api()?));
     Ok(())
 }
 

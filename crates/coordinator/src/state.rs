@@ -6,48 +6,16 @@
 //! as the read commands print, which it may still run for more.
 
 use super::{Paths, journal};
-use anyhow::Result;
-use prefix::admission;
 use std::fmt::Write as _;
-use std::path::{Path, PathBuf};
-use system::cgroup;
+use std::path::Path;
 use system::machine;
-use system::runtime;
-use watch::report;
+pub use watch::Places;
+use watch::report::{self, State};
 
 /// Journal lines a coordinator is shown.
 const JOURNAL_LINES: usize = 40;
 /// Learned commands shown, the heaviest.
 const PEAKS_MAX: usize = 15;
-
-/// Where the state is read.
-#[derive(Debug, Clone)]
-pub struct Places {
-    pub proc_root: PathBuf,
-    pub sessions_dir: PathBuf,
-    pub admission: admission::Paths,
-    pub state_dir: PathBuf,
-    pub config: PathBuf,
-}
-
-impl Places {
-    /// The places the read commands use.
-    pub fn from_env() -> Result<Places> {
-        let proc_root = PathBuf::from("/proc");
-        Ok(Places {
-            sessions_dir: claude_code::sessions::default_dir()
-                .ok_or_else(|| anyhow::anyhow!("neither CLAUDE_CONFIG_DIR nor HOME is set"))?,
-            admission: admission::Paths {
-                cgroup_root: PathBuf::from(cgroup::ROOT),
-                meminfo: proc_root.join("meminfo"),
-                runtime: runtime::default_dir()?,
-            },
-            proc_root,
-            state_dir: system::state::default_dir()?,
-            config: config::default_path()?,
-        })
-    }
-}
 
 /// What a coordinator starts from.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -71,10 +39,11 @@ pub struct Language {
 
 /// The briefing of a coordinator waking now, writing in the configured
 /// language, else in `fallback`.
-pub fn briefing(places: &Places, paths: &Paths, fallback: &str) -> Briefing {
-    let configured = config::load(&places.config)
+pub fn briefing(state: &dyn State, paths: &Paths, fallback: &str) -> Briefing {
+    let configured = state
+        .config()
         .ok()
-        .flatten()
+        .and_then(|r| r.config)
         .and_then(|c| c.coordinator)
         .and_then(|c| c.language);
     Briefing {
@@ -82,17 +51,18 @@ pub fn briefing(places: &Places, paths: &Paths, fallback: &str) -> Briefing {
             configured: configured.is_some(),
             tag: configured.unwrap_or_else(|| fallback.to_string()),
         },
-        state: gather(places),
+        state: gather(state),
         journal: journal::tail(&paths.journal(), JOURNAL_LINES),
     }
 }
 
 /// The machine's state now, one section per read command. A section that
 /// cannot be read says why.
-pub fn gather(places: &Places) -> String {
-    let heavy_mb = config::load(&places.config)
+pub fn gather(state: &dyn State) -> String {
+    let heavy_mb = state
+        .config()
         .ok()
-        .flatten()
+        .and_then(|r| r.config)
         .and_then(|c| c.admission)
         .map(|a| a.heavy_mb);
     let peaks_title = match heavy_mb {
@@ -104,24 +74,25 @@ pub fn gather(places: &Places) -> String {
     let sections = [
         (
             "Configuration (`orchestrator config`)".to_string(),
-            report::config(&places.config),
+            state.config().and_then(|r| report::config_text(&r)),
         ),
         (
             "Machine (`orchestrator machine`)".to_string(),
-            machine::read(&places.proc_root, &places.admission.cgroup_root)
-                .map(|m| machine::describe(&m)),
+            state.machine().map(|m| machine::describe(&m)),
         ),
         (
             "Sessions (`orchestrator sessions --heads`)".to_string(),
-            report::sessions(&places.proc_root, &places.sessions_dir, true),
+            state.sessions(true).map(|r| report::sessions_text(&r)),
         ),
         (
             "Admission (`orchestrator admission`)".to_string(),
-            report::admission(&places.admission, &places.config, &places.sessions_dir),
+            state.admission().map(|r| report::admission_text(&r)),
         ),
         (
             peaks_title,
-            report::peaks(&places.state_dir, heavy_mb, Some(PEAKS_MAX)),
+            state
+                .peaks(heavy_mb, Some(PEAKS_MAX))
+                .map(|r| report::peaks_text(&r)),
         ),
     ];
     let mut out = String::new();
@@ -150,7 +121,9 @@ pub fn missing(path: &Path) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use prefix::admission;
     use std::fs;
+    use watch::report::Local;
 
     #[test]
     fn a_briefing_holds_every_section_even_unreadable() {
@@ -176,7 +149,7 @@ mod tests {
         };
         let paths = paths(&places);
         journal::note(&paths.journal(), "asked alpha", 0).unwrap();
-        let b = briefing(&places, &paths, "de");
+        let b = briefing(&Local(places.clone()), &paths, "de");
         assert_eq!(
             b.language,
             Language {
@@ -204,7 +177,7 @@ mod tests {
             Some("1970-01-01 00:00 UTC  asked alpha")
         );
         config::set_coordinator(&places.config, |c| c.language = Some("fr".into())).unwrap();
-        let b = briefing(&places, &paths, "de");
+        let b = briefing(&Local(places.clone()), &paths, "de");
         assert_eq!(
             b.language,
             Language {

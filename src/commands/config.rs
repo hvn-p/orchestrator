@@ -1,13 +1,11 @@
 //! `orchestrator config`: print the configuration, or set a section of it
 //! through a validated write.
 
-use super::PROC;
+use super::watch_api;
 use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
 use config::Admission;
-use std::path::Path;
-use system::{cgroup, machine};
-use watch::report;
+use watch::report::{self, State};
 
 #[derive(Args)]
 pub struct ConfigArgs {
@@ -70,12 +68,12 @@ pub fn run(args: ConfigArgs) -> Result<()> {
 }
 
 fn print_config() -> Result<()> {
-    print!("{}", report::config(&config::default_path()?)?);
+    print!("{}", report::config_text(&watch_api()?.config()?)?);
     Ok(())
 }
 
 fn set_admission(a: &AdmissionArgs) -> Result<()> {
-    let total_mb = machine::read(Path::new(PROC), Path::new(cgroup::ROOT))?.mem_total_mb;
+    let total_mb = watch_api()?.machine()?.mem_total_mb;
     let path = config::default_path()?;
     let admission = Admission {
         heavy_mb: a.heavy_mb,

@@ -4,6 +4,7 @@
 //! the groups below it, the orchestrator slice and its sessions included.
 
 use crate::cgroup;
+use serde::{Deserialize, Serialize};
 
 use crate::memory;
 use anyhow::{Context, Result};
@@ -15,7 +16,7 @@ use std::path::Path;
 /// and limits, a process count.
 const NEEDED: [&str; 3] = ["cpu", "memory", "pids"];
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Machine {
     pub mem_total_mb: u64,
     pub mem_available_mb: u64,

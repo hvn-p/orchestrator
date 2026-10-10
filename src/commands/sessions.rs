@@ -1,24 +1,21 @@
 //! `orchestrator sessions`: memory per Claude session, and orphans.
 
-use super::{Sources, sessions_dir};
+use super::watch_api;
 use anyhow::Result;
 use clap::Args;
-use watch::report;
+use watch::report::{self, State};
 
 #[derive(Args)]
 pub struct SessionsArgs {
-    #[command(flatten)]
-    sources: Sources,
     /// Show each process by the head of its command line, as events do, never its arguments.
     #[arg(long)]
     heads: bool,
 }
 
 pub fn run(args: &SessionsArgs) -> Result<()> {
-    let dir = sessions_dir(&args.sources)?;
     print!(
         "{}",
-        report::sessions(&args.sources.proc_root, &dir, args.heads)?
+        report::sessions_text(&watch_api()?.sessions(args.heads)?)
     );
     Ok(())
 }

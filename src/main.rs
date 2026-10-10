@@ -25,7 +25,7 @@ enum Command {
     /// Print memory per Claude session and the orphaned processes.
     Sessions(commands::sessions::SessionsArgs),
     /// Print the memory peaks learned per repository and command.
-    Peaks(commands::peaks::StateDir),
+    Peaks,
     /// Print the Bash calls waiting for memory and the memory reserved by running ones.
     Admission,
     /// Print what the configuration is chosen from: memory, swap, CPUs, cgroup delegation.
@@ -44,7 +44,7 @@ fn main() -> Result<()> {
     match Cli::parse().command {
         Command::Watch(args) => commands::watch::run(args),
         Command::Sessions(args) => commands::sessions::run(&args),
-        Command::Peaks(dir) => commands::peaks::run(dir),
+        Command::Peaks => commands::peaks::run(),
         Command::Admission => commands::admission::run(),
         Command::Machine => commands::machine::run(),
         Command::Config(args) => commands::config::run(args),

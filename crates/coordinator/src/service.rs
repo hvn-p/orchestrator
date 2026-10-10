@@ -25,7 +25,9 @@ use std::process::Child;
 use std::time::{Duration, Instant};
 use system::cgroup;
 use system::runtime;
+use watch::events::Hub;
 use watch::events::{self, Event};
+use watch::report::Local;
 
 /// Where holders are looked up: always the real processes, whatever the
 /// proc root `watch` reads sessions from.
@@ -74,6 +76,8 @@ pub struct Service {
     places: Places,
     paths: Paths,
     events: PathBuf,
+    /// The API's event streams, which get each event too.
+    hub: Hub,
     /// This binary's directory, first on a run's `PATH`.
     bin: PathBuf,
     /// The program started as a coordinator: `claude`, but in tests.
@@ -92,7 +96,7 @@ pub struct Service {
 impl Service {
     /// The coordinator reading the state from `places`, writing its events
     /// to `events`.
-    pub fn new(places: Places, events: PathBuf) -> Service {
+    pub fn new(places: Places, events: PathBuf, hub: Hub) -> Service {
         let dir = admission::waiting_dir(&places.admission.runtime);
         let waiting = fs::create_dir_all(&dir)
             .and_then(|()| Inotify::init())
@@ -115,6 +119,7 @@ impl Service {
             paths: state::paths(&places),
             places,
             events,
+            hub,
             bin,
             claude: "claude".into(),
             waiting,
@@ -269,7 +274,7 @@ impl Service {
                 need_mb: w.need_mb,
                 free_mb,
             });
-            if let Err(e) = events::append(&self.events, at, &event) {
+            if let Err(e) = events::emit(&self.events, &self.hub, at, &event) {
                 eprintln!("orchestrator: {e:#}");
             }
             self.queue(at, &event);
@@ -312,7 +317,11 @@ impl Service {
         let at = now_ms() / 1000;
         // Nobody is at a terminal to set the language from: the configured
         // one, else English.
-        let briefing = state::briefing(&self.places, &self.paths, config::language::DEFAULT);
+        let briefing = state::briefing(
+            &Local(self.places.clone()),
+            &self.paths,
+            config::language::DEFAULT,
+        );
         let prompt = run::prompt(&run::Mode::Batch(&batch), &self.paths, at, &briefing);
         let mode = run::Mode::Batch(&batch);
         let spawned =
@@ -480,7 +489,7 @@ printf '{"type":"result","is_error":false,"num_turns":1,"usage":{"input_tokens":
             state_dir: base.join("state"),
             config,
         };
-        let mut service = Service::new(places, base.join("events.jsonl"));
+        let mut service = Service::new(places, base.join("events.jsonl"), Hub::default());
         service.claude = fake.into();
         Setup {
             _tmp: tmp,

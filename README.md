@@ -84,6 +84,11 @@ the call's peak, with its command, to `measurements.jsonl` in the same
 directory, and learns the peak of each command of the call in the repository
 it ran in. `--help` lists every option.
 
+The read commands below, `sessions` above, and `config`, `setup` and
+`coordinator` ask the running `watch` over its local API, an HTTP server on
+`$XDG_RUNTIME_DIR/orchestrator/api.sock` that also streams the events as
+server-sent events. Without a `watch`, they stop with an error saying so.
+
 ```sh
 orchestrator peaks
 ```
@@ -98,8 +103,8 @@ by heavy calls running; `machine` prints memory, swap, CPUs and what the
 systemd user manager delegates.
 
 Learned peaks live in `$XDG_STATE_HOME/orchestrator/peaks/` (by default
-`~/.local/state/orchestrator/peaks/`) unless `--state-dir` says otherwise, for
-`watch` as for `peaks`. A command is stored under a hash, with a label for
+`~/.local/state/orchestrator/peaks/`) unless `watch --state-dir` says
+otherwise; `peaks` shows what `watch` learned. A command is stored under a hash, with a label for
 display: the command as recognised, cut to 60 characters. Only commands Claude
 wrote land there; see "Recognising a command" in
 [docs/design.md](docs/design.md).

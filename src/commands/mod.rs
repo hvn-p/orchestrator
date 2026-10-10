@@ -11,6 +11,7 @@ pub mod sessions;
 pub mod setup;
 pub mod watch;
 
+use ::watch::api::Client;
 use anyhow::{Context, Result};
 use clap::Args;
 use std::path::PathBuf;
@@ -42,6 +43,14 @@ pub fn state_dir(arg: Option<PathBuf>) -> Result<PathBuf> {
         Some(dir) => Ok(dir),
         None => state::default_dir(),
     }
+}
+
+/// The state, asked of the `watch` serving the default runtime directory.
+/// Fails at once when none answers: nothing reads the state without it.
+pub fn watch_api() -> Result<Client> {
+    let client = Client::new(&runtime::default_dir()?);
+    client.reachable()?;
+    Ok(client)
 }
 
 pub fn now_secs() -> u64 {

@@ -14,15 +14,20 @@ use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use rustix::io::Errno;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use system::cgroup;
 use system::memory;
 use system::pressure::Trigger;
 use system::runtime;
+use watch::Places;
+use watch::api;
 use watch::attribution::Attribution;
+use watch::events::Hub;
 use watch::events::{self, Event};
 use watch::exits::Exits;
 use watch::jobs::{self, Tracker};
+use watch::report::Local;
 
 /// Between two sweeps of the job groups while the tracker runs.
 const JOB_SWEEP: Duration = Duration::from_secs(60);
@@ -145,20 +150,17 @@ pub fn run(cfg: &Options) -> Result<()> {
     // Fail fast on a wrong proc root rather than logging the same error forever.
     memory::available_mb(&meminfo)?;
     let events_path = cfg.runtime_dir.join("events.jsonl");
-    let job_paths = own_slice(&cfg.proc_root).map(|slice| JobPaths {
-        slice,
-        records: prefix::records_root(&cfg.runtime_dir),
-        measurements: cfg.runtime_dir.join("measurements.jsonl"),
-        peaks: peaks::dir(&cfg.state_dir),
-    });
-    if job_paths.is_none() {
-        eprintln!(
-            "orchestrator: no systemd user manager above this process; jobs are not collected"
-        );
-    }
+    let hub = Hub::default();
+    let listener = api::bind(&api::socket(&cfg.runtime_dir))?;
+    api::serve(
+        listener,
+        Arc::new(Local(places(cfg, &meminfo))),
+        hub.clone(),
+    );
+    let job_paths = job_paths(cfg);
     let mut src = sources(cfg, job_paths.as_ref());
     let mut watcher = Watcher::new(cfg.thresholds);
-    let mut coordinator = coordinator_service(cfg, &meminfo, &events_path);
+    let mut coordinator = Service::new(places(cfg, &meminfo), events_path.clone(), hub.clone());
     coordinator.start();
     let mut next_orphan_scan = Instant::now();
     let mut next_job_sweep = Instant::now() + JOB_SWEEP;
@@ -187,11 +189,13 @@ pub fn run(cfg: &Options) -> Result<()> {
         };
         for signal in signals {
             match signal {
-                Signal::Pressure => match on_pressure(cfg, &meminfo, &events_path, &mut watcher) {
-                    Ok(Some((at, event))) => coordinator.enqueue(at, &event),
-                    Ok(None) => {}
-                    Err(e) => eprintln!("orchestrator: {e:#}"),
-                },
+                Signal::Pressure => {
+                    match on_pressure(cfg, &meminfo, &events_path, &hub, &mut watcher) {
+                        Ok(Some((at, event))) => coordinator.enqueue(at, &event),
+                        Ok(None) => {}
+                        Err(e) => eprintln!("orchestrator: {e:#}"),
+                    }
+                }
                 Signal::Coordinator(wake) => coordinator.on_wake(wake),
                 Signal::TriggerBroken => {
                     eprintln!(
@@ -237,15 +241,32 @@ pub fn run(cfg: &Options) -> Result<()> {
             next_job_sweep = now + every;
         }
         if now >= next_orphan_scan {
-            log(scan_orphans(cfg, &events_path, &mut watcher));
+            log(scan_orphans(cfg, &events_path, &hub, &mut watcher));
             next_orphan_scan = now + cfg.orphan_interval;
         }
     }
 }
 
-/// The coordinator as `watch` drives it, with `watch`'s own places.
-fn coordinator_service(cfg: &Options, meminfo: &Path, events_path: &Path) -> Service {
-    let places = coordinator::state::Places {
+/// Where finished jobs are found and measured, None outside a systemd user
+/// manager.
+fn job_paths(cfg: &Options) -> Option<JobPaths> {
+    let job_paths = own_slice(&cfg.proc_root).map(|slice| JobPaths {
+        slice,
+        records: prefix::records_root(&cfg.runtime_dir),
+        measurements: cfg.runtime_dir.join("measurements.jsonl"),
+        peaks: peaks::dir(&cfg.state_dir),
+    });
+    if job_paths.is_none() {
+        eprintln!(
+            "orchestrator: no systemd user manager above this process; jobs are not collected"
+        );
+    }
+    job_paths
+}
+
+/// Where `watch` reads the state, for its API and its coordinators.
+fn places(cfg: &Options, meminfo: &Path) -> Places {
+    Places {
         proc_root: cfg.proc_root.clone(),
         sessions_dir: cfg.sessions_dir.clone(),
         admission: admission::Paths {
@@ -255,8 +276,7 @@ fn coordinator_service(cfg: &Options, meminfo: &Path, events_path: &Path) -> Ser
         },
         state_dir: cfg.state_dir.clone(),
         config: cfg.config_path.clone(),
-    };
-    Service::new(places, events_path.to_path_buf())
+    }
 }
 
 /// Sets up each kernel signal, reporting the ones that cannot be.
@@ -334,6 +354,7 @@ fn on_pressure(
     cfg: &Options,
     meminfo: &Path,
     events_path: &Path,
+    hub: &Hub,
     watcher: &mut Watcher,
 ) -> Result<Option<(u64, Event)>> {
     let now = now_secs();
@@ -342,15 +363,15 @@ fn on_pressure(
         watch::scan(&cfg.proc_root, &cfg.sessions_dir)
     })?;
     if let Some(event) = &event {
-        events::append(events_path, now, event)?;
+        events::emit(events_path, hub, now, event)?;
     }
     Ok(event.map(|e| (now, e)))
 }
 
-fn scan_orphans(cfg: &Options, events_path: &Path, watcher: &mut Watcher) -> Result<()> {
+fn scan_orphans(cfg: &Options, events_path: &Path, hub: &Hub, watcher: &mut Watcher) -> Result<()> {
     let att = watch::scan(&cfg.proc_root, &cfg.sessions_dir)?;
     if let Some(event) = watcher.check_orphans(&att) {
-        events::append(events_path, now_secs(), &event)?;
+        events::emit(events_path, hub, now_secs(), &event)?;
     }
     Ok(())
 }

@@ -215,6 +215,9 @@ impl CoordinatorRun {
                 cmd.env(key, value);
             }
         }
+        // The read commands ask `watch`: one serves this test's runtime
+        // directory while the coordinator runs.
+        let _watch = Watch::start(&base);
         let mut child = cmd.spawn().expect("starting claude");
         let start = Instant::now();
         let status = loop {
@@ -264,6 +267,39 @@ impl CoordinatorRun {
                     .collect()
             })
             .unwrap_or_default()
+    }
+}
+
+/// An `orchestrator watch` serving a test's directories, stopped when
+/// dropped.
+struct Watch(Child);
+
+impl Watch {
+    fn start(base: &Path) -> Watch {
+        let child = Command::new(env!("CARGO_BIN_EXE_orchestrator"))
+            .arg("watch")
+            .env("XDG_RUNTIME_DIR", base.join("run"))
+            .env("XDG_STATE_HOME", base.join("state"))
+            .env("XDG_CONFIG_HOME", base.join("config"))
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("starting orchestrator watch");
+        let socket = base.join("run/orchestrator/api.sock");
+        let start = Instant::now();
+        while !socket.exists() && start.elapsed() < Duration::from_secs(10) {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(socket.exists(), "orchestrator watch did not start serving");
+        Watch(child)
+    }
+}
+
+impl Drop for Watch {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
     }
 }
 
