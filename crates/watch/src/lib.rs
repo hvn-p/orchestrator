@@ -1,6 +1,6 @@
 //! Observing sessions and jobs: what each finished job measured, which
-//! session each process belongs to, and the events that come of it; and the
-//! local API serving that state (`api`).
+//! session each process belongs to, what a live job uses (`usage`), and the
+//! events that come of it; and the local API serving that state (`api`).
 
 pub mod api;
 pub mod attribution;
@@ -8,6 +8,7 @@ pub mod events;
 pub mod exits;
 pub mod jobs;
 pub mod report;
+pub mod usage;
 
 use anyhow::{Context, Result};
 use attribution::Attribution;

@@ -46,6 +46,12 @@ pub fn read_processes(root: &Path, session_var: &[u8]) -> std::io::Result<Vec<Pr
     Ok(procs)
 }
 
+/// Process `pid` under `root`, as `read_processes` reads it. None once it
+/// is gone.
+pub fn read_one(root: &Path, pid: u32, session_var: &[u8]) -> Option<ProcInfo> {
+    read_process(&root.join(pid.to_string()), pid, session_var)
+}
+
 fn read_process(dir: &Path, pid: u32, session_var: &[u8]) -> Option<ProcInfo> {
     let stat = fs::read_to_string(dir.join("stat")).ok()?;
     let (comm, ppid, start_time) = parse_stat(&stat)?;

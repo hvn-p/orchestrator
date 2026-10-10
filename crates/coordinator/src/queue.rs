@@ -49,8 +49,13 @@ pub struct Queued {
 impl Queued {
     /// The event `watch` wrote at `at`, if it needs judgment. Memory pressure
     /// events all merge, the latest one standing for the others; an
-    /// admission wait is reported once per call. Orphans are not the
-    /// coordinator's yet.
+    /// admission wait is reported once per call. A kill is queued only when
+    /// its session cannot see it: not while the Bash call that started the
+    /// job runs, whose result shows it, nor in `main/`, where either claude
+    /// itself died or a tool it runs reports the failure; kills in a job
+    /// merge. Orphans are not the coordinator's yet, nor is a job stalling,
+    /// which happens while memory is short, when a coordinator costs the
+    /// most and acts too late (#46).
     pub fn new(at: u64, event: &Event) -> Result<Option<Queued>> {
         let key = match event {
             Event::MemoryPressure(watch::events::MemoryPressure { .. }) => {
@@ -59,7 +64,12 @@ impl Queued {
             Event::AdmissionWait(watch::events::AdmissionWait { job, .. }) => {
                 format!("admission_wait {job}")
             }
-            Event::Orphans(watch::events::Orphans { .. }) => return Ok(None),
+            Event::OomKill(k) if !k.call_running && k.job != watch::jobs::MAIN => {
+                format!("oom_kill {}", k.job)
+            }
+            Event::OomKill(_)
+            | Event::JobPressure(_)
+            | Event::Orphans(watch::events::Orphans { .. }) => return Ok(None),
         };
         Ok(Some(Queued {
             key,
@@ -183,6 +193,7 @@ mod tests {
                 session: "alpha".into(),
                 rss_mb: 4000,
             }],
+            jobs: vec![],
         })
     }
 
@@ -235,6 +246,39 @@ mod tests {
     fn orphans_are_not_queued() {
         let orphans = Event::Orphans(watch::events::Orphans { orphans: vec![] });
         assert_eq!(Queued::new(1, &orphans).unwrap(), None);
+    }
+
+    #[test]
+    fn only_a_kill_its_session_cannot_see_is_queued() {
+        let kill = |job: &str, call_running: bool| {
+            Event::OomKill(watch::events::OomKill {
+                session: Some("alpha".into()),
+                session_id: Some("a".into()),
+                job: job.into(),
+                command: None,
+                killed: 1,
+                call_running,
+            })
+        };
+        let detached = Queued::new(1, &kill("job-bash-7-1", false)).unwrap();
+        assert_eq!(
+            detached.map(|q| q.key).as_deref(),
+            Some("oom_kill job-bash-7-1")
+        );
+        assert_eq!(Queued::new(1, &kill("job-bash-7-1", true)).unwrap(), None);
+        assert_eq!(Queued::new(1, &kill("main", false)).unwrap(), None);
+        let stalled = Event::JobPressure(watch::events::JobPressure {
+            job: watch::events::JobUsage {
+                session: None,
+                session_id: None,
+                job: "job-bash-7-1".into(),
+                command: None,
+                memory_mb: 1,
+                largest: None,
+            },
+            stall_ms: 200,
+        });
+        assert_eq!(Queued::new(1, &stalled).unwrap(), None);
     }
 
     #[test]

@@ -9,9 +9,9 @@ Requirements:
   `memory.peak`, and the `memory` controller in the session's scope. `launch`
   enables `cpu`, `memory` and `pids` there, among those the user's systemd
   manager provides.
-- For `memory_pressure` events: Linux 6.4 or later, the first to let an
-  unprivileged process set the pressure trigger `watch` uses, and
-  `/proc/pressure/memory` present.
+- For `memory_pressure` and `job_pressure` events: Linux 6.4 or later, the
+  first to let an unprivileged process set the pressure triggers `watch`
+  uses, and `/proc/pressure/memory` present.
 - For `launch`: a systemd user manager that delegates to user scopes, and
   `busctl`, which ships with systemd. `sessions` and `watch` need neither
   `busctl` nor a scope.
@@ -134,10 +134,23 @@ something:
   peak with the command to `measurements.jsonl` and learns it. It then removes
   the empty group, whatever the job. A sweep every minute catches what it was
   not told.
+- Memory in a live job, while it is told of job ends: a PSI trigger on each
+  job's group, with the same `--stall-ms` and 2 s window as the machine's,
+  makes a `job_pressure` event when the job stalls on memory, at most once
+  per job per `--cooldown-secs`; each job's `memory.events`, and that of
+  each session's `main/`, make an `oom_kill` event when a process there is
+  killed for lack of memory. It also holds the shell of each Bash call, to
+  tell whether a kill came during the call or after it. When it is not told
+  of job ends (`no kernel signal for job ends`, `job tracking stopped`),
+  neither event comes.
+- What jobs use is read only when an event needs it: the memory of each
+  live job when a `memory_pressure` event lists the jobs using the most, the
+  processes of the jobs an event names. Between events, `watch` reads
+  nothing.
 - With `"wake": true` in the configuration's `coordinator` section: a Bash
   call that admission has held back `wait_secs` makes an `admission_wait`
-  event, and `memory_pressure` and `admission_wait` events are queued for a
-  coordinator run, which `watch` starts as soon as no coordinator is running
+  event, and `memory_pressure` and `admission_wait` events, and `oom_kill`
+  events their session cannot see, are queued for a coordinator run, which `watch` starts as soon as no coordinator is running
   (coordinator.md). It reads the configuration at each event, so a change
   needs no restart.
 - It serves the state and the events over a local API, at
@@ -151,8 +164,8 @@ something:
 | `--sessions-dir <dir>` | `$CLAUDE_CONFIG_DIR/sessions`, else `~/.claude/sessions` | Claude Code's sessions directory |
 | `--state-dir <dir>` | `$XDG_STATE_HOME/orchestrator`, else `~/.local/state/orchestrator` | Where learned peaks are kept, and the coordinator's working directory and journal for the runs it starts |
 | `--runtime-dir <dir>` | `$XDG_RUNTIME_DIR/orchestrator`, else `/run/user/<uid>/orchestrator` | Where events and measurements are written, job records read and the API's socket listens, and the coordinator's queue, holder, role and runs |
-| `--stall-ms <ms>` | 200 (1 to 2000) | Memory stall within 2 s that makes a pressure event |
-| `--cooldown-secs <s>` | 60 | Minimum time between two memory pressure events |
+| `--stall-ms <ms>` | 200 (1 to 2000) | Memory stall within 2 s that makes a pressure event, of the machine or of a job |
+| `--cooldown-secs <s>` | 60 | Minimum time between two memory pressure events, and between two job pressure events of one job |
 | `--orphan-interval-secs <s>` | 300 (0 counts as 1) | Time between two orphan scans when no session ends |
 
 ### Starting watch

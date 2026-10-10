@@ -9,10 +9,12 @@
 //! wrote, which went through the model already.
 
 mod admission_wait;
+mod job;
 mod memory_pressure;
 mod orphans;
 
 pub use admission_wait::AdmissionWait;
+pub use job::{JobPressure, JobUsage, OomKill, Process};
 pub use memory_pressure::{MemoryPressure, SessionBrief, SessionSummary};
 pub use orphans::{OrphanSummary, Orphans};
 
@@ -32,11 +34,18 @@ pub enum Event {
     MemoryPressure(MemoryPressure),
     Orphans(Orphans),
     AdmissionWait(AdmissionWait),
+    JobPressure(JobPressure),
+    OomKill(OomKill),
 }
 
 impl Event {
-    pub fn memory_pressure(available_mb: u64, stall_ms: u64, att: &Attribution) -> Self {
-        Event::MemoryPressure(MemoryPressure::new(available_mb, stall_ms, att))
+    pub fn memory_pressure(
+        available_mb: u64,
+        stall_ms: u64,
+        att: &Attribution,
+        jobs: Vec<JobUsage>,
+    ) -> Self {
+        Event::MemoryPressure(MemoryPressure::new(available_mb, stall_ms, att, jobs))
     }
 
     pub fn orphans(orphans: &[&Orphan]) -> Self {
@@ -130,7 +139,20 @@ mod tests {
             }],
             orphans: vec![],
         };
-        let line = to_line(12, &Event::memory_pressure(900, 200, &att)).unwrap();
+        let jobs = vec![JobUsage {
+            session: Some("alpha".into()),
+            session_id: Some("a".into()),
+            job: "job-bash-7-1".into(),
+            command: Some("pnpm tsc".into()),
+            memory_mb: 3100,
+            largest: Some(Process {
+                pid: 9,
+                rss_mb: 2900,
+                comm: "node".into(),
+                command: "node tsc".into(),
+            }),
+        }];
+        let line = to_line(12, &Event::memory_pressure(900, 200, &att, jobs)).unwrap();
         let v: serde_json::Value = serde_json::from_str(&line).unwrap();
         assert_eq!(v["at"], 12);
         assert_eq!(v["kind"], "memory_pressure");
@@ -143,6 +165,49 @@ mod tests {
         assert_eq!(v["largest"]["process_command"], "python3");
         assert!(v["largest"].get("process_cmdline").is_none());
         assert_eq!(v["next"], serde_json::json!([]));
+        assert_eq!(v["jobs"][0]["job"], "job-bash-7-1");
+        assert_eq!(v["jobs"][0]["command"], "pnpm tsc");
+        assert_eq!(v["jobs"][0]["memory_mb"], 3100);
+        assert_eq!(v["jobs"][0]["largest"]["comm"], "node");
+        assert_eq!(v["jobs"][0]["largest"]["command"], "node tsc");
+    }
+
+    #[test]
+    fn job_pressure_line_shape() {
+        let event = Event::JobPressure(JobPressure {
+            job: JobUsage {
+                session: None,
+                session_id: None,
+                job: "job-other-8-1".into(),
+                command: None,
+                memory_mb: 40,
+                largest: None,
+            },
+            stall_ms: 200,
+        });
+        let v: serde_json::Value = serde_json::from_str(&to_line(3, &event).unwrap()).unwrap();
+        assert_eq!(v["kind"], "job_pressure");
+        assert_eq!(v["job"], "job-other-8-1");
+        assert_eq!(v["memory_mb"], 40);
+        assert_eq!(v["stall_ms"], 200);
+        assert!(v["session"].is_null() && v["largest"].is_null());
+    }
+
+    #[test]
+    fn oom_kill_line_shape() {
+        let event = Event::OomKill(OomKill {
+            session: Some("alpha".into()),
+            session_id: Some("a".into()),
+            job: "main".into(),
+            command: None,
+            killed: 1,
+            call_running: false,
+        });
+        let v: serde_json::Value = serde_json::from_str(&to_line(4, &event).unwrap()).unwrap();
+        assert_eq!(v["kind"], "oom_kill");
+        assert_eq!(v["job"], "main");
+        assert_eq!(v["killed"], 1);
+        assert_eq!(v["call_running"], false);
     }
 
     #[test]

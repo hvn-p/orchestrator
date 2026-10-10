@@ -27,7 +27,7 @@ Early. What exists:
   longer exist.
 - `orchestrator watch` runs as a service that sleeps until the kernel reports
   something, and appends one JSON line per event (`memory_pressure`,
-  `orphans`) to an events file. It also measures the
+  `orphans`, `job_pressure`, `oom_kill`) to an events file. It also measures the
   memory peak of each finished Bash call of an orchestrated session, learns it
   per repository and command, then removes the call's empty group.
 - `orchestrator peaks` prints the peaks learned so far.
@@ -78,8 +78,11 @@ orchestrator watch
 ```
 
 When tasks stall on memory for `--stall-ms` (default 200) within a 2 s window,
-`watch` ranks sessions by memory and writes a `memory_pressure` event, at most
-once per `--cooldown-secs` (default 60). Five seconds after a Claude session's
+`watch` ranks sessions and jobs by memory and writes a `memory_pressure` event,
+at most once per `--cooldown-secs` (default 60). The same trigger on each job
+of an orchestrated session writes a `job_pressure` event, naming the job, its
+command and its largest process, at most once per job per cooldown; a process
+of a session killed for lack of memory writes an `oom_kill` event. Five seconds after a Claude session's
 process exits, it reports the processes the session left behind, each orphan
 group once; a scan every `--orphan-interval-secs` (default 300) catches the
 rest. Events go to
@@ -194,8 +197,9 @@ the error goes to `$XDG_RUNTIME_DIR/orchestrator/prefix.log`.
 ```
 
 `wake` is your consent: with it, `orchestrator watch` starts a coordinator by
-itself, one at a time, for each batch of `memory_pressure` events and calls
-that admission has held back `wait_secs`, each run with `model` and stopped
+itself, one at a time, for each batch of `memory_pressure` events, calls
+that admission has held back `wait_secs`, and processes killed for lack of
+memory where their session cannot see it, each run with `model` and stopped
 past `max_minutes`, a guard against a stuck run. Without it, nothing spends
 tokens unless you open a coordinator. `language`, a tag such as `fr`, `en` or
 `pt-BR` (two or three lowercase letters, then subtags joined by `-`), is the

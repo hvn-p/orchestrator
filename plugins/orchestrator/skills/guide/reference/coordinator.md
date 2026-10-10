@@ -111,14 +111,18 @@ Setup cannot repair `config.json`; the user fixes it by hand:
 
 ### What starts one
 
-With `"wake": true` in the `coordinator` section and `watch` running, two
+With `"wake": true` in the `coordinator` section and `watch` running, three
 kinds of events go to the queue:
 
 - `memory_pressure` (events.md);
 - `admission_wait`, which `watch` writes when admission has held a Bash call
-  back `wait_secs` (events.md).
+  back `wait_secs` (events.md);
+- `oom_kill`, when its session cannot see the kill: a process a Bash call
+  left running after it ended, a hook, the status line or an MCP server
+  (events.md). A kill during a Bash call, which its result shows, and one in
+  `main/` do not.
 
-`orphans` events never do. A run starts as soon as an event is queued and no
+`orphans` and `job_pressure` events never do. A run starts as soon as an event is queued and no
 coordinator is running, and again when a run ends with events pending.
 
 - While `wake` is off, nothing is queued and no `admission_wait` is written;
@@ -137,7 +141,7 @@ coordinator is running, and again when a run ends with events pending.
 `<runtime>/coordinator/queue.json` is a JSON array of the events, oldest
 first, each an object with:
 
-- `key`: `memory_pressure`, or `admission_wait <job>`;
+- `key`: `memory_pressure`, `admission_wait <job>`, or `oom_kill <job>`;
 - `count`: how many events merged into it;
 - `first_at`: when the first of them came, in seconds since the epoch;
 - `event`: the latest of them, as `events.jsonl` holds it;

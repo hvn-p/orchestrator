@@ -383,6 +383,7 @@ mod tests {
             stall_ms: 200,
             largest: None,
             next: vec![],
+            jobs: vec![],
         });
         vec![Queued::new(1_791_210_633, &event).unwrap().unwrap()]
     }

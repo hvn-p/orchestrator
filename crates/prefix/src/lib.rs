@@ -156,6 +156,15 @@ pub fn parse_job_name(name: &str) -> Option<(Kind, u128)> {
     Some((kind, ms.parse().ok()?))
 }
 
+/// The pid of a job, from a name made by `job_name`: the prefix's own,
+/// which becomes the shell running the command. For a Bash call, that shell
+/// lives exactly as long as the call.
+pub fn job_pid(name: &str) -> Option<u32> {
+    parse_job_name(name)?;
+    let (rest, _) = name.rsplit_once('-')?;
+    rest.rsplit_once('-')?.1.parse().ok()
+}
+
 /// Where job records live: `<runtime>/jobs/`, one directory per session scope.
 pub fn records_root(runtime: &Path) -> PathBuf {
     runtime.join("jobs")
@@ -233,6 +242,8 @@ mod tests {
         assert_eq!(parse_job_name("job-bash-7"), None);
         assert_eq!(parse_job_name("job-cron-7-5"), None);
         assert_eq!(parse_job_name("main"), None);
+        assert_eq!(job_pid("job-bash-7-1234"), Some(7));
+        assert_eq!(job_pid("main"), None);
     }
 
     #[test]

@@ -7,8 +7,8 @@ description: >-
   `orchestrator watch`; `orchestrator setup` and `config.json`; the
   coordinator (`orchestrator coordinator`, the runs `watch` starts, its
   messages to sessions, `runs.jsonl`, its journal, its `CLAUDE.md`); what a
-  line of `events.jsonl` or `measurements.jsonl`, an `admission_wait` event,
-  or an admission notice ("orchestrator: waiting for memory before running
+  line of `events.jsonl` or `measurements.jsonl`, an `admission_wait`,
+  `job_pressure` or `oom_kill` event, or an admission notice ("orchestrator: waiting for memory before running
   …") means; what `orchestrator peaks`, `sessions`, `admission` or `machine`
   shows; the order of waiting calls and `orchestrator admission priority`; "orchestrator watch is not running"; the local API and its event
   stream; why a session or a command is not orchestrated, nothing waits,
@@ -32,8 +32,9 @@ describes the `main` branch of <https://github.com/hvn-p/orchestrator>.
 ## What orchestrator does
 
 - `orchestrator launch`, the shell prefix `orchestrator-prefix`,
-  `orchestrator watch` (memory pressure and orphan events, the memory peak of
-  every Bash call, learned per repository and command), admission (a Bash
+  `orchestrator watch` (memory pressure and orphan events, a job stalling on
+  memory or losing a process to the OOM killer, the memory peak of every
+  Bash call, learned per repository and command), admission (a Bash
   call learned as memory-hungry waits for memory before it runs),
   `orchestrator sessions` and `orchestrator peaks`.
 - `orchestrator admission` and `orchestrator machine`, which show the waiting
@@ -45,8 +46,9 @@ describes the `main` branch of <https://github.com/hvn-p/orchestrator>.
   included: without a running `watch`, they stop with an error.
 - The coordinator, a Claude Code session orchestrator starts with a role of
   its own: a setup conversation that writes the configuration
-  (`orchestrator setup`), runs `watch` starts for memory pressure and long
-  admission waits once the user agreed (`wake`), and an interactive
+  (`orchestrator setup`), runs `watch` starts for memory pressure, long
+  admission waits and kills a session cannot see once the user agreed
+  (`wake`), and an interactive
   coordinator (`orchestrator coordinator`). It reads the state, messages
   sessions, gives waiting calls priority and keeps a journal; it never
   stops, pauses, slows down or kills anything.
@@ -66,7 +68,8 @@ describes the `main` branch of <https://github.com/hvn-p/orchestrator>.
    shell Claude Code uses. Output, exit code and signals stay the command's.
 3. `orchestrator watch` measures the memory peak of each finished Bash call,
    learns it per repository and command, and appends events for memory
-   pressure and orphaned processes.
+   pressure (with the jobs using the most), orphaned processes, a job
+   stalling on memory, and a process killed for lack of memory.
 4. With a configuration, a Bash call whose commands were learned as heavy
    waits until free memory covers its expected peak plus a margin, for a
    bounded time, and says so in its output; past it, the call is refused,
@@ -90,8 +93,8 @@ describes the `main` branch of <https://github.com/hvn-p/orchestrator>.
    - an admission error: the call runs at once, unreserved, still measured
      and learned.
 6. With `"wake": true` in the configuration, `watch` queues each
-   `memory_pressure` event, and an `admission_wait` event for each call held
-   back `wait_secs`, and starts a coordinator run, one at a time, briefed
+   `memory_pressure` event, an `admission_wait` event for each call held
+   back `wait_secs`, and each `oom_kill` its session cannot see, and starts a coordinator run, one at a time, briefed
    with the state it gathers. The run may run orchestrator's read commands,
    message the sessions concerned, give waiting calls priority and note in
    its journal, nothing more. Every coordinator also reads the
