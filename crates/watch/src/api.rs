@@ -119,21 +119,23 @@ enum Head {
     None,
 }
 
-/// Reads a request's head, up to its blank line.
+/// Reads a request's head, up to its blank line. A `GET` has no body, so
+/// whatever a read brings past the head is ignored.
 fn read_head(stream: &mut UnixStream) -> Result<Head> {
     let mut head = Vec::new();
-    let mut byte = [0; 1];
-    while !head.ends_with(b"\r\n\r\n") {
+    let mut chunk = [0; 1024];
+    while !head.windows(4).any(|w| w == b"\r\n\r\n") {
         if head.len() >= HEAD_MAX {
             bail!("the request head exceeds {HEAD_MAX} bytes");
         }
-        if stream.read(&mut byte)? == 0 {
+        let read = stream.read(&mut chunk)?;
+        if read == 0 {
             if head.is_empty() {
                 return Ok(Head::None);
             }
             bail!("the request head ended early");
         }
-        head.push(byte[0]);
+        head.extend_from_slice(&chunk[..read]);
     }
     let mut headers = [httparse::EMPTY_HEADER; 32];
     let mut request = httparse::Request::new(&mut headers);
