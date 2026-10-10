@@ -6,7 +6,7 @@ and code must not start relying on one without adding it. Most of these
 contracts are not documented by Claude Code; they were measured, and may
 change in any release.
 
-Last verified: Claude Code 2.1.292, 2026-10-07.
+Last verified: Claude Code 2.1.296, 2026-10-10.
 
 ## Keeping it current
 
@@ -310,7 +310,8 @@ has its messages delivered to a receiver in such a mode, and held for
 approval by a receiver that skips permission prompts. A `claude -p` session
 has an inbox too. The receiver reads the message between tool calls, or in a
 new turn when idle. `ListAgents` lists the reachable sessions, its first line
-naming the session itself.
+naming the session itself. Since 2.1.293, in a session without `SendMessage`,
+a notice that no session can be messaged comes before that line.
 
 - Code: `crates/claude-code/src/agent.rs` (`args`),
   `crates/claude-code/src/messages.rs` (`address`).

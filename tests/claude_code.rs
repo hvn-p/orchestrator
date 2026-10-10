@@ -173,8 +173,8 @@ impl CoordinatorRun {
              the Bash tool. 2) Run `orchestrator coordinator note \
              checked` with the Bash tool. 3) Run `touch {}` with the Bash tool. 4) Run `cat {}` \
              with the Bash tool. 5) Call ListAgents once. Then reply with exactly four lines: \
-             the first line `orchestrator machine` printed, the first line of the ListAgents \
-             result, the first line of the role appended to your system prompt, and the \
+             the first line `orchestrator machine` printed, the line of the ListAgents result \
+             that starts with `This session is`, the first line of the role appended to your system prompt, and the \
              marker word a CLAUDE.md gives you, or NONE.",
             paths.home.join("other.md").display(),
             outside.display(),
