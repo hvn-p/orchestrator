@@ -4,6 +4,12 @@
 //! argument; a Bash call is a script that sources the session's shell
 //! snapshot, runs the command Claude wrote inside an `eval`, then records
 //! its working directory.
+//!
+//! Processes Claude Code starts without the prefix, such as its clipboard
+//! helpers, stay in `main/` and count with claude. Claude Code's own memory
+//! cap on tool commands (`CLAUDE_CODE_TOOL_MEMORY_LIMIT`) must stay off: it
+//! puts commands in a memory cgroup of its own, out of their job groups,
+//! and kills them past its limit.
 
 use brush_parser::ast::Command as ShellCommand;
 use brush_parser::ast::{CommandPrefixOrSuffixItem, Pipeline, Program, SimpleCommand};

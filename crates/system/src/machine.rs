@@ -4,10 +4,9 @@
 //! the groups below it, the orchestrator slice and its sessions included.
 
 use crate::cgroup;
-use serde::{Deserialize, Serialize};
-
 use crate::memory;
 use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
 use std::fmt::Write as _;
 use std::fs;
 use std::path::Path;

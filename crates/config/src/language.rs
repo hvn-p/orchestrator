@@ -3,6 +3,10 @@
 //! the locale, and the user's choice is kept in the configuration; every
 //! coordinator then writes its replies, journal notes and messages in it.
 //! What code writes, admission's notices among them, stays in English.
+//!
+//! The role and every prompt state the language: organization-level
+//! instructions reach a coordinator whatever its settings, and would
+//! otherwise choose it.
 
 use anyhow::{Result, ensure};
 

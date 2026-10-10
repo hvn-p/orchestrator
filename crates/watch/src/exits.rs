@@ -1,6 +1,10 @@
 //! Ends of Claude Code sessions, as the kernel reports them. inotify on Claude
 //! Code's sessions directory shows each new session; a pidfd then holds the
 //! session's claude process and becomes readable when that process exits.
+//!
+//! A pidfd per session reports only what matters, where the kernel process
+//! connector would report every process of the machine, thousands per
+//! second during a build.
 
 use claude_code::sessions::{self, ClaudeSession};
 use inotify::Inotify;

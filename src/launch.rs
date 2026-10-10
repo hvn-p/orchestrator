@@ -5,6 +5,17 @@
 //! session's command. Any failure on the way leaves the session
 //! unorchestrated, never prevents it: the command runs unchanged, after one
 //! warning.
+//!
+//! It asks over the user bus with `busctl`, which ships with systemd:
+//! `busctl` cannot use the manager's own socket
+//! (`$XDG_RUNTIME_DIR/systemd/private`), which rejects the bus's `Hello`.
+//!
+//! A scope granted past the bound comes too late: the session has started
+//! unorchestrated, and systemd still moves it into the scope, where it runs
+//! without `main/` nor the prefix. Background sessions run in the cgroup of
+//! whatever started Claude Code's supervisor (`claude daemon`): they are
+//! orchestrated only when Claude Code's `processWrapper` routes them through
+//! `orchestrator launch`.
 
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use claude_code::launch::PREFIX_VAR;

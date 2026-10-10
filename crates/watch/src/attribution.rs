@@ -1,5 +1,13 @@
 //! Which Claude session each process belongs to, and which processes outlived
 //! theirs. Pure: everything comes in as data.
+//!
+//! A process belongs to the live session whose claude process it descends
+//! from, else to the one its session variable names
+//! (`claude_code::sessions::ID_VAR`), whether the session was started
+//! through `launch` or not. Ancestry comes first: the variable is inherited,
+//! but keeps the old id after `/clear` or a resume.
+//! A job needs none of this: its group lies in its session's scope, so a
+//! measurement or a waiting call names its session by it.
 
 use claude_code::messages;
 use claude_code::sessions::ClaudeSession;

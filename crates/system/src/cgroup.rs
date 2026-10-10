@@ -3,6 +3,11 @@
 //! leaf, and every command Claude Code starts runs in a `job-*` leaf of its
 //! own. Paths are relative to the cgroup root, which tests point at a
 //! temporary directory.
+//!
+//! Outside a session's groups, and so neither measured nor held back: Docker
+//! containers, anything started through `systemd-run --user`, services
+//! activated over D-Bus, an `xdg-open` handed to an already running browser.
+//! A shared service counts for the session that started it.
 
 use std::fs;
 use std::io;

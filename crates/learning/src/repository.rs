@@ -3,6 +3,9 @@
 //! key. Outside any repository, the directory itself is the key. Found by
 //! walking up the file system, without starting git: the prefix will look a
 //! command up before every Bash call.
+//!
+//! The packages of a monorepo share that key: `pnpm test` run in two of them
+//! is one command, with one expected peak.
 
 use std::fs;
 use std::path::{Component, Path, PathBuf};

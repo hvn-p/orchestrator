@@ -1,6 +1,5 @@
 //! The coordinator: a fresh Claude Code session started for each batch of
-//! events that need judgment, never resumed, never two at a time. See
-//! docs/design.md, "The coordinator".
+//! events that need judgment, never resumed, never two at a time.
 //!
 //! Its runtime state lives in `<runtime>/coordinator/`. `holder.json` names
 //! the coordinator running now by its pid and start time: `watch`'s runs,
@@ -10,6 +9,30 @@
 //! Both change only under the file lock `lock`. What the coordinator
 //! remembers between runs lives in its own directory under the state
 //! directory, its working directory: its journal.
+//!
+//! What a coordinator must remember lives in files, rather than in a
+//! conversation resumed at each event, whose context would grow with every
+//! event and which a user reopening it would race with `watch`. A permanent
+//! background session (`claude --bg`) works, but holds 0.5 to 0.7 GB of
+//! memory all the time, on a tool meant to spare it. A coordinator
+//! authorising every command would be a bottleneck, cost tokens per
+//! request, and hold everything back while busy. It talks to sessions
+//! through Claude Code's messages between sessions, which are enough: no
+//! transport of its own, and no agent team, whose members the lead starts
+//! rather than the user opening them in their own worktrees.
+//!
+//! The setup conversation writes the configuration, which by hand is
+//! tedious and needs exact values: a coordinator explains, takes answers in
+//! plain words and proposes values the machine supports. `orchestrator
+//! coordinator` opens an interactive coordinator, which holds the
+//! coordinator and receives the events itself, through `orchestrator
+//! coordinator next` run in the background, for as long as it stays open.
+//!
+//! A run ends with its reply, so a session cannot answer it: the next run
+//! checks the effect in the state instead, and only an interactive
+//! coordinator gets answers. What a coordinator may run rests on Claude
+//! Code's permission rules, not on a sandbox, and organization-level
+//! instructions reach it too.
 
 pub mod instructions;
 pub mod journal;

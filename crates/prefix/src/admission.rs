@@ -1,5 +1,8 @@
-//! Admission: whether a Bash call starts at once or waits for memory. See
-//! docs/design.md, "Admission".
+//! Admission: whether a Bash call starts at once or waits for memory. When
+//! the prefix decides, it has only the command line, which says nothing
+//! about memory: `pnpm typecheck` itself uses little, the `tsc` processes it
+//! starts use gigabytes. Admission therefore learns from what it measures,
+//! with no list of commands to maintain.
 //!
 //! The prefix looks the call's commands up in the learned peaks. The call's
 //! expected peak is the largest of its commands', never their sum: a call has
@@ -31,6 +34,21 @@
 //! `orchestrator admission` can show it and `watch` can wake the coordinator
 //! when it waits long. Reading the waiting calls and the reservations takes
 //! no lock: what a reader shows may be a check behind.
+//!
+//! There is no fixed number of slots: two heavy calls run together when
+//! memory holds both. systemd's own slots (`ConcurrencySoftMax`) work on
+//! units, and moving a job into one would take it out of its session's
+//! group. The margin has to exceed how much `MemAvailable` drifts while
+//! other sessions work: a few hundred MB within seconds.
+//!
+//! Waiting calls have no order: the first to check once memory frees up
+//! runs. The wait counts toward the Bash call's timeout, which the prefix
+//! cannot see, so only the longest wait bounds it. A heavy call that leaves
+//! a process running, such as a server started in the background, keeps
+//! its reservation, net of what its group uses, until that process ends.
+//! What admission cannot foresee (a first run, a form of the command it
+//! does not recognise) starts at once; if memory then runs short, `watch`
+//! reports the pressure.
 
 use anyhow::{Context, Result, bail};
 use config::Admission;

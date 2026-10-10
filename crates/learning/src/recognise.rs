@@ -1,12 +1,15 @@
 //! Recognising a command. Claude writes the same command in many forms; the
 //! peaks are learned, and looked up, per command in one form, the way Claude
-//! Code matches its Bash permission rules (see docs/design.md, "Recognising a
-//! command").
+//! Code matches its Bash permission rules.
 //!
 //! A call is split into simple commands. Wrappers, leading environment
 //! assignments, redirections and `cd` are removed, `cd` still deciding the
 //! directory of the commands after it. What remains is kept word for word,
-//! unquoted, expansions as written. The bodies of compound commands (brace
+//! unquoted, expansions as written: `cd app && timeout 300 pnpm exec vitest
+//! run X 2>&1 | grep FAIL` yields `pnpm exec vitest run X` and `grep FAIL`.
+//! Unlike a permission rule, no wildcard widens the match: `vitest run` (the
+//! whole suite) and `vitest run one.test.ts` stay distinct, since they do
+//! not weigh the same. The bodies of compound commands (brace
 //! groups, subshells, loops, conditionals) are commands of the call too; a
 //! subshell's `cd` stays inside it. A command substitution stays part of the
 //! word that holds it. A here-document or here-string is the command's input:
@@ -15,6 +18,11 @@
 //!
 //! Shell is parsed with brush-parser. Anything it cannot parse yields nothing:
 //! the call teaches nothing, and an unknown command starts at once.
+//! brush-parser was chosen over tree-sitter-bash, which needs a C compiler,
+//! ran at half the speed and leaves unquoting to the caller; yash-syntax,
+//! which parses POSIX shell only (it rejects `[[ ]]`) through an asynchronous
+//! API; conch-parser, with no release since 2019; and a parser of our own, a
+//! shell grammar to maintain.
 
 use crate::repository;
 use brush_parser::ast::{
@@ -307,7 +315,7 @@ mod tests {
     }
 
     #[test]
-    fn the_design_example() {
+    fn the_documented_example() {
         let found = commands(
             "cd app && timeout 300 pnpm exec vitest run X 2>&1 | grep FAIL",
             Path::new("/repo"),
