@@ -325,10 +325,11 @@ is denied without asking; with `default`, it is asked.
 denied outside the working directories.
 
 - Code: `crates/claude-code/src/agent.rs` (`args`).
-- If it changes: a coordinator cannot read the state or note in its
-  journal, or, worse, may run what it was not given.
-- Verified: integration test (`orchestrator machine` and the journal note
-  run; a `touch` and a read outside, by `cat` or by Read, are denied).
+- If it changes: a coordinator cannot read the state, note in its journal
+  or give waiting calls priority, or, worse, may run what it was not given.
+- Verified: integration test (`orchestrator machine`, the journal note, and
+  `orchestrator admission priority` with a job then without one run; a
+  `touch` and a read outside, by `cat` or by Read, are denied).
   Measured on 2.1.291: in
   the setup conversation, the `Edit(//<path>)` rule on a file let the Write
   tool create it without asking; in `default` mode, an edit in an
