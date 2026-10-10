@@ -96,9 +96,8 @@ because `launch` set `CLAUDE_CODE_SHELL_PREFIX`.
 - Outside an orchestrated session, or on any error, it runs the command
   unchanged. Its own failures go to `prefix.log` in the runtime directory,
   not to the terminal: its standard error is the command's. Only admission
-  notices are written there, on purpose. A failure is not logged at all while
-  the runtime directory does not exist: `watch` creates it when it starts, as
-  does an orchestrated Bash call when it writes its job record.
+  notices are written there, on purpose. It creates the runtime directory
+  when it does not exist yet; a failure it cannot write there is dropped.
 - When bash itself cannot be started, it prints
   `orchestrator-prefix: running bash: <error>` and exits with status 127.
 - Called with other than one argument, it logs
