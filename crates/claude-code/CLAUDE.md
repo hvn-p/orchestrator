@@ -9,7 +9,8 @@ a message), never a Claude Code format directly.
   contract first. The document's "Keeping it current" says what the tests
   and the CI guard check.
 - A change to how orchestrator uses Claude Code is checked against the
-  installed version with `cargo test --test claude_code -- --ignored`, by
-  hand: it starts a real session and spends tokens.
+  installed version with `cargo test --test claude_code -- --ignored`, run
+  by hand since it starts a real session; the root `CLAUDE.md` says when it
+  is due.
 - After a Claude Code update, the project skill `claude-code-compatibility`
   runs that check and updates the verified version.
