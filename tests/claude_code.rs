@@ -28,6 +28,7 @@ use config::Coordinator;
 use coordinator::{self, run};
 use learning::recognise;
 use prefix::JobRecord;
+use prefix::admission::{self, Waiting};
 use serde_json::Value;
 use std::ffi::OsString;
 use std::fs::{self, File};
@@ -44,6 +45,9 @@ const STDERR_LINE: &str = "orchestrator-probe-stderr-42";
 /// The marker word of a CLAUDE.md above the coordinator's directory, which
 /// must not reach it.
 const ANCESTOR_MARKER: &str = "ANCESTOR-MARKER-7";
+/// A job the coordinator gives priority to: none waits, so the command
+/// refuses it, but runs.
+const PRIORITY_JOB: &str = "job-bash-1-1";
 
 #[test]
 #[ignore = "manual: starts a real Claude Code session; run with --ignored"]
@@ -141,6 +145,8 @@ struct CoordinatorRun {
     /// Deleted when the run is dropped.
     _tmp: tempfile::TempDir,
     paths: coordinator::Paths,
+    /// Admission's runtime directory, where giving priority writes.
+    admission: PathBuf,
     outside: PathBuf,
     /// What it printed: one JSON object.
     result: Value,
@@ -162,25 +168,13 @@ impl CoordinatorRun {
         run::write_role(&paths, &run::Mode::Batch(&[])).expect("writing the role");
         let outside = base.join("outside.txt");
         fs::write(&outside, "outside").expect("writing a file outside");
+        record_waiting(&base.join("run/orchestrator"));
         fs::write(
             base.join("state/CLAUDE.md"),
             format!("The marker word is {ANCESTOR_MARKER}.\n"),
         )
         .expect("writing a CLAUDE.md above the coordinator's directory");
-        let prompt = format!(
-            "This is an automated compatibility test of orchestrator, not an event: message no \
-             one. Do these steps in order, one tool call each, and go on after a denial; make \
-             every call, even one you expect to be denied. 1) Run `orchestrator machine` with \
-             the Bash tool. 2) Run `orchestrator coordinator note \
-             checked` with the Bash tool. 3) Run `touch {}` with the Bash tool. 4) Run `cat {}` \
-             with the Bash tool. 5) Call {list} once. Then reply with exactly four lines: \
-             the first line `orchestrator machine` printed, the line of the {list} result \
-             that starts with `This session is`, the first line of the role appended to your system prompt, and the \
-             marker word a CLAUDE.md gives you, or NONE.",
-            paths.home.join("other.md").display(),
-            outside.display(),
-            list = agent::LIST_TOOL,
-        );
+        let prompt = coordinator_prompt(&paths.home.join("other.md"), &outside);
         let bin = Path::new(env!("CARGO_BIN_EXE_orchestrator"))
             .parent()
             .expect("the binary's directory");
@@ -246,6 +240,7 @@ impl CoordinatorRun {
             version,
             _tmp: tmp,
             paths,
+            admission: base.join("run/orchestrator"),
             outside,
             result,
         }
@@ -268,6 +263,52 @@ impl CoordinatorRun {
             })
             .unwrap_or_default()
     }
+}
+
+/// The test prompt: commands it may run, `other` to create and `outside` to
+/// read, which it may not.
+fn coordinator_prompt(other: &Path, outside: &Path) -> String {
+    format!(
+        "This is an automated compatibility test of orchestrator, not an event: message no \
+         one. Do these steps in order, one tool call each, and go on after a denial or an \
+         error; make every call, even one you expect to be denied. 1) Run `orchestrator \
+         machine` with the Bash tool. 2) Run `orchestrator coordinator note \
+         checked` with the Bash tool. 3) Run `orchestrator admission priority {PRIORITY_JOB}` \
+         with the Bash tool. 4) Run `orchestrator admission priority` with the Bash tool. \
+         5) Run `touch {}` with the Bash tool. 6) Run `cat {}` \
+         with the Bash tool. 7) Call {list} once. Then reply with exactly five lines: \
+         the first line `orchestrator machine` printed, the first line step 3 printed, the \
+         line of the {list} result \
+         that starts with `This session is`, the first line of the role appended to your system prompt, and the \
+         marker word a CLAUDE.md gives you, or NONE.",
+        other.display(),
+        outside.display(),
+        list = agent::LIST_TOOL,
+    )
+}
+
+/// Records `PRIORITY_JOB` as waiting for memory in `runtime`, in this test's
+/// own cgroup, which stays populated while the coordinator runs: a call to
+/// give priority to.
+fn record_waiting(runtime: &Path) {
+    let own = fs::read_to_string("/proc/self/cgroup").expect("reading the test's cgroup");
+    let waiting = Waiting {
+        job: PRIORITY_JOB.into(),
+        group: cgroup::own_path(&own)
+            .expect("the test's cgroup v2 path")
+            .into(),
+        label: "make".into(),
+        peak_mb: 1,
+        need_mb: 1,
+        since_ms: 1,
+    };
+    let dir = admission::waiting_dir(runtime);
+    fs::create_dir_all(&dir).expect("creating the waiting calls' directory");
+    fs::write(
+        dir.join(format!("{PRIORITY_JOB}.json")),
+        serde_json::to_vec(&waiting).expect("serializing a waiting call"),
+    )
+    .expect("recording a waiting call");
 }
 
 /// An `orchestrator watch` serving a test's directories, stopped when
@@ -332,8 +373,9 @@ fn coordinator_session(c: &CoordinatorRun) -> Check {
     Ok(())
 }
 
-/// Its allowed commands ran, the journal note included; a command it was
-/// not given and a read outside its directories were denied without asking.
+/// Its allowed commands ran, the journal note and giving priority included,
+/// with and without a job; a command it was not given and a read outside
+/// its directories were denied without asking.
 fn coordinator_permissions(c: &CoordinatorRun) -> Check {
     if !c.reply().contains("Memory:") {
         return Err("`orchestrator machine` did not run, or not this orchestrator".into());
@@ -341,6 +383,21 @@ fn coordinator_permissions(c: &CoordinatorRun) -> Check {
     let journal = fs::read_to_string(c.paths.journal()).unwrap_or_default();
     if !journal.trim_end().ends_with("  checked") {
         return Err(format!("the journal holds {journal:?}, not the note"));
+    }
+    // Given priority, the waiting call is listed; taken back from all after,
+    // the list is empty.
+    if !c.reply().contains("Priority, in this order") {
+        return Err(format!(
+            "`orchestrator admission priority {PRIORITY_JOB}` did not run, or Haiku skipped it (run again); denials: {}",
+            c.result["permission_denials"]
+        ));
+    }
+    let priority = fs::read_to_string(c.admission.join("priority.json")).unwrap_or_default();
+    if priority != "[]" {
+        return Err(format!(
+            "`orchestrator admission priority` did not run, or Haiku skipped it (run again): the list holds {priority:?}; denials: {}",
+            c.result["permission_denials"]
+        ));
     }
     let other = c.paths.home.join("other.md");
     if other.exists() {

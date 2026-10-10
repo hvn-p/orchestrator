@@ -22,6 +22,12 @@ of `src/main.rs` describes the components and the principles: start there.
   package holds the two binaries, `orchestrator` and `orchestrator-prefix`.
   Done means `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`
   and `cargo test` all pass; run from the root, they cover every crate.
+  A change to what a coordinator or a session asks of Claude Code (the
+  commands a coordinator may run, its tools, prompt or arguments, or
+  anything `crates/claude-code/claude-code-dependency.md` lists) is done
+  once `cargo test --test claude_code -- --ignored` passes and covers it;
+  extend the test when it does not. It spends tokens: that is its cost, not
+  a reason to skip it.
 - Code, comments and docs are in English; the repository is public, so nothing
   specific to one person's machine, accounts or setup goes in.
 - Everything orchestrator relies on in Claude Code lives in

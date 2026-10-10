@@ -10,7 +10,7 @@ description: >-
   line of `events.jsonl` or `measurements.jsonl`, an `admission_wait` event,
   or an admission notice ("orchestrator: waiting for memory before running
   …") means; what `orchestrator peaks`, `sessions`, `admission` or `machine`
-  shows; "orchestrator watch is not running"; the local API and its event
+  shows; the order of waiting calls and `orchestrator admission priority`; "orchestrator watch is not running"; the local API and its event
   stream; why a session or a command is not orchestrated, nothing waits,
   nothing is learned or no coordinator starts; whether orchestrator works
   with the installed Claude Code. Also on "how do I set up orchestrator",
@@ -37,7 +37,9 @@ describes the `main` branch of <https://github.com/hvn-p/orchestrator>.
   call learned as memory-hungry waits for memory before it runs),
   `orchestrator sessions` and `orchestrator peaks`.
 - `orchestrator admission` and `orchestrator machine`, which show the waiting
-  calls and reservations, and the machine's facts.
+  calls, in the order memory goes to them, and reservations, and the
+  machine's facts; `orchestrator admission priority`, which gives waiting
+  calls priority.
 - A local API: `watch` serves the state and pushes the events, over HTTP on
   a Unix socket. Every read of the state goes through it, the commands'
   included: without a running `watch`, they stop with an error.
@@ -46,8 +48,8 @@ describes the `main` branch of <https://github.com/hvn-p/orchestrator>.
   (`orchestrator setup`), runs `watch` starts for memory pressure and long
   admission waits once the user agreed (`wake`), and an interactive
   coordinator (`orchestrator coordinator`). It reads the state, messages
-  sessions and keeps a journal; it never stops, pauses, slows down or kills
-  anything.
+  sessions, gives waiting calls priority and keeps a journal; it never
+  stops, pauses, slows down or kills anything.
 - Anything this guide does not describe, orchestrator does not do. Say so
   plainly; never infer a feature from elsewhere.
 
@@ -68,8 +70,10 @@ describes the `main` branch of <https://github.com/hvn-p/orchestrator>.
 4. With a configuration, a Bash call whose commands were learned as heavy
    waits until free memory covers its expected peak plus a margin, for a
    bounded time, and says so in its output; past it, the call is refused,
-   and its output says how to wait longer in the background. Hooks, the
-   status line and MCP servers never wait. Admission reads the peaks already
+   and its output says how to wait longer in the background. Waiting calls
+   go by arrival, and one that fits passes one that does not, unless that
+   one was given priority. Hooks, the status line and MCP servers never
+   wait. Admission reads the peaks already
    learned, so it works
    while `watch` is stopped, and it counts the heavy calls of all the user's
    orchestrated sessions together.
@@ -89,7 +93,8 @@ describes the `main` branch of <https://github.com/hvn-p/orchestrator>.
    `memory_pressure` event, and an `admission_wait` event for each call held
    back `wait_secs`, and starts a coordinator run, one at a time, briefed
    with the state it gathers. The run may run orchestrator's read commands,
-   message the sessions concerned and note in its journal, nothing more. Every coordinator also reads the
+   message the sessions concerned, give waiting calls priority and note in
+   its journal, nothing more. Every coordinator also reads the
    user's `<config>/CLAUDE.md`, next to `config.json`
    (`$XDG_CONFIG_HOME/orchestrator`, else `~/.config/orchestrator`).
 

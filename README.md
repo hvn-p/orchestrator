@@ -19,8 +19,9 @@ Early. What exists:
   sub-group of its own.
 - Admission: once a configuration exists, a Bash call whose commands were
   learned as memory-hungry waits, before it runs, until free memory covers its
-  expected peak, for a bounded time; past it, the call is refused. Every other
-  command starts at once.
+  expected peak, for a bounded time; past it, the call is refused. Waiting
+  calls go by arrival, and one that fits passes one that does not, unless
+  that one was given priority. Every other command starts at once.
 - `orchestrator sessions` prints the memory used by each Claude Code session
   (with its largest process) and the processes left behind by sessions that no
   longer exist.
@@ -32,13 +33,13 @@ Early. What exists:
 - `orchestrator peaks` prints the peaks learned so far.
 - A first coordinator, once enabled: a Claude Code session that `watch`
   starts when memory runs short or admission holds a call back long. It asks
-  sessions to free memory, or tells them why a call waits; it pulls no
-  lever. `orchestrator setup` is a conversation with it that ends with the
-  configuration written.
+  sessions to free memory, tells them why a call waits, and may give
+  waiting calls priority; it pulls no other lever. `orchestrator setup` is a
+  conversation with it that ends with the configuration written.
 
 The documentation at the top of [src/main.rs](src/main.rs), and of each
 crate and module, describes what exists and why. Planned work, such as slowing down or
-pausing jobs and ordering waiting calls, is in the
+pausing jobs, is in the
 [issues](https://github.com/hvn-p/orchestrator/issues).
 
 ## Requirements
@@ -102,9 +103,10 @@ orchestrator admission
 orchestrator machine
 ```
 
-`admission` prints the Bash calls waiting for memory and the memory reserved
-by heavy calls running; `machine` prints memory, swap, CPUs and what the
-systemd user manager delegates.
+`admission` prints the Bash calls waiting for memory, in the order memory
+goes to them, and the memory reserved by heavy calls running; `admission
+priority <job>...` gives waiting calls priority, in that order. `machine`
+prints memory, swap, CPUs and what the systemd user manager delegates.
 
 Learned peaks live in `$XDG_STATE_HOME/orchestrator/peaks/` (by default
 `~/.local/state/orchestrator/peaks/`) unless `watch --state-dir` says

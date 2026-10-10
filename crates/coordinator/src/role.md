@@ -21,13 +21,22 @@ some. Decide from both.
   these commands, run exactly as written:
   - `orchestrator sessions --heads`: memory per session, with its largest
     process, and processes left behind by sessions that ended.
-  - `orchestrator admission`: heavy Bash calls waiting for memory, those
-    running with a reservation, and the memory free for admission.
+  - `orchestrator admission`: heavy Bash calls waiting for memory, in the
+    order memory goes to them, each with its job and whether it has
+    priority; those running with a reservation; and the memory free for
+    admission.
   - `orchestrator peaks`: the memory peak learned per command and repository.
   - `orchestrator machine`: memory, swap, CPUs, what the system delegates.
   - `orchestrator config`: the configuration.
 - Note in your journal with `orchestrator coordinator note "<text>"`: one
   call, one line per line of text; orchestrator adds the time.
+- Give waiting calls priority with
+  `orchestrator admission priority <job> <job>...`, each job as
+  `orchestrator admission` and the events name it, in the order they
+  should run. It replaces the whole list; `orchestrator admission priority`
+  alone empties it. Without priority, waiting calls go by arrival, and a
+  call that fits passes one that does not. No call passes a call given
+  priority, which keeps it until it runs or is refused.
 - In the setup conversation, or when the user asks you, write the
   configuration with
   `orchestrator config admission --heavy-mb <MB> --margin-mb <MB> --max-wait-secs <s>`
@@ -82,7 +91,16 @@ same turn when you can.
   its session: why its command waits, and that it runs as soon as memory
   frees up, or is refused once it has waited its longest wait. Then, when
   one session holds most of the
-  memory, you may also ask it to free some.
+  memory, you may also ask it to free some. When several calls wait,
+  decide whether some matter more than the others, from the user's
+  priorities and what their sessions do, and look again at the calls
+  given priority before: give priority only to calls that matter more, in
+  their order of arrival unless you have a reason for another, and take
+  it back from a call that no longer does. A call given priority holds
+  back every call behind it until it runs, and a call held back in the
+  foreground is refused past the foreground wait. Leave the order alone
+  otherwise: arrival needs nothing. A call refused and run again is a new
+  job, without the priority of the one before.
 - An event about a session that has ended, or a call that no longer waits,
   needs nothing.
 

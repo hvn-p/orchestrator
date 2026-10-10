@@ -200,10 +200,18 @@ anything:
   the runtime directory. Admission reads the peaks already learned: it works
   while `watch` is stopped.
 - There are no fixed slots: two heavy calls run together when memory covers
-  both. Waiting calls have no order: the first to check once memory frees up
-  runs.
+  both.
+- Waiting calls are served in order: first the calls given priority with
+  `orchestrator admission priority` (commands.md), in the order given, then
+  the others by arrival. Each check hands free memory out in that order: a
+  call ahead that fits takes its expected peak, and one that does not fit is
+  passed, unless it was given priority. A call runs when what the calls
+  ahead leave covers its need. So a call that fits never waits for a larger
+  one, except one given priority, which no call passes until it runs or is
+  refused.
 - A waiting call checks again as soon as a job holding a reservation changes,
-  and every second otherwise. After `max_wait_secs` it is refused: the
+  and every second otherwise, which is when it sees a change of the calls
+  ahead of it. After `max_wait_secs` it is refused: the
   command does not run, reserves nothing, and the call exits with code 75
   (`EX_TEMPFAIL`), its notice saying how to wait longer (events.md).
 - A call whose command assigns `ORCHESTRATOR_BACKGROUND`, whatever the value,
