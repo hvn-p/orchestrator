@@ -168,7 +168,8 @@ pub struct AdmissionReport {
     /// What running heavy calls still hold of it.
     pub held_mb: u64,
     pub free_mb: u64,
-    /// Oldest first.
+    /// In the order memory goes to them: those given priority first, in
+    /// their order, then by arrival.
     pub waiting: Vec<WaitingCall>,
     pub reserved: Vec<ReservedCall>,
 }
@@ -183,6 +184,10 @@ pub enum Thresholds {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WaitingCall {
+    /// Its job's name, which `orchestrator admission priority` takes.
+    pub job: String,
+    /// It was given priority: no call passes it.
+    pub priority: bool,
     /// Its session, by what messages address it by and the start of its id,
     /// else by its scope.
     pub session: String,
@@ -229,7 +234,10 @@ pub fn admission(
         waiting: snap
             .waiting
             .iter()
-            .map(|w| WaitingCall {
+            .enumerate()
+            .map(|(i, w)| WaitingCall {
+                job: w.job.clone(),
+                priority: i < snap.priority,
                 session: label(&w.group),
                 waited_secs: now.saturating_sub(w.since_ms) / 1000,
                 peak_mb: w.peak_mb,
@@ -267,17 +275,23 @@ pub fn admission_text(r: &AdmissionReport) -> String {
     if r.waiting.is_empty() {
         out.push_str("No call waits for memory.\n");
     } else {
-        out.push_str("WAITING FOR MEMORY\n");
+        out.push_str("WAITING FOR MEMORY, in the order memory goes to them: those given priority, then by arrival. A call that fits passes one that does not, unless that one has priority.\n");
         let _ = writeln!(
             out,
-            "  {:<40} {:>7} {:>8} {:>9}  COMMAND",
-            "SESSION", "WAITED", "PEAK MB", "NEEDS MB"
+            "  {:<30} {:<8} {:<40} {:>7} {:>8} {:>9}  COMMAND",
+            "JOB", "PRIORITY", "SESSION", "WAITED", "PEAK MB", "NEEDS MB"
         );
         for w in &r.waiting {
             let _ = writeln!(
                 out,
-                "  {:<40} {:>5} s {:>8} {:>9}  {}",
-                w.session, w.waited_secs, w.peak_mb, w.need_mb, w.command
+                "  {:<30} {:<8} {:<40} {:>5} s {:>8} {:>9}  {}",
+                w.job,
+                if w.priority { "yes" } else { "no" },
+                w.session,
+                w.waited_secs,
+                w.peak_mb,
+                w.need_mb,
+                w.command
             );
         }
     }
@@ -475,5 +489,53 @@ impl State for Local {
 
     fn config(&self) -> Result<ConfigReport> {
         config(&self.0.config)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn waiting(job: &str, priority: bool, command: &str) -> WaitingCall {
+        WaitingCall {
+            job: job.into(),
+            priority,
+            session: "main-75 (3314e78f)".into(),
+            waited_secs: 12,
+            peak_mb: 3000,
+            need_mb: 3500,
+            command: command.into(),
+        }
+    }
+
+    #[test]
+    fn waiting_calls_show_their_job_and_priority_in_order() {
+        let r = AdmissionReport {
+            thresholds: Thresholds::Off("no admission section".into()),
+            available_mb: 4000,
+            held_mb: 0,
+            free_mb: 4000,
+            waiting: vec![
+                waiting("job-bash-2-1", true, "cargo build"),
+                waiting("job-bash-1-1", false, "pnpm typecheck"),
+            ],
+            reserved: Vec::new(),
+        };
+        let text = admission_text(&r);
+        let lines: Vec<&str> = text.lines().collect();
+        assert!(
+            lines[3].starts_with("WAITING FOR MEMORY, in the order memory goes to them"),
+            "{text}"
+        );
+        assert!(lines[4].starts_with("  JOB "), "{text}");
+        assert!(
+            lines[5].starts_with("  job-bash-2-1                   yes      main-75"),
+            "{text}"
+        );
+        assert!(lines[5].ends_with("  cargo build"), "{text}");
+        assert!(
+            lines[6].starts_with("  job-bash-1-1                   no       main-75"),
+            "{text}"
+        );
     }
 }

@@ -123,16 +123,26 @@ orchestrator: running `pnpm typecheck` after waiting 12.4 s for memory.
   `this command` when it has no label.
 - "net of … already running" appears only when running heavy calls hold
   reservations.
+- When calls waiting ahead of it take part of the free memory first, the
+  sentence goes on with `; <n> MB of them go first to <k> calls waiting
+  ahead of it`; when one of them was given priority and does not fit, with
+  `; a call given priority waits ahead of it, and no call passes it`. A call
+  may then wait while more memory is free than it needs (configuration.md,
+  "Admitting").
 - A wait of whole minutes is shown in minutes, any other in seconds.
 
 When the call runs, its own output and exit code follow, unchanged. When it
-has waited `max_wait_secs` and memory is still short, it is refused: the
+has waited `max_wait_secs` and memory left for it is still short, it is
+refused: the
 command does not run, the call exits with code 75, and the second line reads
 instead:
 
 ```
 orchestrator: refused `pnpm typecheck` after 1 min: 3900 MB are free and it needs 4258 MB. To let it wait up to 30 min, run it in the background with ORCHESTRATOR_BACKGROUND=wait-for-memory before the command.
 ```
+
+When calls ahead held it back, the same clause about them follows the memory
+figures.
 
 A call whose command assigns `ORCHESTRATOR_BACKGROUND`, whatever the value,
 waits `max_background_wait_secs` instead; its first line gives that wait, and

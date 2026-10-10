@@ -275,18 +275,21 @@ configuration.md, "How admission decides".
 
 ```sh
 orchestrator admission
+orchestrator admission priority [<job>...]
 ```
 
 Prints the admission thresholds, the memory free for admission, the Bash
-calls waiting for memory and the heavy calls running with a reservation:
+calls waiting for memory, in the order memory goes to them, and the heavy
+calls running with a reservation:
 
 ```
 Admission: a call expected to peak at 1024 MB or more waits until free memory covers its peak plus 2048 MB, 60 s at most, 1800 s in the background; then it is refused.
 Available memory: 5200 MB; running heavy calls still hold 1800 MB of it: 3400 MB free for admission.
 
-WAITING FOR MEMORY
-  SESSION                                   WAITED  PEAK MB  NEEDS MB  COMMAND
-  api refactor (6f1c2d9e)                     14 s     2210      4258  pnpm typecheck
+WAITING FOR MEMORY, in the order memory goes to them: those given priority, then by arrival. A call that fits passes one that does not, unless that one has priority.
+  JOB                            PRIORITY SESSION                                   WAITED  PEAK MB  NEEDS MB  COMMAND
+  job-bash-41390-1791356880123   yes      api refactor (6f1c2d9e)                     14 s     2210      4258  pnpm typecheck
+  job-bash-41522-1791356886410   no       docs (0a9b8c7d)                              8 s      406      2454  pnpm lint
 
 RESERVED BY RUNNING HEAVY CALLS
   SESSION                                  HOLDS MB  PEAK MB  USES MB  COMMAND
@@ -302,10 +305,34 @@ RESERVED BY RUNNING HEAVY CALLS
   `USES MB`, what the job group uses now (`?` without a memory controller).
 - A waiting call is the one the prefix records while it waits. Reading takes
   no lock: what it shows may be a check behind.
+- `JOB` names the call for `admission priority`; `PRIORITY` says whether it
+  was given priority. How the order works: configuration.md, "Admitting".
 
 It shows what `watch` reads in its runtime directory and configuration, and
 exits with `Error: …` when no `watch` answers or `watch` cannot read
 `/proc/meminfo`.
+
+`orchestrator admission priority <job>...` gives the waiting calls named by
+their jobs priority, in that order, in place of the calls that had it; with
+no job, no call has priority. No call passes a call given priority, which
+keeps it until it runs or is refused. A job named twice keeps its first
+place. It prints the result:
+
+```
+Priority, in this order; no call passes these, and the others follow by arrival:
+  1. job-bash-41390-1791356880123 `pnpm typecheck`
+```
+
+or `No call has priority: waiting calls go by arrival.` A job that does not
+wait for memory changes nothing, and the command exits with code 1:
+
+```
+Error: job-bash-41390-1791356880123 does not wait for memory: `orchestrator admission` lists the calls that do
+```
+
+It works without a running `watch`, from the runtime directory, and waiting
+calls take the change into account within a second. A coordinator may run
+it without asking (coordinator.md).
 
 ## orchestrator machine
 

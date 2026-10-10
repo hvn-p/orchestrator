@@ -2,7 +2,8 @@
 
 A coordinator is a Claude Code session that orchestrator starts, with a role
 of its own, for what needs judgment. It reads the state, messages sessions,
-notes what it did in a journal and, during setup or when the user asks,
+gives waiting calls priority, notes what it did in a journal and, during
+setup or when the user asks,
 writes the configuration. It never stops, pauses, slows down or kills
 anything, and never refuses work itself: it asks, and each session decides.
 
@@ -45,7 +46,7 @@ session.
 | | Event run | Setup | Interactive |
 | :- | :- | :- | :- |
 | Claude Code tools | Bash, Read, SendMessage, ListAgents | Bash, Read, Edit, Write | Bash, Read, Edit, Write, SendMessage, ListAgents |
-| Without asking | the read commands, `coordinator note`, messages | the read commands, `coordinator note`, `config admission`, `config coordinator`, editing `<config>/CLAUDE.md` | the read commands, `coordinator note`, `coordinator next`, messages |
+| Without asking | the read commands, `coordinator note`, `admission priority`, messages | the read commands, `coordinator note`, `admission priority`, `config admission`, `config coordinator`, editing `<config>/CLAUDE.md` | the read commands, `coordinator note`, `admission priority`, `coordinator next`, messages |
 | Anything else | denied | asked of the user | asked of the user |
 | Model | `coordinator.model` | Claude Code's default | Claude Code's default |
 | `max_minutes`, `max_budget_usd` | apply | do not apply | do not apply |
@@ -53,7 +54,7 @@ session.
 The read commands are `orchestrator sessions --heads`, `orchestrator
 admission`, `orchestrator peaks`, `orchestrator machine` and `orchestrator
 config`, allowed only exactly as written; `orchestrator coordinator note …`
-takes any text. They are the `orchestrator` that started the coordinator,
+takes any text, and `orchestrator admission priority` any jobs, or none. They are the `orchestrator` that started the coordinator,
 its directory first on the coordinator's `PATH`.
 
 An event run is `claude -p` in Claude Code's `dontAsk` mode: what it was not
@@ -199,6 +200,20 @@ Delivery is Claude Code's:
   delivers, whatever its mode; `hold` keeps the message undelivered; `refuse`
   drops it. A `--bare` session has no inbox at all.
 
+### Priority to waiting calls
+
+A run may give waiting calls priority with `orchestrator admission
+priority` (commands.md), which no call then passes until it runs or is
+refused (configuration.md, "Admitting"). Its role tells it: when several
+calls wait, decide from the user's instructions and what the sessions do
+whether some matter more than the others; give priority only to those, in
+their order of arrival unless it has a reason for another; look again at the
+calls given priority before, at each run, and take it back from one that no
+longer matters more; otherwise leave the order alone. A call given priority
+holds back every call behind it, and a call held back in the foreground is
+refused past `max_wait_secs`. A call refused and run again is a new job,
+without the priority of the one before.
+
 ### Bounds
 
 - **Time**: past `max_minutes`, `watch` sends the run's process group
@@ -273,7 +288,8 @@ for the user at the terminal, whether or not `wake` is on.
   running` and offers `Exit and stop tasks` or `Stay`. Leaving stops the
   coordinator, `coordinator next` included: Claude Code's agent view is
   turned off in every coordinator, so none can be moved to the background.
-- It may read the state, note, and message sessions, which may answer it
+- It may read the state, note, give waiting calls priority, and message
+  sessions, which may answer it
   while it is open. Told a priority or a lasting instruction, it proposes the
   change and the file of the instructions it belongs in, and writes it once
   the user agrees, after Claude Code's permission prompt. It changes the

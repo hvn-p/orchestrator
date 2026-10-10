@@ -3,6 +3,8 @@
 //! work: a heavy job waits until memory covers it, and when memory does not
 //! free up in time, it is refused with the reason and how to wait longer,
 //! rather than run short of memory at every session's expense (#16).
+//! Waiting jobs go by arrival, unless the coordinator gives some priority
+//! (#21).
 //!
 //! Anything that can be decided without judgment is done by code and spends
 //! no tokens. Judgment (priorities, exceptions, negotiating with a session)
@@ -108,8 +110,8 @@ enum Command {
     Sessions(commands::sessions::SessionsArgs),
     /// Print the memory peaks learned per repository and command.
     Peaks,
-    /// Print the Bash calls waiting for memory and the memory reserved by running ones.
-    Admission,
+    /// Print the Bash calls waiting for memory and the memory reserved by running ones, or give waiting calls priority.
+    Admission(commands::admission::AdmissionArgs),
     /// Print what the configuration is chosen from: memory, swap, CPUs, cgroup delegation.
     Machine,
     /// Print the configuration, or set a section of it.
@@ -127,7 +129,7 @@ fn main() -> Result<()> {
         Command::Watch(args) => commands::watch::run(args),
         Command::Sessions(args) => commands::sessions::run(&args),
         Command::Peaks => commands::peaks::run(),
-        Command::Admission => commands::admission::run(),
+        Command::Admission(args) => commands::admission::run(args),
         Command::Machine => commands::machine::run(),
         Command::Config(args) => commands::config::run(args),
         Command::Setup => commands::setup::run(),

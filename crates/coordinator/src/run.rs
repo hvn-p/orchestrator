@@ -10,7 +10,8 @@
 //! `orchestrator` commands and note in its journal through one. In the setup
 //! conversation, a session with the user at the terminal, it writes the
 //! configuration through the validated `orchestrator config` commands and
-//! the priorities; outside setup, it messages sessions. A run `watch` starts
+//! the priorities; outside setup, it messages sessions and gives waiting
+//! calls priority. A run `watch` starts
 //! is denied anything else without asking (`dontAsk`); a coordinator with
 //! the user at the terminal asks them. Both prompt for permissions, like the
 //! sessions they message: Claude Code holds a message from a session that
@@ -37,14 +38,17 @@ pub const SETUP: &str = include_str!("setup.md");
 /// The name a coordinator goes by: sessions see their messages come from it.
 pub const NAME: &str = "orchestrator-coordinator";
 /// What a coordinator may run without asking, exactly as written: reading
-/// the state, and noting in its journal.
-const ALLOWED: [&str; 6] = [
+/// the state, noting in its journal, and giving waiting calls priority, or
+/// taking it back from all (#21).
+const ALLOWED: [&str; 8] = [
     "orchestrator sessions --heads",
     "orchestrator admission",
     "orchestrator peaks",
     "orchestrator machine",
     "orchestrator config",
     "orchestrator coordinator note *",
+    "orchestrator admission priority",
+    "orchestrator admission priority *",
 ];
 /// What writes the configuration, through validated commands: allowed
 /// without asking in the setup conversation, where the user agrees to each

@@ -28,7 +28,8 @@
 //! A waiting call checks again as soon as inotify reports a change in the
 //! `cgroup.events` of a job holding a reservation, which is how memory mostly
 //! frees up, and every `RECHECK` otherwise, since available memory has no
-//! notification. It writes one notice to standard error when it starts
+//! notification, nor a change of the calls ahead of it. It writes one notice
+//! to standard error when it starts
 //! waiting and one when it runs or is refused: the call's output goes back
 //! to Claude.
 //!
@@ -45,10 +46,22 @@
 //! mode classifier sees the command and never the refusal, and denied
 //! relaunches carrying `=1` (#16).
 //!
-//! While it waits, a call is also recorded in the runtime directory, so that
+//! Waiting calls are served in order: those given priority, in the order
+//! given, then the others by arrival (#21). Each check hands free memory out
+//! in that order. A call ahead that fits takes its expected peak, as its
+//! reservation will once it runs; one that does not fit is passed, so that a
+//! call never waits for a larger one it could run beside, unless that one
+//! has priority: no call passes a call given priority. A call runs when what
+//! the calls ahead leave covers its need. Priority is a judgment, left to
+//! the coordinator: `orchestrator admission priority` replaces the list,
+//! kept as `<runtime>/priority.json`, and a call leaves it once it runs or
+//! is refused. The default order needs none.
+//!
+//! A waiting call is recorded in the runtime directory from its first wait,
+//! under the lock, so that every later check counts it ahead, and so that
 //! `orchestrator admission` can show it and `watch` can wake the coordinator
-//! when it waits long. Reading the waiting calls and the reservations takes
-//! no lock: what a reader shows may be a check behind.
+//! when it waits long. Reading the waiting calls and the reservations
+//! outside a check takes no lock: what a reader shows may be a check behind.
 //!
 //! There is no fixed number of slots: two heavy calls run together when
 //! memory holds both. systemd's own slots (`ConcurrencySoftMax`) work on
@@ -56,8 +69,7 @@
 //! group. The margin has to exceed how much `MemAvailable` drifts while
 //! other sessions work: a few hundred MB within seconds.
 //!
-//! Waiting calls have no order: the first to check once memory frees up
-//! runs. A heavy call that leaves
+//! A heavy call that leaves
 //! a process running, such as a server started in the background, keeps
 //! its reservation, net of what its group uses, until that process ends.
 //! What admission cannot foresee (a first run, a form of the command it
@@ -188,8 +200,10 @@ pub struct Snapshot {
     pub available_mb: u64,
     /// What the reservations still hold, together.
     pub held_mb: u64,
-    /// Oldest first.
+    /// In the order memory goes to them.
     pub waiting: Vec<Waiting>,
+    /// How many of the first `waiting` have priority.
+    pub priority: usize,
     pub reserved: Vec<Reserved>,
 }
 
@@ -220,6 +234,15 @@ pub enum Outcome {
     Refused,
 }
 
+/// What the calls waiting ahead of a call leave it of free memory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ahead {
+    /// The `calls` of them that fit take `mb` first; none may.
+    Take { calls: usize, mb: u64 },
+    /// One of them has priority and does not fit: no call passes it.
+    Priority,
+}
+
 /// What one check found.
 #[derive(Debug)]
 struct Check {
@@ -229,6 +252,7 @@ struct Check {
     held_mb: u64,
     /// The job groups holding a reservation.
     holders: Vec<PathBuf>,
+    ahead: Ahead,
 }
 
 /// The commands of the Bash call `invocation`, run from `cwd`, that have a
@@ -313,6 +337,44 @@ pub fn step(
     }
 }
 
+/// Sorts `waiting` in the order memory goes to the calls: those in
+/// `priority`, in its order, then the others by arrival. Returns how many
+/// come first by priority.
+pub fn in_order(waiting: &mut [Waiting], priority: &[String]) -> usize {
+    let rank = |w: &Waiting| {
+        priority
+            .iter()
+            .position(|job| *job == w.job)
+            .unwrap_or(usize::MAX)
+    };
+    waiting.sort_by(|a, b| {
+        rank(a)
+            .cmp(&rank(b))
+            .then(a.since_ms.cmp(&b.since_ms))
+            .then_with(|| a.job.cmp(&b.job))
+    });
+    waiting.iter().take_while(|w| rank(w) != usize::MAX).count()
+}
+
+/// What `free_mb` leaves a call once the calls `ahead` of it, in order, the
+/// first `priority` of them given priority, have taken theirs. One that fits
+/// takes its expected peak, as its reservation will once it runs; one that
+/// does not is passed, unless it has priority.
+pub fn share(free_mb: u64, ahead: &[Waiting], priority: usize) -> (u64, Ahead) {
+    let mut left = free_mb;
+    let mut calls = 0;
+    for (i, w) in ahead.iter().enumerate() {
+        if w.need_mb <= left {
+            left = left.saturating_sub(w.peak_mb);
+            calls += 1;
+        } else if i < priority {
+            return (0, Ahead::Priority);
+        }
+    }
+    let mb = free_mb.saturating_sub(left);
+    (left, Ahead::Take { calls, mb })
+}
+
 /// Whether Claude runs the Bash call `invocation` in the background to wait
 /// longer: the command it wrote assigns `BACKGROUND_VAR`, whatever the
 /// value. A mention that assigns nothing, in an `echo` for instance, counts
@@ -356,44 +418,43 @@ fn admit_every(
     out: &mut dyn Write,
 ) -> Result<Outcome> {
     let start = Instant::now();
-    let need = need_mb(call.peak_mb, cfg);
+    let me = Waiting {
+        job: job.name.clone(),
+        group: job.group.clone(),
+        label: call.label.clone(),
+        peak_mb: call.peak_mb,
+        need_mb: need_mb(call.peak_mb, cfg),
+        since_ms: u64::try_from(runtime::now_ms()).unwrap_or(u64::MAX),
+    };
     let longest = longest_wait_secs(cfg, background);
     let max_wait = Duration::from_secs(longest);
-    let mut waiting: Option<Recorded> = None;
+    let mut recorded: Option<Recorded> = None;
     let result = loop {
         let waited = start.elapsed();
-        let decide = |free| step(free, need, waited, max_wait, recheck);
-        let check = match check(paths, job, call, decide) {
+        let decide = |room| step(room, me.need_mb, waited, max_wait, recheck);
+        let check = match check(paths, &me, decide) {
             Ok(check) => check,
             Err(e) => break Err(e),
         };
         match check.step {
-            Step::Run => break Ok((Outcome::Run, check.free_mb)),
-            Step::Refuse => break Ok((Outcome::Refused, check.free_mb)),
+            Step::Run => break Ok((Outcome::Run, check)),
+            Step::Refuse => break Ok((Outcome::Refused, check)),
             Step::Wait(timeout) => {
-                if waiting.is_none() {
+                if recorded.is_none() {
                     let _ = writeln!(out, "{}", waiting_notice(call, cfg, &check, longest));
-                    let record = Waiting {
-                        job: job.name.clone(),
-                        group: job.group.clone(),
-                        label: call.label.clone(),
-                        peak_mb: call.peak_mb,
-                        need_mb: need,
-                        since_ms: u64::try_from(runtime::now_ms()).unwrap_or(u64::MAX),
-                    };
-                    waiting = Some(Recorded::write(&paths.runtime, &record));
+                    recorded = Some(Recorded(record_path(&paths.runtime, &me.job)));
                 }
                 sleep_until_change(&check.holders, timeout);
             }
         }
     };
-    let waited = waiting.take().is_some();
-    match result {
+    let waited = recorded.take().is_some();
+    match &result {
         Ok((Outcome::Run, _)) if waited => {
             let _ = writeln!(out, "{}", running_notice(call, start.elapsed()));
         }
-        Ok((Outcome::Refused, free)) => {
-            let notice = refused_notice(call, cfg, background, free, need);
+        Ok((Outcome::Refused, check)) => {
+            let notice = refused_notice(call, cfg, background, check, me.need_mb);
             let _ = writeln!(out, "{notice}");
         }
         _ => {}
@@ -401,43 +462,40 @@ fn admit_every(
     result.map(|(outcome, _)| outcome)
 }
 
-/// The record of a waiting call, removed when the call stops waiting, the
-/// prefix included when it fails. A record that cannot be written only goes
-/// unseen.
-struct Recorded(Option<PathBuf>);
-
-impl Recorded {
-    fn write(runtime: &Path, record: &Waiting) -> Recorded {
-        let dir = waiting_dir(runtime);
-        let path = dir.join(format!("{}.json", record.job));
-        let written = fs::create_dir_all(&dir)
-            .ok()
-            .and_then(|()| serde_json::to_vec(record).ok())
-            .and_then(|json| fs::write(&path, json).ok());
-        Recorded(written.map(|()| path))
-    }
-}
+/// The record of a waiting call, which the check that runs or refuses it
+/// removes; removed when it drops too, for a prefix that fails while it
+/// waits.
+struct Recorded(PathBuf);
 
 impl Drop for Recorded {
     fn drop(&mut self) {
-        if let Some(path) = &self.0 {
-            let _ = fs::remove_file(path);
-        }
+        let _ = fs::remove_file(&self.0);
     }
 }
 
+fn record_path(runtime: &Path, job: &str) -> PathBuf {
+    waiting_dir(runtime).join(format!("{job}.json"))
+}
+
+/// Records `call` as waiting. A record that cannot be written goes unseen,
+/// and later calls do not count it ahead.
+fn record(runtime: &Path, call: &Waiting) {
+    let dir = waiting_dir(runtime);
+    let _ = fs::create_dir_all(&dir)
+        .ok()
+        .and_then(|()| serde_json::to_vec(call).ok())
+        .map(|json| fs::write(record_path(runtime, &call.job), json));
+}
+
 /// Counts free memory net of reservations, removing those that hold nothing,
-/// and reserves the call's expected peak for `job` when `decide` lets it run.
-/// All under the lock.
-fn check(
-    paths: &Paths,
-    job: &Job,
-    call: &Heavy,
-    decide: impl FnOnce(u64) -> Step,
-) -> Result<Check> {
+/// and what the calls waiting ahead of `me` leave of it; `decide` is given
+/// what is left. Reserves the call's expected peak when it runs, records it
+/// when it first waits, and removes its record when it stops. All under the
+/// lock.
+fn check(paths: &Paths, me: &Waiting, decide: impl FnOnce(u64) -> Step) -> Result<Check> {
     let dir = reservations_dir(&paths.runtime);
     fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
-    let _lock = lock(&paths.runtime.join("admission.lock"), LOCK_PATIENCE)?;
+    let _lock = lock(&lock_path(&paths.runtime), LOCK_PATIENCE)?;
     let mut held = 0;
     let mut holders = Vec::new();
     let entries = fs::read_dir(&dir).with_context(|| format!("reading {}", dir.display()))?;
@@ -450,23 +508,103 @@ fn check(
         }
     }
     let free = free_mb(memory::available_mb(&paths.meminfo)?, held);
-    let step = decide(free);
-    if step == Step::Run {
-        let path = dir.join(format!("{}.json", job.name));
-        let reservation = Reservation {
-            group: job.group.clone(),
-            peak_mb: call.peak_mb,
-            label: call.label.clone(),
-        };
-        let json = serde_json::to_vec(&reservation).context("serializing a reservation")?;
-        fs::write(&path, json).with_context(|| format!("writing {}", path.display()))?;
+    let mut queue = waiting(paths, true);
+    let recorded = queue.iter().any(|w| w.job == me.job);
+    if !recorded {
+        queue.push(me.clone());
+    }
+    let priority = read_priority(&paths.runtime);
+    let first = in_order(&mut queue, &priority);
+    let at = queue
+        .iter()
+        .position(|w| w.job == me.job)
+        .unwrap_or(queue.len());
+    let (room, ahead) = share(free, &queue[..at], first.min(at));
+    let step = decide(room);
+    match step {
+        Step::Run => {
+            let path = dir.join(format!("{}.json", me.job));
+            let reservation = Reservation {
+                group: me.group.clone(),
+                peak_mb: me.peak_mb,
+                label: me.label.clone(),
+            };
+            let json = serde_json::to_vec(&reservation).context("serializing a reservation")?;
+            fs::write(&path, json).with_context(|| format!("writing {}", path.display()))?;
+        }
+        Step::Wait(_) if !recorded => record(&paths.runtime, me),
+        Step::Wait(_) | Step::Refuse => {}
+    }
+    let stops = !matches!(step, Step::Wait(_));
+    if stops && recorded {
+        let _ = fs::remove_file(record_path(&paths.runtime, &me.job));
+    }
+    // The list keeps the calls still waiting.
+    let kept: Vec<&str> = priority
+        .iter()
+        .map(String::as_str)
+        .filter(|job| queue.iter().any(|w| w.job == *job) && !(stops && *job == me.job))
+        .collect();
+    if kept.len() != priority.len() {
+        let _ = write_priority(&paths.runtime, &kept);
     }
     Ok(Check {
         step,
         free_mb: free,
         held_mb: held,
         holders,
+        ahead,
     })
+}
+
+fn lock_path(runtime: &Path) -> PathBuf {
+    runtime.join("admission.lock")
+}
+
+/// Where the calls given priority are listed, in their order.
+fn priority_path(runtime: &Path) -> PathBuf {
+    runtime.join("priority.json")
+}
+
+/// The jobs given priority, in their order; none when the list cannot be
+/// read.
+fn read_priority(runtime: &Path) -> Vec<String> {
+    fs::read(priority_path(runtime))
+        .ok()
+        .and_then(|json| serde_json::from_slice(&json).ok())
+        .unwrap_or_default()
+}
+
+fn write_priority(runtime: &Path, jobs: &[&str]) -> Result<()> {
+    let path = priority_path(runtime);
+    let json = serde_json::to_vec(jobs).context("serializing the priority list")?;
+    fs::write(&path, json).with_context(|| format!("writing {}", path.display()))
+}
+
+/// Gives the waiting calls `jobs` priority, in this order, in place of those
+/// that had it: none when `jobs` is empty. A job named twice keeps its first
+/// place. Refuses, changing nothing, when one of them does not wait. Returns
+/// the calls given priority.
+pub fn set_priority(paths: &Paths, jobs: &[String]) -> Result<Vec<Waiting>> {
+    fs::create_dir_all(&paths.runtime)
+        .with_context(|| format!("creating {}", paths.runtime.display()))?;
+    let _lock = lock(&lock_path(&paths.runtime), LOCK_PATIENCE)?;
+    let waiting = waiting(paths, true);
+    let mut given: Vec<Waiting> = Vec::new();
+    for job in jobs {
+        if given.iter().any(|w| w.job == *job) {
+            continue;
+        }
+        let Some(w) = waiting.iter().find(|w| w.job == *job) else {
+            bail!(
+                "{job} does not wait for memory: `orchestrator admission` lists the calls that do"
+            );
+        };
+        given.push(w.clone());
+    }
+    let names: Vec<&str> = given.iter().map(|w| w.job.as_str()).collect();
+    write_priority(&paths.runtime, &names)?;
+    Ok(given)
 }
 
 /// Where reservations are kept.
@@ -532,12 +670,15 @@ pub fn snapshot(paths: &Paths) -> Result<Snapshot> {
         }
     }
     reserved_calls.sort_by(|a, b| b.held_mb.cmp(&a.held_mb).then_with(|| a.job.cmp(&b.job)));
+    let mut waiting = waiting(paths, false);
+    let priority = in_order(&mut waiting, &read_priority(&paths.runtime));
     Ok(Snapshot {
         available_mb: memory::available_mb(&paths.meminfo)?,
         held_mb: reserved_calls
             .iter()
             .fold(0, |sum, r| sum.saturating_add(r.held_mb)),
-        waiting: waiting(paths, false),
+        waiting,
+        priority,
         reserved: reserved_calls,
     })
 }
@@ -652,10 +793,26 @@ fn waiting_notice(call: &Heavy, cfg: &Admission, check: &Check, longest: u64) ->
     }
     let _ = write!(
         notice,
-        ". It starts as soon as memory frees up; past {}, it is refused.",
+        "{}. It starts as soon as memory frees up; past {}, it is refused.",
+        ahead_shown(check.ahead),
         span(longest)
     );
     notice
+}
+
+/// What the calls waiting ahead take of the free memory, as notices show it
+/// after the memory free: nothing when they take none.
+fn ahead_shown(ahead: Ahead) -> String {
+    match ahead {
+        Ahead::Take { calls: 0, .. } => String::new(),
+        Ahead::Take { calls, mb } => format!(
+            "; {mb} MB of them go first to {calls} call{} waiting ahead of it",
+            if calls == 1 { "" } else { "s" }
+        ),
+        Ahead::Priority => {
+            "; a call given priority waits ahead of it, and no call passes it".into()
+        }
+    }
 }
 
 fn running_notice(call: &Heavy, waited: Duration) -> String {
@@ -668,7 +825,13 @@ fn running_notice(call: &Heavy, waited: Duration) -> String {
 
 /// A call refused in the foreground learns how to wait longer: in the
 /// background, where it no longer holds the conversation.
-fn refused_notice(call: &Heavy, cfg: &Admission, background: bool, free: u64, need: u64) -> String {
+fn refused_notice(
+    call: &Heavy,
+    cfg: &Admission,
+    background: bool,
+    check: &Check,
+    need: u64,
+) -> String {
     let longest = longest_wait_secs(cfg, background);
     let after = if longest == 0 {
         "at once".to_string()
@@ -676,8 +839,10 @@ fn refused_notice(call: &Heavy, cfg: &Admission, background: bool, free: u64, ne
         format!("after {}", span(longest))
     };
     let mut notice = format!(
-        "orchestrator: refused {} {after}: {free} MB are free and it needs {need} MB.",
-        shown(call)
+        "orchestrator: refused {} {after}: {} MB are free and it needs {need} MB{}.",
+        shown(call),
+        check.free_mb,
+        ahead_shown(check.ahead)
     );
     if !background {
         let assignment = format!("{BACKGROUND_VAR}={BACKGROUND_VALUE}");
@@ -865,15 +1030,51 @@ mod tests {
             self.paths.cgroup_root.join(group.trim_start_matches('/'))
         }
 
-        /// One check for a call of `peak_mb`, run as `name`, that may not
-        /// wait.
-        fn try_admit(&self, name: &str, peak_mb: u64) -> Check {
+        /// A call of `peak_mb` run as `name`, arrived at `since_ms`, as a
+        /// check sees it; its job group running.
+        fn call(&self, name: &str, peak_mb: u64, since_ms: u64) -> Waiting {
             let job = self.job(name, 0);
-            let need = need_mb(peak_mb, &CFG);
-            check(&self.paths, &job, &h("make", peak_mb), |free| {
-                step(free, need, Duration::ZERO, 30 * SEC, SEC)
+            Waiting {
+                job: job.name,
+                group: job.group,
+                label: "make".into(),
+                peak_mb,
+                need_mb: need_mb(peak_mb, &CFG),
+                since_ms,
+            }
+        }
+
+        /// One check for `call`, which may wait.
+        fn check(&self, call: &Waiting) -> Check {
+            check(&self.paths, call, |room| {
+                step(room, call.need_mb, Duration::ZERO, 30 * SEC, SEC)
             })
             .unwrap()
+        }
+
+        /// One check for a call of `peak_mb`, run as `name`, arriving now.
+        fn try_admit(&self, name: &str, peak_mb: u64) -> Check {
+            let now = u64::try_from(runtime::now_ms()).unwrap();
+            self.check(&self.call(name, peak_mb, now))
+        }
+
+        /// A call of `peak_mb` waiting since `since_ms`, as its first check
+        /// records it.
+        fn waits(&self, name: &str, peak_mb: u64, since_ms: u64) -> Waiting {
+            let call = self.call(name, peak_mb, since_ms);
+            record(&self.paths.runtime, &call);
+            call
+        }
+
+        fn waiting(&self) -> Vec<String> {
+            waiting(&self.paths, false)
+                .into_iter()
+                .map(|w| w.job)
+                .collect()
+        }
+
+        fn priority(&self) -> Vec<String> {
+            read_priority(&self.paths.runtime)
         }
 
         fn reserved(&self) -> Vec<String> {
@@ -943,14 +1144,9 @@ mod tests {
             .map(|i| {
                 let (m, barrier) = (Arc::clone(&m), Arc::clone(&barrier));
                 std::thread::spawn(move || {
-                    let job = m.job(&format!("job-bash-{i}-1"), 0);
+                    let call = m.call(&format!("job-bash-{i}-1"), 2000, i);
                     barrier.wait();
-                    let need = need_mb(2000, &CFG);
-                    check(&m.paths, &job, &h("make", 2000), |free| {
-                        step(free, need, Duration::ZERO, 30 * SEC, SEC)
-                    })
-                    .unwrap()
-                    .step
+                    m.check(&call).step
                 })
             })
             .collect();
@@ -1080,11 +1276,180 @@ mod tests {
         assert_eq!(snap.reserved[0].label, "pnpm typecheck");
     }
 
+    fn w(job: &str, peak_mb: u64, since_ms: u64) -> Waiting {
+        Waiting {
+            job: job.into(),
+            group: format!("{SESSION}/{job}"),
+            label: "make".into(),
+            peak_mb,
+            need_mb: need_mb(peak_mb, &CFG),
+            since_ms,
+        }
+    }
+
+    fn jobs(calls: &[Waiting]) -> Vec<&str> {
+        calls.iter().map(|c| c.job.as_str()).collect()
+    }
+
+    fn named(jobs: &[&str]) -> Vec<String> {
+        jobs.iter().map(|j| (*j).to_string()).collect()
+    }
+
+    #[test]
+    fn memory_goes_to_the_calls_in_order_passing_those_that_do_not_fit() {
+        let mut queue = vec![w("c", 1000, 3), w("a", 6000, 1), w("b", 2000, 2)];
+        assert_eq!(in_order(&mut queue, &[]), 0);
+        assert_eq!(jobs(&queue), ["a", "b", "c"]);
+        // With 5000 MB free, `a` (6500 needed) is passed; `b` takes its peak.
+        assert_eq!(
+            share(5000, &queue[..2], 0),
+            (3000, Ahead::Take { calls: 1, mb: 2000 })
+        );
+        assert_eq!(
+            share(1000, &queue[..2], 0),
+            (1000, Ahead::Take { calls: 0, mb: 0 })
+        );
+        // Priority first, in its order; a priority that does not fit is never
+        // passed, one that fits takes its share.
+        assert_eq!(in_order(&mut queue, &named(&["c", "a"])), 2);
+        assert_eq!(jobs(&queue), ["c", "a", "b"]);
+        assert_eq!(share(5000, &queue[..2], 2), (0, Ahead::Priority));
+        assert_eq!(
+            share(9000, &queue[..2], 2),
+            (2000, Ahead::Take { calls: 2, mb: 7000 })
+        );
+        // A job in the list that no longer waits takes no place.
+        assert_eq!(in_order(&mut queue, &named(&["gone", "b"])), 1);
+        assert_eq!(jobs(&queue), ["b", "a", "c"]);
+    }
+
+    #[test]
+    fn an_older_call_that_fits_goes_first() {
+        let m = Machine::new(4000);
+        let older = m.waits("job-bash-1-1", 3000, 1);
+        let late = m.try_admit("job-bash-2-1", 3000);
+        assert_eq!(
+            (late.step, late.free_mb, late.ahead),
+            (Step::Wait(SEC), 4000, Ahead::Take { calls: 1, mb: 3000 })
+        );
+        assert_eq!(m.waiting(), ["job-bash-1-1", "job-bash-2-1"]);
+        assert_eq!(m.check(&older).step, Step::Run);
+        assert_eq!(m.reserved(), ["job-bash-1-1.json"]);
+        assert_eq!(m.waiting(), ["job-bash-2-1"]);
+    }
+
+    #[test]
+    fn a_call_that_fits_passes_a_larger_one() {
+        let m = Machine::new(4000);
+        m.waits("job-bash-1-1", 6000, 1);
+        let small = m.try_admit("job-bash-2-1", 2000);
+        assert_eq!(
+            (small.step, small.ahead),
+            (Step::Run, Ahead::Take { calls: 0, mb: 0 })
+        );
+        assert_eq!(m.waiting(), ["job-bash-1-1"]);
+    }
+
+    #[test]
+    fn no_call_passes_a_call_given_priority() {
+        let m = Machine::new(4000);
+        let big = m.waits("job-bash-1-1", 6000, 1);
+        let small = m.waits("job-bash-2-1", 2000, 2);
+        let given = set_priority(&m.paths, &named(&["job-bash-1-1"])).unwrap();
+        assert_eq!(given, std::slice::from_ref(&big));
+        let blocked = m.check(&small);
+        assert_eq!(
+            (blocked.step, blocked.ahead),
+            (Step::Wait(SEC), Ahead::Priority)
+        );
+        // Refused, a call leaves the list, and the others pass again.
+        let refused = check(&m.paths, &big, |room| {
+            step(room, big.need_mb, SEC, Duration::ZERO, SEC)
+        })
+        .unwrap();
+        assert_eq!(refused.step, Step::Refuse);
+        assert_eq!(m.priority(), Vec::<String>::new());
+        assert_eq!(m.waiting(), ["job-bash-2-1"]);
+        assert_eq!(m.check(&small).step, Step::Run);
+    }
+
+    #[test]
+    fn calls_given_priority_go_in_the_order_given_and_leave_once_they_run() {
+        let m = Machine::new(4000);
+        let a = m.waits("job-bash-1-1", 3000, 1);
+        let b = m.waits("job-bash-2-1", 3000, 2);
+        set_priority(&m.paths, &named(&["job-bash-2-1", "job-bash-1-1"])).unwrap();
+        let first = m.check(&a);
+        assert_eq!(
+            (first.step, first.ahead),
+            (Step::Wait(SEC), Ahead::Take { calls: 1, mb: 3000 })
+        );
+        assert_eq!(m.check(&b).step, Step::Run);
+        assert_eq!(m.priority(), ["job-bash-1-1"]);
+    }
+
+    #[test]
+    fn priority_goes_only_to_waiting_calls_and_replaces_the_list() {
+        let m = Machine::new(4000);
+        let one = m.waits("job-bash-1-1", 3000, 1);
+        m.waits("job-bash-2-1", 3000, 2);
+        let err = set_priority(&m.paths, &named(&["job-bash-2-1", "job-bash-9-1"])).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "job-bash-9-1 does not wait for memory: `orchestrator admission` lists the calls that do"
+        );
+        assert_eq!(m.priority(), Vec::<String>::new());
+        let given = set_priority(
+            &m.paths,
+            &named(&["job-bash-2-1", "job-bash-1-1", "job-bash-2-1"]),
+        )
+        .unwrap();
+        assert_eq!(jobs(&given), ["job-bash-2-1", "job-bash-1-1"]);
+        let snap = snapshot(&m.paths).unwrap();
+        assert_eq!(
+            (jobs(&snap.waiting), snap.priority),
+            (vec!["job-bash-2-1", "job-bash-1-1"], 2)
+        );
+        set_priority(&m.paths, &[]).unwrap();
+        assert_eq!(m.priority(), Vec::<String>::new());
+        let snap = snapshot(&m.paths).unwrap();
+        assert_eq!(
+            (jobs(&snap.waiting), snap.priority),
+            (vec!["job-bash-1-1", "job-bash-2-1"], 0)
+        );
+        // A call that ended while it waited leaves the list at the next check.
+        set_priority(&m.paths, &named(&["job-bash-1-1"])).unwrap();
+        m.end(&one.group);
+        assert_eq!(m.try_admit("job-bash-3-1", 100).step, Step::Run);
+        assert_eq!(m.priority(), Vec::<String>::new());
+    }
+
+    #[test]
+    fn notices_say_what_the_calls_ahead_take() {
+        let call = typecheck(3000);
+        let mut check = Check {
+            step: Step::Wait(SEC),
+            free_mb: 4000,
+            held_mb: 0,
+            holders: Vec::new(),
+            ahead: Ahead::Take { calls: 2, mb: 3000 },
+        };
+        assert_eq!(
+            waiting_notice(&call, &CFG, &check, 30),
+            "orchestrator: waiting for memory before running `pnpm typecheck`. This call is expected to peak at 3000 MB; with the 500 MB margin it needs 3500 MB free, and 4000 MB are free; 3000 MB of them go first to 2 calls waiting ahead of it. It starts as soon as memory frees up; past 30 s, it is refused."
+        );
+        check.ahead = Ahead::Priority;
+        assert_eq!(
+            refused_notice(&call, &CFG, true, &check, 3500),
+            "orchestrator: refused `pnpm typecheck` after 30 min: 4000 MB are free and it needs 3500 MB; a call given priority waits ahead of it, and no call passes it."
+        );
+    }
+
     #[test]
     fn a_record_left_by_a_killed_prefix_is_pruned() {
         let m = Machine::new(4000);
         let job = m.job("job-bash-1-1", 0);
-        let record = Waiting {
+        let call = Waiting {
             job: job.name.clone(),
             group: job.group.clone(),
             label: "make".into(),
@@ -1092,9 +1457,8 @@ mod tests {
             need_mb: 3500,
             since_ms: 1,
         };
-        let kept = Recorded::write(&m.paths.runtime, &record);
-        assert_eq!(waiting(&m.paths, true), [record]);
-        std::mem::forget(kept);
+        record(&m.paths.runtime, &call);
+        assert_eq!(waiting(&m.paths, true), [call]);
         m.end(&job.group);
         assert_eq!(waiting(&m.paths, false), []);
         let dir = waiting_dir(&m.paths.runtime);
@@ -1285,12 +1649,13 @@ mod tests {
             free_mb: 10,
             held_mb: 0,
             holders: Vec::new(),
+            ahead: Ahead::Take { calls: 0, mb: 0 },
         };
         let notices = [
             waiting_notice(&call, &CFG, &check, 30),
             running_notice(&call, SEC),
-            refused_notice(&call, &CFG, false, 10, 2000),
-            refused_notice(&call, &CFG, true, 10, 2000),
+            refused_notice(&call, &CFG, false, &check, 2000),
+            refused_notice(&call, &CFG, true, &check, 2000),
         ];
         for n in notices {
             assert!(n.contains("`python3 -c b = bytearray(1500 << 20)`"), "{n}");

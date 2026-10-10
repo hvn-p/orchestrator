@@ -148,6 +148,13 @@ Measured, not learned:
 - The waiting notice says "net of … already running": other heavy calls hold
   reservations until their job groups empty, including a server one of them
   left running in the background.
+- The waiting notice says "go first to … calls waiting ahead of it": older
+  calls, or calls given priority, take that memory first; it may wait while
+  more memory is free than it needs. "a call given priority waits ahead of
+  it" means one that does not fit yet holds every call behind it back:
+  `orchestrator admission` shows it with `PRIORITY` `yes`, and
+  `orchestrator admission priority` with no job takes priority back
+  (commands.md).
 - A light command seen only beside heavy ones carries their peak: a filter
   such as `tail -1`, used only after a build, is as heavy as the build. Its
   first lighter call, once measured, lowers it (configuration.md,
