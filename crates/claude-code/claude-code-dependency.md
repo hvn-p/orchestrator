@@ -152,7 +152,9 @@ it shows nowhere: only the latter wakes the coordinator.
   the call was not running when it was, and wake the coordinator for kills
   the session saw.
 - Verified: integration test (the probe's parent, the call's shell, is the
-  pid in the job's name, and its parent is the session's claude process).
+  pid in the job's name, and its parent is the session's claude process; a
+  process the probe kills with `SIGKILL`, as the OOM killer does, shows in
+  the call's result: bash's `Killed` line and its exit status 137).
 
 ### bash-call-output
 

@@ -42,6 +42,8 @@ use system::procfs;
 const TIMEOUT: Duration = Duration::from_secs(180);
 /// What the probe writes to its standard error, as Claude should read it.
 const STDERR_LINE: &str = "orchestrator-probe-stderr-42";
+/// What the probe prints after a process it ran was killed with `SIGKILL`.
+const KILLED_LINE: &str = "orchestrator-probe-killed-137";
 /// The marker word of a CLAUDE.md above the coordinator's directory, which
 /// must not reach it.
 const ANCESTOR_MARKER: &str = "ANCESTOR-MARKER-7";
@@ -706,8 +708,19 @@ fn bash_call_cwd(s: &Session) -> Check {
 }
 
 /// The probe's parent, the call's shell, is the pid in the job's name, and
-/// a child of the session's claude process.
+/// a child of the session's claude process; a process the call kills with
+/// `SIGKILL`, as the OOM killer does, shows in the call's result.
 fn bash_call_shell(s: &Session) -> Check {
+    let killed = s
+        .content_blocks()
+        .filter(|b| b["type"] == "tool_result")
+        .any(|b| {
+            let result = b["content"].to_string();
+            result.contains(KILLED_LINE) && result.contains("Killed")
+        });
+    if !killed {
+        return Err("a process killed during the call does not show in its result".into());
+    }
     let (_, job) = s.job("bash")?;
     let (_, named, _) = prefix::parse_job_name(&job).ok_or("unreadable job name")?;
     let number = |what: &str| -> Result<u32, String> {
@@ -844,6 +857,9 @@ pwd -P > "$out/bash-cwd"
 echo "$PPID" > "$out/bash-shell"
 sed -n 's/^PPid:[[:space:]]*//p' "/proc/$PPID/status" > "$out/bash-shell-parent"
 echo "orchestrator-probe-stderr-$((6 * 7))" >&2
+echo "orchestrator-probe: killing a test process on purpose"
+sh -c 'kill -KILL $$'
+echo "orchestrator-probe-killed-$?"
 pid=$$
 while [ "${{pid:-0}}" -gt 1 ]; do
   if [ -f "$sessions/$pid.json" ]; then
