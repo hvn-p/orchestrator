@@ -281,7 +281,7 @@ Prints the admission thresholds, the memory free for admission, the Bash
 calls waiting for memory and the heavy calls running with a reservation:
 
 ```
-Admission: a call expected to peak at 1024 MB or more waits until free memory covers its peak plus 2048 MB, 60 s at most.
+Admission: a call expected to peak at 1024 MB or more waits until free memory covers its peak plus 2048 MB, 60 s at most, 1800 s in the background; then it is refused.
 Available memory: 5200 MB; running heavy calls still hold 1800 MB of it: 3400 MB free for admission.
 
 WAITING FOR MEMORY
@@ -339,7 +339,7 @@ orchestrator.slice: present
 
 ```sh
 orchestrator config
-orchestrator config admission --heavy-mb <MB> --margin-mb <MB> --max-wait-secs <s>
+orchestrator config admission --heavy-mb <MB> --margin-mb <MB> --max-wait-secs <s> --max-background-wait-secs <s>
 orchestrator config coordinator [--wake <yes|no>] [--model <model>] [--max-minutes <n>] [--wait-secs <s>] [--language <tag>]
 ```
 
@@ -359,13 +359,14 @@ leaving the file alone. On success they print `Wrote <path>` and the whole
 configuration. The file is replaced at once, so the prefix
 never reads half of it.
 
-`config admission` takes all three options:
+`config admission` takes all four options:
 
 - `--heavy-mb`: above 0, at most the machine's total memory.
 - `--margin-mb`: under the machine's total memory.
-- `--max-wait-secs`: at most 600.
+- `--max-wait-secs`: at most 119, under a Bash call's default timeout.
+- `--max-background-wait-secs`: above `--max-wait-secs`, at most 1800.
 - With the coordinator waking (`"wake": true`), its `wait_secs` must stay
-  under `--max-wait-secs`.
+  under `--max-background-wait-secs`.
 
 `config coordinator` takes at least one option and starts from these values
 when the section does not exist: `wake` no, `model` `claude-sonnet-5-5`,
@@ -377,8 +378,8 @@ when the section does not exist: `wake` no, `model` `claude-sonnet-5-5`,
   `[` and `]`, at most 100 characters. Whether the account can use it is not
   checked.
 - `--max-minutes`: 1 to 60.
-- `--wait-secs`: 1 to 600, and under admission's `max_wait_secs` while
-  `wake` is on.
+- `--wait-secs`: 1 to 1800, and under admission's `max_background_wait_secs`
+  while `wake` is on.
 - `--language`: a tag of two or three lowercase letters, then up to three
   subtags of 2 to 8 letters or digits joined by `-`: `fr`, `en`, `pt-BR`.
   No option removes it once set: that takes editing `config.json` by hand.

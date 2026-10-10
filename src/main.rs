@@ -1,6 +1,8 @@
 //! orchestrator keeps the Claude Code sessions running in parallel on one
 //! Linux machine working within its finite resources. It schedules their
-//! work rather than refusing it: a job may take longer, it is not prevented.
+//! work: a heavy job waits until memory covers it, and when memory does not
+//! free up in time, it is refused with the reason and how to wait longer,
+//! rather than run short of memory at every session's expense (#16).
 //!
 //! Anything that can be decided without judgment is done by code and spends
 //! no tokens. Judgment (priorities, exceptions, negotiating with a session)
@@ -24,7 +26,8 @@
 //! - `learning`: recognising a command and learning its memory peak, per
 //!   repository.
 //! - `prefix`: the shell prefix every command of a session goes through, and
-//!   admission, which holds a heavy Bash call back until memory covers it.
+//!   admission, which holds a heavy Bash call back until memory covers it, or
+//!   refuses it.
 //! - `watch`: observing sessions and jobs, the events, the reports, and the
 //!   local API serving them.
 //! - `coordinator`: a fresh Claude Code session for each batch of events

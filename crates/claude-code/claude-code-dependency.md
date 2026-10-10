@@ -143,23 +143,58 @@ What a Bash call writes to its standard error reaches Claude with the call's
 result. Admission's notices go there; the prefix's own failures must not.
 
 - Code: `crates/claude-code/src/call.rs` (`notices`).
-- If it changes: Claude no longer learns why a call waited.
+- If it changes: Claude no longer learns why a call waited or was refused.
 - Verified: integration test (a line the probe writes to its standard error
   is in the session's output).
 
 ### bash-call-timeout
 
 A Bash call times out after 2 minutes by default, 10 at most, tunable with
-`BASH_DEFAULT_TIMEOUT_MS` and `BASH_MAX_TIMEOUT_MS`. The admission wait
-counts toward it, and the prefix cannot see it: `max_wait_secs` has to leave
-the command its time. A foreground call that reaches its timeout is moved to
-the background, not stopped, unless it starts with `sleep`.
+`BASH_DEFAULT_TIMEOUT_MS` and `BASH_MAX_TIMEOUT_MS`; Claude often asks for
+more on a command it expects to be long. The admission wait counts toward
+it, and the prefix cannot see it. A foreground call that reaches its timeout
+is moved to the background, not stopped, unless it starts with `sleep`: its
+result then says so and holds none of the output, only the task's id and its
+output file. `max_wait_secs` stays under the default, so that a refusal
+reaches Claude in the call's result.
 
-- Code: `crates/claude-code/src/call.rs` (`MAX_TIMEOUT_SECS`).
-- If it changes: a shorter default makes a waiting call reach its timeout:
-  Claude then gets a timeout notice instead of the result.
+- Code: `crates/claude-code/src/call.rs` (`DEFAULT_TIMEOUT_SECS`).
+- If it changes: with a shorter default, a call refused in the foreground
+  has moved to the background first, and Claude learns of the refusal only
+  from the output file and the notice of its end.
 - Verified: documentation (env-vars; tools-reference, "Timeout and output
-  limits"). The integration test cannot see it.
+  limits", "Foreground commands that move to the background"). Measured on
+  2.1.296 (#16): four calls held past their timeout moved to the
+  background; each time Claude read the output file, did not run the call
+  again, and answered once told it had ended. The integration test cannot
+  see it.
+
+### bash-call-background
+
+A Bash call Claude starts with `run_in_background` returns at once with its
+task's id and output file. The command runs with no time limit in an
+interactive session, and for 30 minutes in one that runs unattended (10 in a
+`claude -p` run whose prompt is text); the session is told when it ends,
+with its exit code. In auto mode, a classifier judges each call from the
+user's messages, Claude's tool calls and CLAUDE.md, never from tool results:
+what makes a background relaunch legitimate has to show in the command. A
+refused call tells Claude to run it again in the background with
+`ORCHESTRATOR_BACKGROUND=wait-for-memory`, whose value states the purpose.
+
+- Code: `crates/claude-code/src/call.rs` (`BACKGROUND_LIMIT_SECS`,
+  `in_background`).
+- If it changes: a refused call can no longer wait longer without holding
+  the conversation; with a shorter limit, a call waiting in the background is
+  stopped before `max_background_wait_secs`; a classifier that denies the
+  relaunch leaves the call refused.
+- Verified: documentation (tools-reference, "Background commands" and "Time
+  limit for background commands"; permission-modes, what the classifier
+  sees). Measured on 2.1.296 (#16): four sessions refused in the foreground
+  relaunched in the background with the variable on their own; in auto mode,
+  the classifier denied 4 relaunches of 37 with
+  `ORCHESTRATOR_BACKGROUND=1` and none of 25 with
+  `ORCHESTRATOR_BACKGROUND=wait-for-memory`. The integration test cannot see
+  it.
 
 ### session-file
 

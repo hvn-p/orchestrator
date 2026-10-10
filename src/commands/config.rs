@@ -54,9 +54,12 @@ struct AdmissionArgs {
     /// Free memory kept on top of a heavy call's expected peak, in MB.
     #[arg(long)]
     margin_mb: u64,
-    /// The longest a call waits before it runs anyway, in seconds.
+    /// The longest a call waits in the foreground before it is refused, in seconds.
     #[arg(long)]
     max_wait_secs: u64,
+    /// The longest a call run in the background to wait longer waits before it is refused, in seconds.
+    #[arg(long)]
+    max_background_wait_secs: u64,
 }
 
 pub fn run(args: ConfigArgs) -> Result<()> {
@@ -79,6 +82,7 @@ fn set_admission(a: &AdmissionArgs) -> Result<()> {
         heavy_mb: a.heavy_mb,
         margin_mb: a.margin_mb,
         max_wait_secs: a.max_wait_secs,
+        max_background_wait_secs: a.max_background_wait_secs,
     };
     let config = config::set_admission(&path, admission, total_mb)?;
     println!(

@@ -4,7 +4,7 @@ A coordinator is a Claude Code session that orchestrator starts, with a role
 of its own, for what needs judgment. It reads the state, messages sessions,
 notes what it did in a journal and, during setup or when the user asks,
 writes the configuration. It never stops, pauses, slows down or kills
-anything, and never refuses work: it asks, and each session decides.
+anything, and never refuses work itself: it asks, and each session decides.
 
 There are three kinds:
 

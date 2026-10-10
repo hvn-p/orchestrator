@@ -25,7 +25,8 @@ description: >-
 # orchestrator guide
 
 orchestrator keeps the Claude Code sessions running in parallel on one Linux
-machine within its memory. It never refuses work: it delays it. This guide
+machine within its memory. It delays work, and refuses a heavy command only
+when memory does not free up in time, saying why and how to wait longer. This guide
 describes the `main` branch of <https://github.com/hvn-p/orchestrator>.
 
 ## What orchestrator does
@@ -66,16 +67,19 @@ describes the `main` branch of <https://github.com/hvn-p/orchestrator>.
    pressure and orphaned processes.
 4. With a configuration, a Bash call whose commands were learned as heavy
    waits until free memory covers its expected peak plus a margin, for a
-   bounded time, and says so in its output. Hooks, the status line and MCP
-   servers never wait. Admission reads the peaks already learned, so it works
+   bounded time, and says so in its output; past it, the call is refused,
+   and its output says how to wait longer in the background. Hooks, the
+   status line and MCP servers never wait. Admission reads the peaks already
+   learned, so it works
    while `watch` is stopped, and it counts the heavy calls of all the user's
    orchestrated sessions together.
-5. The command always runs. The prefix places a Bash call in its job group,
-   writes its job record, then admits it, each step needing the ones before;
-   `watch` measures and learns it from the group and the record. What a
+5. Unless admission refuses it, the command runs. The prefix places a Bash
+   call in its job group, admits it, then writes its job record, each step
+   needing the ones before; `watch` measures and learns it from the group
+   and the record. A refused call runs nothing and is not measured. What a
    failure loses:
    - no scope, or no job group: not measured, not learned, never admitted;
-   - no job record: neither admitted nor measured, so not learned;
+   - no job record: not measured, so not learned;
    - no configuration: not admitted, still measured and learned;
    - a call that cannot be parsed: neither admitted nor learned, still
      measured;

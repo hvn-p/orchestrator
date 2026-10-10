@@ -1,9 +1,10 @@
 # orchestrator
 
 Keeps the Claude Code sessions running in parallel on one Linux machine working
-within its finite resources without refusing their work. Today it measures
-what each command uses and holds a memory-hungry Bash call back until memory
-covers it; planned work is in the GitHub issues. The documentation at the top
+within its finite resources. Today it measures what each command uses and
+holds a memory-hungry Bash call back until memory covers it, refusing it with
+the reason when memory does not free up in time; planned work is in the GitHub
+issues. The documentation at the top
 of `src/main.rs` describes the components and the principles: start there.
 
 - An issue carries a piece of work from start to end: its intent, the options

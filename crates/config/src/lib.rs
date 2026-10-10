@@ -9,7 +9,9 @@ mod admission;
 mod coordinator;
 pub mod language;
 
-pub use admission::{Admission, MAX_WAIT_SECS, check_admission, set_admission};
+pub use admission::{
+    Admission, MAX_BACKGROUND_WAIT_SECS, MAX_WAIT_SECS, check_admission, set_admission,
+};
 pub use coordinator::{
     Coordinator, DEFAULT_MODEL, MAX_MINUTES, check_coordinator, set_coordinator,
 };
@@ -117,6 +119,7 @@ mod tests {
         heavy_mb: 1024,
         margin_mb: 2048,
         max_wait_secs: 60,
+        max_background_wait_secs: 1800,
     };
 
     #[test]
@@ -129,7 +132,7 @@ mod tests {
     #[test]
     fn reads_the_admission_section() {
         let config = load_text(
-            r#"{"admission": {"heavy_mb": 1024, "margin_mb": 2048, "max_wait_secs": 60}}"#,
+            r#"{"admission": {"heavy_mb": 1024, "margin_mb": 2048, "max_wait_secs": 60, "max_background_wait_secs": 1800}}"#,
         )
         .unwrap();
         assert_eq!(config.and_then(|c| c.admission), Some(ADMISSION));
@@ -171,9 +174,16 @@ mod tests {
     #[test]
     fn typos_are_errors() {
         assert!(load_text(r#"{"admission": {"heavy_mb": 1024, "margin_mb": 2048}}"#).is_err());
+        // A section written before the background wait.
         assert!(
             load_text(
-                r#"{"admission": {"heavy_mb": 1, "margin": 2, "margin_mb": 2, "max_wait_secs": 3}}"#
+                r#"{"admission": {"heavy_mb": 1024, "margin_mb": 2048, "max_wait_secs": 60}}"#
+            )
+            .is_err()
+        );
+        assert!(
+            load_text(
+                r#"{"admission": {"heavy_mb": 1, "margin": 2, "margin_mb": 2, "max_wait_secs": 3, "max_background_wait_secs": 4}}"#
             )
             .is_err()
         );
@@ -252,17 +262,19 @@ mod tests {
         };
         assert!(check_coordinator(&minutes(0), None).is_err());
         assert!(check_coordinator(&minutes(61), None).is_err());
-        // A call never waits longer than admission lets it.
+        // A call never waits longer than admission lets it in the
+        // background.
         let wait = |wait_secs| Coordinator {
             wait_secs,
             ..ok.clone()
         };
-        assert!(check_coordinator(&wait(59), Some(&ADMISSION)).is_ok());
-        assert!(check_coordinator(&wait(60), Some(&ADMISSION)).is_err());
-        assert!(check_coordinator(&wait(60), None).is_ok());
+        assert!(check_coordinator(&wait(1799), Some(&ADMISSION)).is_ok());
+        assert!(check_coordinator(&wait(1800), Some(&ADMISSION)).is_err());
+        assert!(check_coordinator(&wait(1800), None).is_ok());
+        assert!(check_coordinator(&wait(1801), None).is_err());
         let asleep = Coordinator {
             wake: false,
-            ..wait(60)
+            ..wait(1800)
         };
         assert!(check_coordinator(&asleep, Some(&ADMISSION)).is_ok());
     }
@@ -278,6 +290,7 @@ mod tests {
         .unwrap();
         let short = Admission {
             max_wait_secs: 30,
+            max_background_wait_secs: 40,
             ..ADMISSION
         };
         let refused = set_admission(&path, short, 32_000).unwrap_err();
@@ -286,7 +299,7 @@ mod tests {
             "{refused:#}"
         );
         set_admission(&path, ADMISSION, 32_000).unwrap();
-        set_coordinator(&path, |c| c.wait_secs = 90).unwrap_err();
+        set_coordinator(&path, |c| c.wait_secs = 1800).unwrap_err();
         assert_eq!(
             load(&path).unwrap().unwrap().coordinator.unwrap().wait_secs,
             45
@@ -296,16 +309,22 @@ mod tests {
     #[test]
     fn admission_values_must_fit_the_machine() {
         assert!(check_admission(&ADMISSION, 32_000).is_ok());
-        let with = |heavy_mb, margin_mb, max_wait_secs| Admission {
+        let with = |heavy_mb, margin_mb, max_wait_secs, max_background_wait_secs| Admission {
             heavy_mb,
             margin_mb,
             max_wait_secs,
+            max_background_wait_secs,
         };
-        assert!(check_admission(&with(0, 2048, 60), 32_000).is_err());
-        assert!(check_admission(&with(40_000, 2048, 60), 32_000).is_err());
-        assert!(check_admission(&with(1024, 32_000, 60), 32_000).is_err());
-        assert!(check_admission(&with(1024, 2048, 601), 32_000).is_err());
-        assert!(check_admission(&with(1024, 0, 0), 32_000).is_ok());
+        assert!(check_admission(&with(0, 2048, 60, 1800), 32_000).is_err());
+        assert!(check_admission(&with(40_000, 2048, 60, 1800), 32_000).is_err());
+        assert!(check_admission(&with(1024, 32_000, 60, 1800), 32_000).is_err());
+        // The foreground wait stays under the default timeout of 120 s.
+        assert!(check_admission(&with(1024, 2048, 119, 1800), 32_000).is_ok());
+        assert!(check_admission(&with(1024, 2048, 120, 1800), 32_000).is_err());
+        // The background wait is longer, within the unattended limit.
+        assert!(check_admission(&with(1024, 2048, 60, 60), 32_000).is_err());
+        assert!(check_admission(&with(1024, 2048, 60, 1801), 32_000).is_err());
+        assert!(check_admission(&with(1024, 0, 0, 1), 32_000).is_ok());
     }
 
     #[test]
