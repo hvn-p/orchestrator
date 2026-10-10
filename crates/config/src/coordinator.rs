@@ -1,7 +1,7 @@
 //! The `coordinator` section: whether `watch` may wake a coordinator, and
 //! its bounds.
 
-use crate::{Admission, Config, MAX_WAIT_SECS, load, save};
+use crate::{Admission, Config, MAX_BACKGROUND_WAIT_SECS, load, save};
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -83,16 +83,16 @@ pub fn check_coordinator(c: &Coordinator, admission: Option<&Admission>) -> Resu
         c.max_minutes
     );
     ensure!(
-        (1..=MAX_WAIT_SECS).contains(&c.wait_secs),
-        "wait_secs ({}) must be between 1 and {MAX_WAIT_SECS}",
+        (1..=MAX_BACKGROUND_WAIT_SECS).contains(&c.wait_secs),
+        "wait_secs ({}) must be between 1 and {MAX_BACKGROUND_WAIT_SECS}",
         c.wait_secs
     );
     if let Some(a) = admission.filter(|_| c.wake) {
         ensure!(
-            c.wait_secs < a.max_wait_secs,
-            "wait_secs ({}) must be under admission's max_wait_secs ({}): a call waits no longer, so it would never wake the coordinator",
+            c.wait_secs < a.max_background_wait_secs,
+            "wait_secs ({}) must be under admission's max_background_wait_secs ({}): a call waits no longer, so it would never wake the coordinator",
             c.wait_secs,
-            a.max_wait_secs
+            a.max_background_wait_secs
         );
     }
     Ok(())

@@ -22,7 +22,8 @@ For example, for a machine with about 30 GB of RAM:
   "admission": {
     "heavy_mb": 1024,
     "margin_mb": 2048,
-    "max_wait_secs": 60
+    "max_wait_secs": 60,
+    "max_background_wait_secs": 1800
   }
 }
 ```
@@ -31,7 +32,8 @@ For example, for a machine with about 30 GB of RAM:
 | :- | :- |
 | `admission.heavy_mb` | A Bash call whose expected peak reaches this, in MB, waits for memory. At 0 (only by hand), every call with a learned command is heavy. |
 | `admission.margin_mb` | Free memory kept on top of the expected peak, in MB. At 0, a heavy call starts as soon as free memory covers its expected peak. |
-| `admission.max_wait_secs` | The longest a call waits; then it runs anyway. At 0, no call waits and no notice is written, but heavy calls still reserve their expected peak. |
+| `admission.max_wait_secs` | The longest a call waits; then it is refused, and told how to wait longer. At most 119, under a Bash call's default timeout. At 0, a heavy call that does not fit is refused at once. |
+| `admission.max_background_wait_secs` | The longest a call whose command assigns `ORCHESTRATOR_BACKGROUND` waits; then it is refused. Above `max_wait_secs`, at most 1800. |
 
 - The sections are `admission` and `coordinator`; the fields of each are
   required, except those the table below marks optional.
@@ -66,7 +68,7 @@ For example, for a machine with about 30 GB of RAM:
 | `coordinator.wake` | `true`: `watch` starts coordinator runs by itself for `memory_pressure` and `admission_wait` events, using tokens of the account without asking. `false`: it starts none and queues nothing. |
 | `coordinator.model` | The model of those runs, as `claude --model` takes it. The setup conversation proposes `claude-sonnet-5-5`. |
 | `coordinator.max_minutes` | The longest a run lasts; then `watch` stops it. 5 when `config coordinator` creates the section. |
-| `coordinator.wait_secs` | How long admission holds a Bash call back before `watch` writes an `admission_wait` event for it. 20 when `config coordinator` creates the section. At or above `admission.max_wait_secs`, no call waits that long, so none is reported. |
+| `coordinator.wait_secs` | How long admission holds a Bash call back before `watch` writes an `admission_wait` event for it. 20 when `config coordinator` creates the section. At or above `admission.max_wait_secs`, only calls waiting in the background are reported; at or above `admission.max_background_wait_secs`, none is. |
 | `coordinator.language` | Optional. The language coordinators write in, a tag such as `fr` or `pt-BR`. Unset: English for runs, the system's language for setup and the interactive coordinator. |
 | `coordinator.max_budget_usd` | Optional, absent by default, written only by hand, above 0. The most a run may spend, checked by Claude Code against its estimate at API list price; a subscription counts tokens against its quota instead. |
 
@@ -77,7 +79,7 @@ asked, with Claude Code's default model, without `max_minutes` or
 on, since `watch` queues nothing otherwise.
 
 A section that makes no sense (a model name with a space, `max_minutes`
-outside 1 to 60, `wait_secs` outside 1 to 600, a malformed `language`,
+outside 1 to 60, `wait_secs` outside 1 to 1800, a malformed `language`,
 `max_budget_usd` at 0 or below), which only a hand-written file can hold,
 starts no run: `watch` prints `orchestrator: <why>; no coordinator starts`.
 `config admission` and `config coordinator` check the whole section on each
@@ -96,21 +98,28 @@ session reads. Its imports and limits: coordinator.md.
 The setup conversation proposes values from the machine's facts. The facts
 it and a human weigh:
 
-- **The wait counts toward the Bash call's timeout**: 2 min by default
-  (`BASH_DEFAULT_TIMEOUT_MS`); Claude can ask for more, up to the larger of
-  `BASH_MAX_TIMEOUT_MS` (10 min by default) and the default. The prefix cannot
-  see it, so `max_wait_secs` has to leave the command its own time. A
-  foreground call that reaches its timeout is moved to the background by
-  Claude Code, not stopped, unless it starts with `sleep` or background tasks
-  are turned off (`CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`).
+- **The wait holds the conversation and counts toward the Bash call's
+  timeout**: 2 min by default (`BASH_DEFAULT_TIMEOUT_MS`); Claude can ask for
+  more, up to the larger of `BASH_MAX_TIMEOUT_MS` (10 min by default) and the
+  default. The prefix cannot see it. A foreground call that reaches its
+  timeout is moved to the background by Claude Code, not stopped, unless it
+  starts with `sleep` or background tasks are turned off
+  (`CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`); its result then holds none of
+  its output. Hence `max_wait_secs` under 120: the refusal reaches Claude
+  with the call's result.
+- **Waiting in the background holds nothing**: a call Claude runs again in
+  the background returns at once, and Claude is told when it ends. Claude
+  Code lets a background command run with no time limit in an interactive
+  session, 30 min in one that runs unattended, 10 in a `claude -p` run whose
+  prompt is text: `max_background_wait_secs` above what applies is cut short
+  there.
 - **What the margin absorbs**: a heavy call is admitted on the kernel's
   `MemAvailable` at that moment, net of the reservations of heavy calls
   already running. Memory that anything else takes afterwards (other
   sessions, light calls, other programs) is covered only by `margin_mb`.
 - **A need the machine can never meet**: a call needs its expected peak plus
   `margin_mb` free. When that exceeds what the machine can free, the call
-  waits `max_wait_secs` every time, then runs with a "memory is still short"
-  notice.
+  waits its longest wait every time, then is refused.
 - **What `heavy_mb` catches**: `orchestrator peaks` lists each command's
   expected peak; those at or above `heavy_mb` are the ones that may wait.
 
@@ -194,8 +203,18 @@ anything:
   both. Waiting calls have no order: the first to check once memory frees up
   runs.
 - A waiting call checks again as soon as a job holding a reservation changes,
-  and every second otherwise. After `max_wait_secs`, it runs anyway, with its
-  reservation.
+  and every second otherwise. After `max_wait_secs` it is refused: the
+  command does not run, reserves nothing, and the call exits with code 75
+  (`EX_TEMPFAIL`), its notice saying how to wait longer (events.md).
+- A call whose command assigns `ORCHESTRATOR_BACKGROUND`, whatever the value,
+  waits `max_background_wait_secs` instead. The prefix cannot see whether
+  Claude Code runs a call in the background: the variable is how Claude says
+  so. The refusal gives the value `wait-for-memory`, which states the reason
+  in the command, the part of a call Claude Code's auto mode classifier
+  reads; a mention that assigns nothing, in an `echo` for instance, counts
+  too.
+- A refused call, or one killed while it waits, teaches nothing: only a call
+  that runs is measured.
 - A heavy call that leaves a process running, such as a server started in the
   background, keeps its reservation, net of what its group uses, until that
   process ends.
@@ -218,6 +237,7 @@ anything:
 | `CLAUDE_CODE_SHELL` | Claude Code | The shell Claude Code uses to run Bash tool commands, a bash or zsh binary. The prefix runs them with bash whatever it is. |
 | `CLAUDE_CODE_SESSION_ID` | `watch`, `sessions` | Set by Claude Code in every command it starts; attributes a process reparented away from claude, and marks orphans. |
 | `BASH_DEFAULT_TIMEOUT_MS`, `BASH_MAX_TIMEOUT_MS` | Claude Code | The Bash timeout the admission wait counts toward. |
+| `ORCHESTRATOR_BACKGROUND` | the prefix, in the command's text | Assigned in a Bash call's command, the call waits `max_background_wait_secs` instead of `max_wait_secs`. |
 | `CLAUDE_CODE_TOOL_MEMORY_LIMIT` | Claude Code | On Linux, a size such as `4G` caps the memory of all of a session's Bash, PowerShell and Monitor commands together, through a memory cgroup of Claude Code's own: past it, the kernel kills a command, and nothing in its result names the cap. `CLAUDE_CODE_TOOL_MEMORY_CGROUP_EXCLUDE` lists the other kinds of processes Claude Code exempts from that cap. orchestrator never kills a command. |
 
 The prefix reads these from the environment Claude Code was started with.

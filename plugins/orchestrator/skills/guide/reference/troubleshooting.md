@@ -118,7 +118,9 @@ Measured, not learned:
   was started with (`XDG_CONFIG_HOME`, else `HOME`), which may differ from a
   terminal's.
 - A `config.json` that cannot be read: `prefix.log` holds
-  `reading …/config.json: …` for each Bash call.
+  `reading …/config.json: …` for each Bash call. An `admission` section
+  written before `max_background_wait_secs` existed lacks that field: set the
+  section again with `orchestrator config admission` (commands.md).
 - No command of the call has an expected peak at or above `heavy_mb`
   (`orchestrator peaks`). The expected peak is the smallest of the latest
   calls back to the latest one the command ran alone in (configuration.md,
@@ -127,15 +129,22 @@ Measured, not learned:
 - The command follows a `cd` whose target only running tells (`cd "$dir"`,
   `cd -`): it is never looked up.
 - The call cannot be parsed as shell: none of its commands is looked up.
-- `max_wait_secs` is 0: heavy calls reserve memory but never wait.
+- `max_wait_secs` is 0: a heavy call that does not fit is refused at once,
+  without waiting.
 - Memory was free: a heavy call that finds enough starts at once, silently.
 - The command is not a Bash call of an orchestrated session.
 - An error let it through: see `prefix.log`.
 
-## A call waits too often or too long
+## A call waits too often or too long, or is refused
 
-- The second notice says "memory is still short": its expected peak plus
-  `margin_mb` exceeds what the machine freed within `max_wait_secs`.
+- The second notice says `refused`: its expected peak plus `margin_mb`
+  exceeded what the machine freed within its longest wait. Run in the
+  background with `ORCHESTRATOR_BACKGROUND=wait-for-memory` before the
+  command, it waits `max_background_wait_secs` without holding the
+  conversation.
+- In auto mode, Claude Code's classifier may deny that background run; Claude
+  then stops and says so. Telling Claude that the run is wanted can let it
+  through.
 - The waiting notice says "net of … already running": other heavy calls hold
   reservations until their job groups empty, including a server one of them
   left running in the background.
@@ -144,7 +153,10 @@ Measured, not learned:
   first lighter call, once measured, lowers it (configuration.md,
   "Learning"). Removing its repository's directory under `<state>/peaks/`
   (files.md) forgets every command of that repository at once.
-- The call reached its Bash timeout: the wait counts toward it
+- The call reached its Bash timeout before admission decided: Claude asked
+  for a timeout under `max_wait_secs`, or `BASH_DEFAULT_TIMEOUT_MS` is lower.
+  Claude Code moved it to the background, where it goes on waiting; its
+  notices are in the output file, not in the call's result
   (configuration.md, "Choosing values").
 
 ## A command behaves as in bash, not zsh
@@ -216,8 +228,9 @@ the queued events and their status; `runs.jsonl` the runs (coordinator.md).
   or a restart of `watch`.
 - No event needed one: `orphans` events never start a run. An
   `admission_wait` is written only for a call held back `wait_secs`; a call
-  that started earlier, or a `wait_secs` at or above `max_wait_secs`, makes
-  none. An `admission_wait` whose call already ran when a coordinator would
+  that started earlier makes none, and a `wait_secs` at or above
+  `max_wait_secs` reports only calls waiting in the background. An
+  `admission_wait` whose call already ran when a coordinator would
   take it is closed without a run.
 
 ## A coordinator run fails

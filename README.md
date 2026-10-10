@@ -1,9 +1,11 @@
 # orchestrator
 
 orchestrator keeps the Claude Code sessions running in parallel on one Linux
-machine working within its finite resources, without refusing their work.
-Today it measures what each command uses, learns which commands are
-memory-hungry, and holds such a Bash call back until memory covers it.
+machine working within its finite resources. Today it measures what each
+command uses, learns which commands are memory-hungry, and holds such a Bash
+call back until memory covers it. When memory does not free up in time, the
+call is refused with the reason and how to wait longer, rather than run short
+of memory at every session's expense.
 Planned work is tracked in the
 [issues](https://github.com/hvn-p/orchestrator/issues).
 
@@ -17,7 +19,8 @@ Early. What exists:
   sub-group of its own.
 - Admission: once a configuration exists, a Bash call whose commands were
   learned as memory-hungry waits, before it runs, until free memory covers its
-  expected peak. Every other command starts at once.
+  expected peak, for a bounded time; past it, the call is refused. Every other
+  command starts at once.
 - `orchestrator sessions` prints the memory used by each Claude Code session
   (with its largest process) and the processes left behind by sessions that no
   longer exist.
@@ -136,16 +139,17 @@ the same conversation when there is no configuration yet.
 
 `orchestrator config` prints the file. The commands setup uses also work by
 hand: `orchestrator config admission --heavy-mb … --margin-mb …
---max-wait-secs …` sets the thresholds, and `orchestrator config
-coordinator --wake yes --model … --language …` the coordinator. Written by hand, for a
-machine with about 30 GB of RAM:
+--max-wait-secs … --max-background-wait-secs …` sets the thresholds, and
+`orchestrator config coordinator --wake yes --model … --language …` the
+coordinator. Written by hand, for a machine with about 30 GB of RAM:
 
 ```json
 {
   "admission": {
     "heavy_mb": 1024,
     "margin_mb": 2048,
-    "max_wait_secs": 60
+    "max_wait_secs": 60,
+    "max_background_wait_secs": 1800
   }
 }
 ```
@@ -156,12 +160,20 @@ machine with about 30 GB of RAM:
 - `margin_mb`: free memory kept on top of the expected peak. A heavy call
   starts once available memory, minus what the heavy calls already running
   still expect to use, covers its expected peak plus this margin.
-- `max_wait_secs`: the longest a call waits; then it runs anyway. The wait
-  counts toward the Bash call's timeout (2 min by default, 10 min at most).
+- `max_wait_secs`: the longest a call waits; then it is refused, exit code
+  75. Under 120 s, a Bash call's default timeout, so that the refusal reaches
+  Claude with the call's result.
+- `max_background_wait_secs`: the longest a call carrying
+  `ORCHESTRATOR_BACKGROUND` waits; then it is refused too. Longer than
+  `max_wait_secs`, 1800 s at most. A refusal tells Claude to run the call
+  again in the background with `ORCHESTRATOR_BACKGROUND=wait-for-memory`
+  before the command: it then waits this long without holding the
+  conversation.
 
 While a call waits, its output starts with a notice naming the command by its
 label, its expected peak and the memory it needs, then a second one when it
-runs. Remove the file, or its `admission` section, to turn admission off. A
+runs or is refused. Remove the file, or its `admission` section, to turn
+admission off. A
 file that cannot be read, an unknown field included, also turns it off, and
 the error goes to `$XDG_RUNTIME_DIR/orchestrator/prefix.log`.
 

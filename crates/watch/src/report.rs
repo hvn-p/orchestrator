@@ -254,8 +254,8 @@ pub fn admission(
 pub fn admission_text(r: &AdmissionReport) -> String {
     let mut out = match &r.thresholds {
         Thresholds::On(a) => format!(
-            "Admission: a call expected to peak at {} MB or more waits until free memory covers its peak plus {} MB, {} s at most.\n",
-            a.heavy_mb, a.margin_mb, a.max_wait_secs
+            "Admission: a call expected to peak at {} MB or more waits until free memory covers its peak plus {} MB, {} s at most, {} s in the background; then it is refused.\n",
+            a.heavy_mb, a.margin_mb, a.max_wait_secs, a.max_background_wait_secs
         ),
         Thresholds::Off(why) => format!("Admission: off, {why}.\n"),
     };

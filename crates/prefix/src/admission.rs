@@ -12,7 +12,9 @@
 //! that has run alone, whose peak was measured, else after its first heavy
 //! command. A call whose expected peak is unknown or under the threshold
 //! starts at once and reserves nothing. A heavy call waits until free memory
-//! covers its expected peak plus a margin.
+//! covers its expected peak plus a margin, for a bounded time; past it, the
+//! call is refused rather than run short of memory, which would only move
+//! the shortage onto every session.
 //!
 //! Free memory is the kernel's `MemAvailable` net of reservations. From its
 //! admission until its job group empties, a heavy call reserves its expected
@@ -27,8 +29,21 @@
 //! `cgroup.events` of a job holding a reservation, which is how memory mostly
 //! frees up, and every `RECHECK` otherwise, since available memory has no
 //! notification. It writes one notice to standard error when it starts
-//! waiting and one when it proceeds: the call's output goes back to Claude.
-//! After the configured longest wait, it runs anyway, reserving its peak.
+//! waiting and one when it runs or is refused: the call's output goes back
+//! to Claude.
+//!
+//! A call waits `max_wait_secs` at most, under a Bash call's default
+//! timeout: past the timeout, Claude Code moves the call to the background
+//! and its result holds none of its output, so a refusal would reach Claude
+//! only through the output file. Past that wait the call is refused, exit
+//! code `REFUSED`, its notice saying how to wait longer: run it again in the
+//! background with `ORCHESTRATOR_BACKGROUND=wait-for-memory` before the
+//! command. A call carrying `ORCHESTRATOR_BACKGROUND` waits
+//! `max_background_wait_secs` at most, then is refused too. The prefix cannot
+//! see whether Claude Code runs a call in the background, so Claude says so
+//! in the command; the value states the purpose because Claude Code's auto
+//! mode classifier sees the command and never the refusal, and denied
+//! relaunches carrying `=1` (#16).
 //!
 //! While it waits, a call is also recorded in the runtime directory, so that
 //! `orchestrator admission` can show it and `watch` can wake the coordinator
@@ -42,8 +57,7 @@
 //! other sessions work: a few hundred MB within seconds.
 //!
 //! Waiting calls have no order: the first to check once memory frees up
-//! runs. The wait counts toward the Bash call's timeout, which the prefix
-//! cannot see, so only the longest wait bounds it. A heavy call that leaves
+//! runs. A heavy call that leaves
 //! a process running, such as a server started in the background, keeps
 //! its reservation, net of what its group uses, until that process ends.
 //! What admission cannot foresee (a first run, a form of the command it
@@ -78,6 +92,15 @@ pub const RECHECK: Duration = Duration::from_secs(1);
 const LOCK_PATIENCE: Duration = Duration::from_secs(1);
 /// Between two attempts at the lock.
 const LOCK_RETRY: Duration = Duration::from_millis(5);
+
+/// The variable a call carries to wait in the background, the longer wait.
+pub const BACKGROUND_VAR: &str = "ORCHESTRATOR_BACKGROUND";
+/// The value the refusal tells Claude to give it: why the call runs in the
+/// background, in the command, where Claude Code's classifier reads it.
+pub const BACKGROUND_VALUE: &str = "wait-for-memory";
+/// The exit code of a refused call: a temporary failure, worth trying again
+/// later (`EX_TEMPFAIL`).
+pub const REFUSED: i32 = 75;
 
 /// A command of a call with a learned peak.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -130,7 +153,7 @@ struct Reservation {
 }
 
 /// A heavy call waiting for memory, kept as `<runtime>/waiting/<job>.json`
-/// from its first wait until it runs.
+/// from its first wait until it runs or is refused.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Waiting {
     /// Its job's name.
@@ -182,10 +205,19 @@ impl Snapshot {
 pub enum Step {
     /// Free memory covers the call: it runs.
     Run,
-    /// The call has waited as long as it may: it runs anyway.
-    RunOverdue,
+    /// The call has waited as long as it may: it is refused.
+    Refuse,
     /// The call waits, at most this long before the next check.
     Wait(Duration),
+}
+
+/// What admission decides for a heavy call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Outcome {
+    /// It runs, its peak reserved.
+    Run,
+    /// It does not run: the prefix exits with `REFUSED`.
+    Refused,
 }
 
 /// What one check found.
@@ -275,23 +307,43 @@ pub fn step(
     if free_mb >= need_mb {
         Step::Run
     } else if waited >= max_wait {
-        Step::RunOverdue
+        Step::Refuse
     } else {
         Step::Wait(max_wait.saturating_sub(waited).min(recheck))
     }
 }
 
-/// Lets the heavy `call` run in `job` once free memory covers it, or
-/// once it has waited `max_wait_secs`, and reserves its peak. Notices go to
+/// Whether Claude runs the Bash call `invocation` in the background to wait
+/// longer: the command it wrote assigns `BACKGROUND_VAR`, whatever the
+/// value. A mention that assigns nothing, in an `echo` for instance, counts
+/// too; it only lengthens the wait.
+pub fn waits_in_background(invocation: &str) -> bool {
+    claude_code::invocation::written(invocation)
+        .is_some_and(|script| script.contains(&format!("{BACKGROUND_VAR}=")))
+}
+
+/// The longest the call may wait, in seconds.
+fn longest_wait_secs(cfg: &Admission, background: bool) -> u64 {
+    if background {
+        cfg.max_background_wait_secs
+    } else {
+        cfg.max_wait_secs
+    }
+}
+
+/// Lets the heavy `call` run in `job` once free memory covers it, reserving
+/// its peak, or refuses it once it has waited its longest wait: the
+/// background one when Claude runs it in the background. Notices go to
 /// `out`. On an error the call runs at once, unreserved.
 pub fn admit(
     paths: &Paths,
     cfg: &Admission,
     job: &Job,
     call: &Heavy,
+    background: bool,
     out: &mut dyn Write,
-) -> Result<()> {
-    admit_every(paths, cfg, job, call, RECHECK, out)
+) -> Result<Outcome> {
+    admit_every(paths, cfg, job, call, background, RECHECK, out)
 }
 
 fn admit_every(
@@ -299,12 +351,14 @@ fn admit_every(
     cfg: &Admission,
     job: &Job,
     call: &Heavy,
+    background: bool,
     recheck: Duration,
     out: &mut dyn Write,
-) -> Result<()> {
+) -> Result<Outcome> {
     let start = Instant::now();
     let need = need_mb(call.peak_mb, cfg);
-    let max_wait = Duration::from_secs(cfg.max_wait_secs);
+    let longest = longest_wait_secs(cfg, background);
+    let max_wait = Duration::from_secs(longest);
     let mut waiting: Option<Recorded> = None;
     let result = loop {
         let waited = start.elapsed();
@@ -314,11 +368,11 @@ fn admit_every(
             Err(e) => break Err(e),
         };
         match check.step {
-            Step::Run => break Ok(None),
-            Step::RunOverdue => break Ok(Some(check.free_mb)),
+            Step::Run => break Ok((Outcome::Run, check.free_mb)),
+            Step::Refuse => break Ok((Outcome::Refused, check.free_mb)),
             Step::Wait(timeout) => {
                 if waiting.is_none() {
-                    let _ = writeln!(out, "{}", waiting_notice(call, cfg, &check));
+                    let _ = writeln!(out, "{}", waiting_notice(call, cfg, &check, longest));
                     let record = Waiting {
                         job: job.name.clone(),
                         group: job.group.clone(),
@@ -333,12 +387,18 @@ fn admit_every(
             }
         }
     };
-    if waiting.take().is_some() {
-        let still_short = result.as_ref().ok().copied().flatten();
-        let notice = running_notice(call, start.elapsed(), still_short.map(|f| (f, need)));
-        let _ = writeln!(out, "{notice}");
+    let waited = waiting.take().is_some();
+    match result {
+        Ok((Outcome::Run, _)) if waited => {
+            let _ = writeln!(out, "{}", running_notice(call, start.elapsed()));
+        }
+        Ok((Outcome::Refused, free)) => {
+            let notice = refused_notice(call, cfg, background, free, need);
+            let _ = writeln!(out, "{notice}");
+        }
+        _ => {}
     }
-    result.map(|_| ())
+    result.map(|(outcome, _)| outcome)
 }
 
 /// The record of a waiting call, removed when the call stops waiting, the
@@ -391,7 +451,7 @@ fn check(
     }
     let free = free_mb(memory::available_mb(&paths.meminfo)?, held);
     let step = decide(free);
-    if matches!(step, Step::Run | Step::RunOverdue) {
+    if step == Step::Run {
         let path = dir.join(format!("{}.json", job.name));
         let reservation = Reservation {
             group: job.group.clone(),
@@ -562,7 +622,17 @@ fn shown(call: &Heavy) -> String {
     }
 }
 
-fn waiting_notice(call: &Heavy, cfg: &Admission, check: &Check) -> String {
+/// A wait of `secs` as notices show it: in minutes when it is whole minutes.
+fn span(secs: u64) -> String {
+    if secs >= 60 && secs.is_multiple_of(60) {
+        format!("{} min", secs / 60)
+    } else {
+        format!("{secs} s")
+    }
+}
+
+/// `longest` is the longest the call may wait, in seconds.
+fn waiting_notice(call: &Heavy, cfg: &Admission, check: &Check, longest: u64) -> String {
     let mut notice = format!(
         "orchestrator: waiting for memory before running {}. This call is expected to peak at {} MB; with the {} MB margin it needs {} MB free, and {} MB are free",
         shown(call),
@@ -582,28 +652,41 @@ fn waiting_notice(call: &Heavy, cfg: &Admission, check: &Check) -> String {
     }
     let _ = write!(
         notice,
-        ". It starts as soon as memory frees up, after {} s at most.",
-        cfg.max_wait_secs
+        ". It starts as soon as memory frees up; past {}, it is refused.",
+        span(longest)
     );
     notice
 }
 
-/// `still_short` holds the free and needed memory of a call that runs only
-/// because it waited as long as it may.
-fn running_notice(call: &Heavy, waited: Duration, still_short: Option<(u64, u64)>) -> String {
-    let mut notice = format!(
-        "orchestrator: running {} after waiting {:.1} s",
+fn running_notice(call: &Heavy, waited: Duration) -> String {
+    format!(
+        "orchestrator: running {} after waiting {:.1} s for memory.",
         shown(call),
         waited.as_secs_f64()
+    )
+}
+
+/// A call refused in the foreground learns how to wait longer: in the
+/// background, where it no longer holds the conversation.
+fn refused_notice(call: &Heavy, cfg: &Admission, background: bool, free: u64, need: u64) -> String {
+    let longest = longest_wait_secs(cfg, background);
+    let after = if longest == 0 {
+        "at once".to_string()
+    } else {
+        format!("after {}", span(longest))
+    };
+    let mut notice = format!(
+        "orchestrator: refused {} {after}: {free} MB are free and it needs {need} MB.",
+        shown(call)
     );
-    match still_short {
-        Some((free, need)) => {
-            let _ = write!(
-                notice,
-                ", the longest admission waits; memory is still short: {free} MB free, {need} MB needed."
-            );
-        }
-        None => notice.push_str(" for memory."),
+    if !background {
+        let assignment = format!("{BACKGROUND_VAR}={BACKGROUND_VALUE}");
+        let _ = write!(
+            notice,
+            " To let it wait up to {}, {}.",
+            span(cfg.max_background_wait_secs),
+            claude_code::call::in_background(&assignment)
+        );
     }
     notice
 }
@@ -618,6 +701,7 @@ mod tests {
         heavy_mb: 1000,
         margin_mb: 500,
         max_wait_secs: 30,
+        max_background_wait_secs: 1800,
     };
     const SESSION: &str = "/u/orchestrator.slice/s.scope";
     const SEC: Duration = Duration::from_secs(1);
@@ -703,14 +787,28 @@ mod tests {
             step(0, 3500, late, max, SEC),
             Step::Wait(Duration::from_millis(300))
         );
-        assert_eq!(step(0, 3500, max, max, SEC), Step::RunOverdue);
+        assert_eq!(step(0, 3500, max, max, SEC), Step::Refuse);
         // Fitting wins even when overdue.
         assert_eq!(step(4000, 3500, 2 * max, max, SEC), Step::Run);
         // No wait at all.
         assert_eq!(
             step(0, 3500, Duration::ZERO, Duration::ZERO, SEC),
-            Step::RunOverdue
+            Step::Refuse
         );
+    }
+
+    #[test]
+    fn a_call_assigning_the_variable_waits_in_the_background() {
+        let bg = |script: &str| waits_in_background(&invocation(script));
+        assert!(bg("ORCHESTRATOR_BACKGROUND=wait-for-memory pnpm typecheck"));
+        assert!(bg(
+            "cd web && ORCHESTRATOR_BACKGROUND=1 pnpm typecheck; echo $?"
+        ));
+        assert!(!bg("pnpm typecheck"));
+        assert!(!bg("echo $ORCHESTRATOR_BACKGROUND"));
+        assert!(!waits_in_background("not an invocation"));
+        assert_eq!(longest_wait_secs(&CFG, false), 30);
+        assert_eq!(longest_wait_secs(&CFG, true), 1800);
     }
 
     /// A cgroup tree, a meminfo and a runtime directory, all temporary.
@@ -900,7 +998,17 @@ mod tests {
         let start = Instant::now();
         let mut out = Vec::new();
         // Checking only every 60 s, the wake comes from inotify.
-        admit_every(&m.paths, &CFG, &job, &typecheck(3000), 60 * SEC, &mut out).unwrap();
+        let outcome = admit_every(
+            &m.paths,
+            &CFG,
+            &job,
+            &typecheck(3000),
+            false,
+            60 * SEC,
+            &mut out,
+        )
+        .unwrap();
+        assert_eq!(outcome, Outcome::Run);
         ender.join().unwrap();
         assert!(start.elapsed() < 10 * SEC, "{:?}", start.elapsed());
         let out = String::from_utf8(out).unwrap();
@@ -909,7 +1017,11 @@ mod tests {
         assert!(lines[0].starts_with(
             "orchestrator: waiting for memory before running `pnpm typecheck`. This call is expected to peak at 3000 MB; with the 500 MB margin it needs 3500 MB free, and 1000 MB are free, net of 3000 MB kept for 1 heavy command already running."
         ), "{}", lines[0]);
-        assert!(lines[0].ends_with("after 30 s at most."), "{}", lines[0]);
+        assert!(
+            lines[0].ends_with("It starts as soon as memory frees up; past 30 s, it is refused."),
+            "{}",
+            lines[0]
+        );
         assert!(lines[1].starts_with("orchestrator: running `pnpm typecheck` after waiting "));
         assert!(lines[1].ends_with(" s for memory."), "{}", lines[1]);
         assert_eq!(m.reserved(), ["job-bash-2-1.json"]);
@@ -927,7 +1039,8 @@ mod tests {
             let job = job.clone();
             std::thread::spawn(move || {
                 let mut out = Vec::new();
-                admit_every(&m.paths, &CFG, &job, &typecheck(3000), 60 * SEC, &mut out).unwrap();
+                let call = typecheck(3000);
+                admit_every(&m.paths, &CFG, &job, &call, false, 60 * SEC, &mut out).unwrap();
             })
         };
         let start = Instant::now();
@@ -990,38 +1103,74 @@ mod tests {
         assert_eq!(fs::read_dir(&dir).unwrap().count(), 0);
     }
 
-    #[test]
-    fn after_the_longest_wait_a_call_runs_anyway_and_reserves() {
+    /// The notices of a call admission holds `cfg`'s longest wait on a
+    /// machine where it never fits, and what it decided.
+    fn refused(cfg: &Admission, background: bool) -> (Outcome, Vec<String>, Machine) {
         let m = Machine::new(1000);
         let job = m.job("job-bash-1-1", 0);
-        let cfg = Admission {
-            max_wait_secs: 1,
-            ..CFG
-        };
         let mut out = Vec::new();
         let start = Instant::now();
-        admit_every(
-            &m.paths,
-            &cfg,
-            &job,
-            &typecheck(3000),
-            Duration::from_millis(100),
-            &mut out,
-        )
-        .unwrap();
-        assert!(start.elapsed() >= SEC);
+        let call = typecheck(3000);
+        let recheck = Duration::from_millis(100);
+        let outcome = admit_every(&m.paths, cfg, &job, &call, background, recheck, &mut out);
+        assert!(start.elapsed() >= Duration::from_secs(longest_wait_secs(cfg, background)));
         let out = String::from_utf8(out).unwrap();
-        let lines: Vec<&str> = out.lines().collect();
-        assert_eq!(lines.len(), 2, "{out}");
+        (outcome.unwrap(), out.lines().map(String::from).collect(), m)
+    }
+
+    #[test]
+    fn after_the_longest_wait_a_call_is_refused_with_how_to_wait_longer() {
+        let cfg = Admission {
+            max_wait_secs: 1,
+            max_background_wait_secs: 120,
+            ..CFG
+        };
+        let (outcome, lines, m) = refused(&cfg, false);
+        assert_eq!(outcome, Outcome::Refused);
+        assert_eq!(lines.len(), 2, "{lines:?}");
         assert!(
-            lines[0].contains("and 1000 MB are free. It starts"),
+            lines[0].ends_with("and 1000 MB are free. It starts as soon as memory frees up; past 1 s, it is refused."),
             "{}",
             lines[0]
         );
-        assert!(lines[1].ends_with(
-            ", the longest admission waits; memory is still short: 1000 MB free, 3500 MB needed."
-        ), "{}", lines[1]);
-        assert_eq!(m.reserved(), ["job-bash-1-1.json"]);
+        assert_eq!(
+            lines[1],
+            "orchestrator: refused `pnpm typecheck` after 1 s: 1000 MB are free and it needs 3500 MB. To let it wait up to 2 min, run it in the background with ORCHESTRATOR_BACKGROUND=wait-for-memory before the command."
+        );
+        // A refused call reserves nothing, and stops being recorded as waiting.
+        assert_eq!(m.reserved(), Vec::<String>::new());
+        assert_eq!(waiting(&m.paths, false), []);
+    }
+
+    #[test]
+    fn in_the_background_a_call_waits_its_own_longest_wait_then_is_refused() {
+        let cfg = Admission {
+            max_wait_secs: 0,
+            max_background_wait_secs: 1,
+            ..CFG
+        };
+        let (outcome, lines, m) = refused(&cfg, true);
+        assert_eq!(outcome, Outcome::Refused);
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert!(
+            lines[0].ends_with("past 1 s, it is refused."),
+            "{}",
+            lines[0]
+        );
+        assert_eq!(
+            lines[1],
+            "orchestrator: refused `pnpm typecheck` after 1 s: 1000 MB are free and it needs 3500 MB."
+        );
+        assert_eq!(m.reserved(), Vec::<String>::new());
+        // Without a foreground wait, a call is refused at once, saying nothing else.
+        let (outcome, lines, _) = refused(&cfg, false);
+        assert_eq!(outcome, Outcome::Refused);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(
+            lines[0].starts_with("orchestrator: refused `pnpm typecheck` at once: "),
+            "{}",
+            lines[0]
+        );
     }
 
     #[test]
@@ -1029,7 +1178,8 @@ mod tests {
         let m = Machine::new(8000);
         let job = m.job("job-bash-1-1", 0);
         let mut out = Vec::new();
-        admit(&m.paths, &CFG, &job, &typecheck(3000), &mut out).unwrap();
+        let outcome = admit(&m.paths, &CFG, &job, &typecheck(3000), false, &mut out).unwrap();
+        assert_eq!(outcome, Outcome::Run);
         assert_eq!(out, b"");
         assert_eq!(m.reserved(), ["job-bash-1-1.json"]);
     }
@@ -1040,7 +1190,7 @@ mod tests {
         fs::remove_file(&m.paths.meminfo).unwrap();
         let job = m.job("job-bash-1-1", 0);
         let mut out = Vec::new();
-        assert!(admit(&m.paths, &CFG, &job, &typecheck(3000), &mut out).is_err());
+        assert!(admit(&m.paths, &CFG, &job, &typecheck(3000), false, &mut out).is_err());
         assert_eq!(out, b"");
         assert_eq!(m.reserved(), Vec::<String>::new());
     }
@@ -1137,9 +1287,10 @@ mod tests {
             holders: Vec::new(),
         };
         let notices = [
-            waiting_notice(&call, &CFG, &check),
-            running_notice(&call, SEC, None),
-            running_notice(&call, SEC, Some((10, 2000))),
+            waiting_notice(&call, &CFG, &check, 30),
+            running_notice(&call, SEC),
+            refused_notice(&call, &CFG, false, 10, 2000),
+            refused_notice(&call, &CFG, true, 10, 2000),
         ];
         for n in notices {
             assert!(n.contains("`python3 -c b = bytearray(1500 << 20)`"), "{n}");

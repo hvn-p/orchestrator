@@ -98,7 +98,9 @@ The label is text Claude wrote, not a command line read from a process.
 {"at":1791356901,"session":"orchestrator-41000-1791356000000.scope","job":"job-bash-41390-1791356880123","peak_mb":2210,"command":"source /home/u/.claude/shell-snapshots/snapshot-bash-….sh 2>/dev/null || true && … && eval 'pnpm typecheck' < /dev/null && pwd -P >| /tmp/claude-…-cwd","cwd":"/home/u/project"}
 ```
 
-One line per Bash call `watch` measured, next to `events.jsonl`. `session` is
+One line per Bash call `watch` measured, next to `events.jsonl`; a call
+admission refused, or one killed while it waited, ran nothing and is not
+measured. `session` is
 the session's scope, `job` the call's job group, `peak_mb` the group's
 `memory.peak` (children included), `command` the whole invocation Claude Code
 handed the prefix, and `cwd` the directory it ran in. Nothing reads this file;
@@ -112,7 +114,7 @@ Code returns with the call's output. A call that starts at once writes
 nothing.
 
 ```
-orchestrator: waiting for memory before running `pnpm typecheck`. This call is expected to peak at 2210 MB; with the 2048 MB margin it needs 4258 MB free, and 3100 MB are free, net of 1800 MB kept for 1 heavy command already running. It starts as soon as memory frees up, after 60 s at most.
+orchestrator: waiting for memory before running `pnpm typecheck`. This call is expected to peak at 2210 MB; with the 2048 MB margin it needs 4258 MB free, and 3100 MB are free, net of 1800 MB kept for 1 heavy command already running. It starts as soon as memory frees up; past 1 min, it is refused.
 orchestrator: running `pnpm typecheck` after waiting 12.4 s for memory.
 ```
 
@@ -121,15 +123,27 @@ orchestrator: running `pnpm typecheck` after waiting 12.4 s for memory.
   `this command` when it has no label.
 - "net of … already running" appears only when running heavy calls hold
   reservations.
-- When the call waited `max_wait_secs` and memory is still short, the second
-  line reads instead:
+- A wait of whole minutes is shown in minutes, any other in seconds.
 
-  ```
-  orchestrator: running `pnpm typecheck` after waiting 60.0 s, the longest admission waits; memory is still short: 3900 MB free, 4258 MB needed.
-  ```
+When the call runs, its own output and exit code follow, unchanged. When it
+has waited `max_wait_secs` and memory is still short, it is refused: the
+command does not run, the call exits with code 75, and the second line reads
+instead:
 
-The call was delayed, not refused: its own output and exit code follow,
-unchanged. There is nothing to retry.
+```
+orchestrator: refused `pnpm typecheck` after 1 min: 3900 MB are free and it needs 4258 MB. To let it wait up to 30 min, run it in the background with ORCHESTRATOR_BACKGROUND=wait-for-memory before the command.
+```
+
+A call whose command assigns `ORCHESTRATOR_BACKGROUND`, whatever the value,
+waits `max_background_wait_secs` instead; its first line gives that wait, and
+its refusal ends after the memory figures:
+
+```
+orchestrator: refused `pnpm typecheck` after 30 min: 3900 MB are free and it needs 4258 MB.
+```
+
+With `max_wait_secs` at 0, a call that does not fit is refused at once,
+without a first line (`refused … at once:`).
 
 ## Messages
 
@@ -246,11 +260,13 @@ cannot be resolved (`neither CLAUDE_CONFIG_DIR nor HOME is set`,
   - `heavy_mb must be above 0: every call would wait`;
   - `heavy_mb (<n> MB) exceeds the machine's memory (<total> MB): no call would ever wait`;
   - `margin_mb (<n> MB) leaves nothing of the machine's memory (<total> MB)`;
-  - `max_wait_secs (<n>) exceeds the longest a Bash call can last, 600 s`;
+  - `max_wait_secs (<n>) must stay under a Bash call's default timeout, 120 s: past it, the call moves to the background before its refusal reaches Claude`;
+  - `max_background_wait_secs (<n>) must exceed max_wait_secs (<m>): it is how a refused call waits longer`;
+  - `max_background_wait_secs (<n>) exceeds the longest a command runs in the background in an unattended session, 1800 s`;
   - `model "<name>" is not a model name or alias, such as claude-sonnet-5-5, sonnet or haiku`;
   - `max_minutes (<n>) must be between 1 and 60`;
-  - `wait_secs (<n>) must be between 1 and 600`;
-  - `wait_secs (<n>) must be under admission's max_wait_secs (<m>): a call waits no longer, so it would never wake the coordinator`;
+  - `wait_secs (<n>) must be between 1 and 1800`;
+  - `wait_secs (<n>) must be under admission's max_background_wait_secs (<m>): a call waits no longer, so it would never wake the coordinator`;
   - `language "<tag>" is not a language tag such as fr, en or pt-BR`;
   - `max_budget_usd (<n>) must be above 0`, for a hand-written value.
 - `config admission` checks the whole `coordinator` section too, so a

@@ -2,9 +2,10 @@
 //! refresh and stdio MCP server start as `orchestrator-prefix '<command>'`.
 //! Inside an orchestrated session, the prefix moves itself into a job leaf of
 //! its own; a Bash call then goes through admission, which may hold a heavy
-//! call back until memory covers it. The prefix then replaces itself with a
-//! shell running the command, so output, exit code and signals stay the
-//! command's. Any failure leaves the command running at once, unchanged.
+//! call back until memory covers it, or refuse it. The prefix then replaces
+//! itself with a shell running the command, so output, exit code and signals
+//! stay the command's. Any failure leaves the command running at once,
+//! unchanged.
 //!
 //! The prefix is where a command can wait: inside the call, already in its
 //! job group. A `PreToolUse` hook could not: it cannot wait past its own
@@ -48,12 +49,20 @@ fn kind_name(kind: Kind) -> &'static str {
 }
 
 /// Places this process, admits a Bash call, then replaces this process with
-/// a shell running `command`. Only returns when the shell cannot be started.
+/// a shell running `command`. Only returns when the shell cannot be started;
+/// exits with `admission::REFUSED` when admission refuses the call.
 pub fn run(command: &OsStr) -> anyhow::Error {
     let root = Path::new(cgroup::ROOT);
     match place(root, command) {
-        Ok(Some(job)) => {
-            if let Err(e) = admit(root, &job, command) {
+        Ok(Some(call)) => {
+            match admit(root, &call.job, command) {
+                Ok(admission::Outcome::Refused) => std::process::exit(admission::REFUSED),
+                Ok(admission::Outcome::Run) => {}
+                Err(e) => log_failure(&e),
+            }
+            // Only a call that runs is recorded: one refused or killed while
+            // it waits would teach its command the prefix's own peak.
+            if let Err(e) = write_record(&call.records, &call.job.name, &call.record) {
                 log_failure(&e);
             }
         }
@@ -64,9 +73,17 @@ pub fn run(command: &OsStr) -> anyhow::Error {
     anyhow::Error::new(err).context("running bash")
 }
 
+/// A Bash call placed in its job leaf, with the record the service measures
+/// it by once it has run.
+struct Placed {
+    job: admission::Job,
+    records: PathBuf,
+    record: JobRecord,
+}
+
 /// Moves this process into a job leaf of its own. Returns the leaf of a Bash
 /// call, which admission may hold back.
-fn place(root: &Path, command: &OsStr) -> Result<Option<admission::Job>> {
+fn place(root: &Path, command: &OsStr) -> Result<Option<Placed>> {
     let own = fs::read_to_string("/proc/self/cgroup").context("reading own cgroup")?;
     let Some(session) = cgroup::own_path(&own).and_then(cgroup::session_of) else {
         return Ok(None);
@@ -85,24 +102,23 @@ fn place(root: &Path, command: &OsStr) -> Result<Option<admission::Job>> {
             .map(|d| d.to_string_lossy().into_owned())
             .unwrap_or_default(),
     };
-    write_record(
-        &records_dir(&runtime::default_dir()?, session),
-        &name,
-        &record,
-    )?;
-    Ok(Some(admission::Job {
-        group: format!("{session}/{name}"),
-        name,
+    Ok(Some(Placed {
+        records: records_dir(&runtime::default_dir()?, session),
+        record,
+        job: admission::Job {
+            group: format!("{session}/{name}"),
+            name,
+        },
     }))
 }
 
-/// Holds a heavy Bash call back until memory covers it. Returns at once
-/// without a configuration, and for a call none of whose commands is known
-/// to be heavy: the configuration is read first, so that without one nothing
-/// is parsed.
-fn admit(root: &Path, job: &admission::Job, command: &OsStr) -> Result<()> {
+/// Holds a heavy Bash call back until memory covers it, or refuses it. Lets
+/// it run at once without a configuration, and for a call none of whose
+/// commands is known to be heavy: the configuration is read first, so that
+/// without one nothing is parsed.
+fn admit(root: &Path, job: &admission::Job, command: &OsStr) -> Result<admission::Outcome> {
     let Some(cfg) = config::load(&config::default_path()?)?.and_then(|c| c.admission) else {
-        return Ok(());
+        return Ok(admission::Outcome::Run);
     };
     let cwd = invocation::working_dir().context("reading the working directory")?;
     let home = std::env::var_os("HOME").map(PathBuf::from);
@@ -110,14 +126,15 @@ fn admit(root: &Path, job: &admission::Job, command: &OsStr) -> Result<()> {
     let invocation = command.to_string_lossy();
     let known = admission::known(&invocation, &cwd, home.as_deref(), &peaks);
     let Some(call) = admission::heavy(&known, &cfg) else {
-        return Ok(());
+        return Ok(admission::Outcome::Run);
     };
     let paths = admission::Paths {
         cgroup_root: root.to_path_buf(),
         meminfo: PathBuf::from("/proc/meminfo"),
         runtime: runtime::default_dir()?,
     };
-    admission::admit(&paths, &cfg, job, &call, &mut call::notices())
+    let background = admission::waits_in_background(&invocation);
+    admission::admit(&paths, &cfg, job, &call, background, &mut call::notices())
 }
 
 /// The pid names the job for a human; the time keeps the name unique when a

@@ -10,7 +10,8 @@ write what the user agrees to.
    offer to switch in your first message, and switch at once if the user
    asks. Say in a few sentences what orchestrator does (it keeps the
    parallel Claude Code sessions of this machine within its memory, by
-   holding back heavy commands until memory frees up, never refusing them)
+   holding back heavy commands until memory frees up, and refusing one, with
+   the reason, when memory does not free up in time)
    and what you are about to set up: the admission thresholds, whether you
    may be woken automatically, the model of those runs, the language and the
    user's priorities. On a review, say what is configured now instead.
@@ -40,7 +41,7 @@ write what the user agrees to.
      en or pt-BR; and `--max-minutes <n>` (each run's time limit, 5 by
      default) or `--wait-secs <n>` (how long a call waits before waking
      you, 20 by default) if the user wants them changed.
-   - `orchestrator config admission --heavy-mb <MB> --margin-mb <MB> --max-wait-secs <s>`.
+   - `orchestrator config admission --heavy-mb <MB> --margin-mb <MB> --max-wait-secs <s> --max-background-wait-secs <s>`.
    - The priorities: write them, in the user's words, to the instructions
      file, or the file it imports that holds them, with the file tools.
    When a command refuses a value, tell the user why in plain words and
